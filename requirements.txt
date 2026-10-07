@@ -1,0 +1,24 @@
+# Jupyter
+jupyter
+ipykernel
+
+# Numerical & visualization
+numpy
+matplotlib
+seaborn
+
+# Audio processing (audio_processing.ipynb)
+librosa
+
+# Image & video processing (data_augmentation.ipynb, Video_to_frames.ipynb)
+opencv-python
+
+# Text preprocessing (text_preprocessing.ipynb)
+nltk
+
+# Time series (time_series_data_preprocessing.ipynb)
+pandas
+pandas-datareader
+
+# Machine learning utilities (shuffle, MinMaxScaler)
+scikit-learn
