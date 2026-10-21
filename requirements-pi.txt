@@ -1,0 +1,12 @@
+# Thư viện cài trên Raspberry Pi 4 (venv: ~/mqtt-env)
+#   ~/mqtt-env/bin/pip install -r requirements-pi.txt
+
+# MQTT client (đồng bộ với pi_camera_client.py)
+paho-mqtt
+
+# Blinka: lớp tương thích CircuitPython cho Linux/RPi (board, busio, pulseio)
+adafruit-blinka
+
+# Cảm biến
+adafruit-circuitpython-dht      # DHT11 - nhiệt độ + độ ẩm (chân 11 / GPIO17)
+adafruit-circuitpython-bh1750   # BH1750 - ánh sáng (I2C chân 3, 5)

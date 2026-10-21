@@ -22,3 +22,7 @@ pandas-datareader
 
 # Machine learning utilities (shuffle, MinMaxScaler)
 scikit-learn
+
+# Server MQTT + dashboard (server_app.py)
+paho-mqtt
+streamlit
