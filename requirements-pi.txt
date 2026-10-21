@@ -4,6 +4,12 @@
 # MQTT client (đồng bộ với pi_camera_client.py)
 paho-mqtt
 
+# Nhận diện người bằng YOLOv8n (pi_detection_client.py)
+# LƯU Ý: cài torch CPU-only TRƯỚC để không kéo bản CUDA (~2 GB):
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+# rồi mới: pip install ultralytics
+ultralytics
+
 # Blinka: lớp tương thích CircuitPython cho Linux/RPi (board, busio, pulseio)
 adafruit-blinka
 

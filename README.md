@@ -8,10 +8,11 @@ của báo cáo.
 Raspberry Pi 4                        Laptop Windows
 ┌──────────────────┐                ┌──────────────────────────────┐
 │ USB Webcam ──────┼──(ảnh JPEG)───▶│ Mosquitto (broker) :1883    │
-│ DHT11  (chân 11) │                │        ▲                     │
+│   ↓ YOLOv8n      │                │        ▲                     │
+│   ↓ vẽ khung     │──(JSON det)────┼────────┘                     │
+│ DHT11  (chân 11) │                │ server_app.py (Streamlit)    │
 │ BH1750 (chân 3,5)│──(JSON 10s)───┼────────┘                     │
-└──────────────────┘                │ server_app.py (Streamlit)    │
-                                    │  ├─ ảnh live                 │
+└──────────────────┘                │  ├─ ảnh live                 │
                                     │  ├─ metric + 3 biểu đồ      │
                                     │  └─ C:\mqtt\data\sensors.csv │
                                     └──────────────────────────────┘
@@ -20,6 +21,7 @@ Raspberry Pi 4                        Laptop Windows
 - **Nhiệt độ / độ ẩm**: DHT11 — DATA nối **chân 11** (BCM GPIO17)
 - **Ánh sáng**: BH1750 — SDA nối **chân 3** (GPIO2), SCL nối **chân 5** (GPIO3) → bus I2C1
 - **Chu kỳ lấy mẫu**: 10 giây
+- **Nhận diện người**: YOLOv8n (`model.pt`, class `person`) chạy trên CPU Pi, `imgsz=320`
 
 ---
 
@@ -78,6 +80,61 @@ cd ~/mqtt-env
 > ```bash
 > python3 -m venv ~/mqtt-env
 > ```
+
+### 2.5. Cài thư viện nhận diện + copy model (cho `pi_detection_client.py`)
+
+`requirements-pi.txt` có `ultralytics`, nhưng **phải cài torch CPU-only trước** để
+không kéo bản CUDA (~2 GB) — Pi 4 không có GPU:
+
+```bash
+~/mqtt-env/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+~/mqtt-env/bin/pip install ultralytics
+```
+
+Copy model sang Pi (cùng thư mục với file `.py`):
+
+```bash
+# trên laptop
+scp model.pt pi@<IP_PI>:~/
+```
+
+Kiểm tra model load được trên Pi:
+
+```bash
+~/mqtt-env/bin/python -c "
+from ultralytics import YOLO
+m = YOLO('model.pt')
+print(m.names, m.task)
+"
+```
+
+Kỳ vọng: `{0: 'person'} detect`.
+
+> **Dung lượng:** torch CPU-only + ultralytics ~ 500 MB, `model.pt` 6 MB.
+> Pi 4 (4 GB RAM) chạy YOLOv8n ở `imgsz=320` khoảng **1–3 FPS** — đủ để demo.
+> Nếu Pi hết RAM, xem phương án ONNX ở mục 2.6.
+
+### 2.6. Phương án thay thế: ONNX (khi Pi hết RAM)
+
+`torch` nặng và ngốn RAM. Cách nhẹ hơn: export model sang ONNX **trên laptop**,
+rồi chạy `onnxruntime` trên Pi (không cần torch, không cần ultralytics):
+
+```bash
+# trên laptop (trong thư mục có model.pt)
+pip install ultralytics onnx onnxruntime
+yolo export model=model.pt format=onnx imgsz=320
+```
+
+Kết quả: `model.onnx` (~6 MB) — copy sang Pi cùng với `.py`.
+
+```bash
+# trên Pi
+~/mqtt-env/bin/pip install onnxruntime opencv-python
+```
+
+Trong `pi_detection_client.py`, thay phần dùng `ultralytics` bằng
+`onnxruntime.InferenceSession` + `YOLOv8` post-processing (NMS). Việc này giảm
+RAM khoảng 3–4 lần và tăng FPS gấp 2–3 lần, đổi lại phải tự viết NMS.
 
 ### 2.4. Test nhanh 2 cảm biến (không qua MQTT)
 
@@ -139,6 +196,21 @@ Cần **3 terminal**:
 ~/mqtt-env/bin/python ~/pi_camera_client.py
 ```
 
+### Terminal 1' — trên Pi: nhận diện người *(thay cho Terminal 1)*
+```bash
+~/mqtt-env/bin/python ~/pi_detection_client.py
+```
+
+Console sẽ in mỗi lần gửi:
+```
+[2026-10-21T18:35:22] 2 người | 531 ms | 0.7 FPS | ảnh 46.6 KB
+```
+
+> ⚠️ `pi_detection_client.py` và `pi_camera_client.py` **cùng mở `/dev/video0`** →
+> không chạy đồng thời được. Chọn một trong hai.
+> `pi_detection_client.py` làm thêm: vẽ khung người lên ảnh + gửi JSON kết quả
+> trên topic `nha/pi01/detection` (dashboard vẫn hiện ảnh bình thường).
+
 ### Terminal 2 — trên Pi: cảm biến
 ```bash
 ~/mqtt-env/bin/python ~/pi_sensor_client.py
@@ -156,9 +228,10 @@ streamlit run server_app.py
 
 Mở trình duyệt → địa chỉ Streamlit hiện ra (mặc định `http://localhost:8501`).
 
-> Camera và cảm biến chạy **song song** được, không xung đột: hai `client_id` MQTT khác nhau
-> (`pi01_camera` / `pi01_sensor`) và hai topic trạng thái tách riêng
-> (`nha/pi01/status` / `nha/pi01/sensor_status`).
+> Camera (hoặc nhận diện) và cảm biến chạy **song song** được, không xung đột: hai
+> `client_id` MQTT khác nhau (`pi01_camera` / `pi01_sensor`) và hai topic trạng thái
+> tách riêng (`nha/pi01/status` / `nha/pi01/sensor_status`).
+> Client nhận diện dùng `client_id` riêng là `pi01_detection`.
 
 ---
 
@@ -202,6 +275,7 @@ timestamp,device_id,temperature_c,humidity_pct,lux
 |---|---|---|
 | `nha/pi01/image` | Pi → broker | ảnh JPEG (camera) |
 | `nha/pi01/sensor` | Pi → broker | JSON cảm biến, mỗi 10s |
+| `nha/pi01/detection` | Pi → broker | JSON kết quả nhận diện người |
 | `nha/pi01/status` | Pi → broker | `online`/`offline` (camera, retained) |
 | `nha/pi01/sensor_status` | Pi → broker | `online`/`offline` (cảm biến, retained) |
 
@@ -211,9 +285,17 @@ Payload cảm biến:
  "temperature_c": 26.5, "humidity_pct": 58.0, "lux": 312.5}
 ```
 
+Payload nhận diện (`nha/pi01/detection`):
+```json
+{"timestamp": "2026-10-21T09:00:00", "device_id": "pi01", "count": 2,
+ "boxes": [{"x1": 84, "y1": 63, "x2": 147, "y2": 261, "conf": 0.755}],
+ "inference_ms": 531.0, "fps": 0.74, "imgsz": 320, "model": "yolov8n"}
+```
+
 Xem JSON thô trên laptop:
 ```bash
 mosquitto_sub -h localhost -u pi01 -P 501005 -t 'nha/+/sensor' -v
+mosquitto_sub -h localhost -u pi01 -P 501005 -t 'nha/+/detection' -v
 ```
 
 ---
@@ -251,6 +333,12 @@ Muốn làm cho cả 2 chuỗi (nhiệt độ + lux) thì gọi `normalize()` ri
 | Metric "Cảm biến" hiện `chưa rõ` | chưa có retained status | client chưa kết nối broker → kiểm tra mạng |
 | Laptop ghi CSV nhiều hơn Pi | đang ghi trùng | kiểm tra `client_id` và topic trong code |
 | Ảnh không lên | sai `CAM_INDEX` | thử 1, 2... trong `pi_camera_client.py` |
+| `pi_detection_client.py` báo "KHÔNG TÌM THẤY model" | chưa copy `model.pt` sang Pi | `scp model.pt pi@<IP_PI>:~/` (xem mục 2.5) |
+| `ImportError: libopenblas` / `ImportError: libc10` khi import torch | cài thiếu `libopenblas` | `sudo apt install -y libopenblas-dev libopenblas0` |
+| `pip install ultralytics` tải 2 GB | kéo bản torch CUDA | cài torch CPU-only trước (mục 2.5) |
+| Pi bị OOM khi chạy detection | RAM 4 GB không đủ cho torch | export ONNX + `onnxruntime` (mục 2.6), hoặc giảm `IMGSZ` xuống 256 |
+| Hai client camera chạy cùng lúc, ảnh đứng | tranh `/dev/video0` | chỉ chạy một trong `pi_camera_client.py` / `pi_detection_client.py` |
+| Dashboard không hiện ảnh có khung | đang chạy `pi_camera_client.py` | chạy `pi_detection_client.py` (ảnh đã vẽ khung) |
 
 ---
 
@@ -260,10 +348,11 @@ Muốn làm cho cả 2 chuỗi (nhiệt độ + lux) thì gọi `normalize()` ri
 |---|---|---|
 | `pi_sensor_client.py` | Raspberry Pi | đọc DHT11 + BH1750, ghi CSV trên thẻ nhớ, publish MQTT |
 | `pi_camera_client.py` | Raspberry Pi | chụp ảnh webcam, publish MQTT |
+| `pi_detection_client.py` | Raspberry Pi | chụp ảnh → YOLOv8n dò người → vẽ khung → publish ảnh + JSON |
 | `server_app.py` | Laptop | nhận ảnh + cảm biến, lưu CSV, dashboard Streamlit |
 | `requirements-pi.txt` | Raspberry Pi | thư viện cài trong `~/mqtt-env` |
 | `requirements.txt` | Laptop | thư viện cho toàn bộ notebook + server |
-| `model.pt` | Laptop | checkpoint YOLOv8n đã huấn luyện (ultralytics 8.0.166, task `detect`, 1 class: `person`) |
+| `model.pt` | Laptop + copy sang Pi | checkpoint YOLOv8n đã huấn luyện (ultralytics 8.0.166, task `detect`, 1 class: `person`) |
 | `time_series_data_preprocessing.ipynb` | Laptop | notebook Chapter 12 — nối với CSV cảm biến (mục 6) |
 
 Các notebook còn lại (`Video_to_frames`, `data_augmentation`, `audio_processing`,
