@@ -39,6 +39,9 @@ pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
 pip install -r requirements-pi.txt
 ```
 
+> ⚠️ Nếu `pip install -r requirements-pi.txt` lỗi ở bước build `lgpio`
+> (`swig failed` hoặc `cannot find -llgpio`) → xem mục **2.4 — Bẫy `lgpio`**.
+
 **Trên laptop:**
 
 ```bash
@@ -152,6 +155,63 @@ python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
 Kỳ vọng: `2.x.x False`.
+
+#### ⚠️ Bẫy `lgpio` trên Raspberry Pi OS Trixie (Python 3.13)
+
+`adafruit-blinka` kéo về **`lgpio`** — một C-extension. Upstream `lgpio` trên PyPI chỉ
+có wheel prebuilt cho **cp39–cp312**. RPi OS Trixie dùng **Python 3.13** → không có
+wheel → pip phải **compile từ source**, cần `swig` + `gcc` + `liblgpio`.
+
+Lỗi thường gặp:
+
+| Lỗi | Nguyên nhân |
+|---|---|
+| `error: command 'swig' failed: No such file or directory` | thiếu `swig` |
+| `/usr/bin/ld: cannot find -llgpio: No such file or directory` | thiếu thư viện C `liblgpio` |
+| `pip install lgpio` xong nhưng `import lgpio` lỗi | pip lấy nhầm wheel rỗng `lgpio-0.0.0.2` từ piwheels |
+
+**Cách 1 — dùng wheel prebuilt của Adafruit (khuyến nghị, không cần compile):**
+
+```bash
+python3 --version     # xem 3.13 hay 3.14 để chọn đúng wheel
+source venv/bin/activate
+
+# Python 3.13:
+pip install https://github.com/adafruit/lgpio-python-wheels/raw/main/wheels/lgpio-0.2.2.0-cp313-cp313-linux_aarch64.whl
+# Python 3.14 → đổi cp313 thành cp314
+
+pip install -r requirements-pi.txt
+```
+
+Wheel này statically linked, tự chứa đủ — không cần `swig`/`gcc`/`liblgpio`.
+
+**Cách 2 — build từ source:**
+
+```bash
+sudo apt install -y swig build-essential python3-dev liblgpio-dev
+source venv/bin/activate
+pip install -r requirements-pi.txt
+```
+
+**Cách 3 — dùng bản có sẵn của RPi OS** (Trixie đã build `python3-lgpio` cho 3.13):
+
+```bash
+sudo apt install -y python3-lgpio
+rm -rf venv
+python3 -m venv --system-site-packages venv
+source venv/bin/activate
+pip install -r requirements-pi.txt
+```
+
+**Kiểm tra sau khi cài (quan trọng):**
+
+```bash
+pip show lgpio | head -2
+python -c "import lgpio; print(lgpio.__version__, lgpio.__file__)"
+```
+
+Kỳ vọng phiên bản **`0.2.2.0`**. Nếu ra `0.0.0.2` → pip lấy nhầm wheel rỗng của
+piwheels → cài lại bằng Cách 1.
 
 ### 2.5. Kiểm tra BH1750 trên bus I2C
 
@@ -432,6 +492,9 @@ Muốn làm cho cả 2 chuỗi (nhiệt độ + lux) thì gọi `normalize()` ri
 | `pip install ultralytics` tải 2 GB | kéo bản torch CUDA | cài torch CPU-only trước (mục 2.4) |
 | Pi bị OOM khi chạy detection | RAM 4 GB không đủ cho torch | export ONNX + `onnxruntime` (mục 2.8), hoặc giảm `IMGSZ` xuống 256 |
 | `ModuleNotFoundError` khi chạy script | chưa kích hoạt venv | `source venv/bin/activate` (mục 2.3) |
+| `Building wheel for lgpio ... error: command 'swig' failed` | thiếu `swig` để build C-extension `lgpio` | xem mục 2.4 "Bẫy `lgpio`" — Cách 1 (wheel prebuilt) là nhanh nhất |
+| `ld: cannot find -llgpio: No such file or directory` | thiếu thư viện C `liblgpio` | `sudo apt install -y liblgpio-dev` hoặc dùng wheel prebuilt (mục 2.4) |
+| `import lgpio` lỗi dù `pip install lgpio` báo thành công | pip lấy wheel rỗng `lgpio-0.0.0.2` của piwheels | cài lại bằng wheel prebuilt của Adafruit (mục 2.4) |
 | `git clone` lỗi `Permission denied` | clone vào nhầm chỗ hệ thống | clone về `~/chapter12` (nhà của user `pi`) |
 | Hai client camera chạy cùng lúc, ảnh đứng | tranh `/dev/video0` | chỉ chạy một trong `pi_camera_client.py` / `pi_detection_client.py` |
 | Dashboard không hiện ảnh có khung | đang chạy `pi_camera_client.py` | chạy `pi_detection_client.py` (ảnh đã vẽ khung) |
