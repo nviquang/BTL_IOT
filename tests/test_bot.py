@@ -23,6 +23,12 @@ CFG = dataclasses.replace(
     Config(), secrets=Secrets(telegram_token=TOKEN, allowed_chat_ids=frozenset({CHAT, 222})))
 
 
+@pytest.fixture(autouse=True)
+def clock_synced(monkeypatch):
+    """Mặc định đồng hồ Pi đã đồng bộ NTP (máy test không có timedatectl)."""
+    monkeypatch.setattr(bot, "is_clock_synced", lambda: True)
+
+
 @pytest.fixture
 def conn(tmp_path):
     c = connect(tmp_path / "aiot.db")
@@ -393,10 +399,10 @@ class FakeClient:
 def test_offset_persisted_and_advanced_even_on_handler_error(conn, monkeypatch):
     real = bot.handle_update
 
-    def flaky(update, conn_, cfg, now):
+    def flaky(update, conn_, cfg, now, **kw):
         if update["update_id"] == 10:
             raise RuntimeError("handler hỏng")
-        return real(update, conn_, cfg, now)
+        return real(update, conn_, cfg, now, **kw)
 
     monkeypatch.setattr(bot, "handle_update", flaky)
     client = FakeClient([[upd("/fan on", uid=10), upd("/status", uid=11)], []])
@@ -415,7 +421,7 @@ def test_poll_once_reply_send_failure_does_not_block(conn):
 
 
 def test_poll_once_rolls_back_partial_writes_on_handler_error(conn, monkeypatch):
-    def broken(update, conn_, cfg, now):
+    def broken(update, conn_, cfg, now, **kw):
         conn_.execute("INSERT INTO events (ts, kind, detail) VALUES (1, 'x', 'y')")
         raise RuntimeError("hỏng giữa chừng")
 
@@ -423,6 +429,99 @@ def test_poll_once_rolls_back_partial_writes_on_handler_error(conn, monkeypatch)
     bot.poll_once(conn, FakeClient([[upd("/fan on", uid=1)]]), CFG, NOW)
     assert conn.execute("SELECT count(*) FROM events WHERE kind = 'x'").fetchone()[0] == 0
     assert get_state(conn, "telegram_offset") == "2"
+
+
+def test_poll_once_commits_command_and_offset_together(conn, tmp_path, monkeypatch):
+    # Lỗi khi ghi offset: lệnh (pending_override + event) bị huỷ cùng, không có trạng thái
+    # "đã áp dụng lệnh nhưng chưa ghi offset" (crash ở đó sẽ áp dụng lại lệnh).
+    real_set_state = bot.set_state
+    calls = {"n": 0}
+
+    def failing_set_state(conn_, key, value, *, commit=True):
+        if key == bot.OFFSET_KEY and calls["n"] == 0:
+            calls["n"] += 1
+            raise RuntimeError("đĩa đầy")
+        return real_set_state(conn_, key, value, commit=commit)
+
+    monkeypatch.setattr(bot, "set_state", failing_set_state)
+    bot.poll_once(conn, FakeClient([[upd("/fan on", uid=20)]]), CFG, NOW)
+    assert pending(conn) is None
+    assert command_events(conn) == []
+    assert get_state(conn, "telegram_offset") == "21"      # vẫn tiến offset
+
+
+def test_handle_update_commit_false_leaves_transaction_open(conn, tmp_path):
+    other = connect(tmp_path / "aiot.db")
+    try:
+        bot.handle_update(upd("/fan on", uid=1), conn, CFG, NOW, commit=False)
+        assert get_state(other, "pending_override") is None   # chưa commit
+        conn.commit()
+        assert get_state(other, "pending_override") is not None
+    finally:
+        other.close()
+
+
+def test_future_dated_command_rejected(conn):
+    future = NOW + CFG.telegram.stale_command_s + 1
+    for text in ("/fan on", "/mode auto", "/quiet 22 6"):
+        reply = handle(conn, text, date=future)
+        assert "bỏ" in reply.lower()
+    assert pending(conn) is None
+    assert get_state(conn, "quiet_hours") is None
+    handle(conn, "/fan on", date=NOW + CFG.telegram.stale_command_s)   # đúng ngưỡng: áp dụng
+    assert pending(conn)["fan"] is True
+
+
+def test_control_refused_while_clock_unsynced(conn, monkeypatch):
+    monkeypatch.setattr(bot, "is_clock_synced", lambda: False)
+    for text in ("/fan on", "/mode manual", "/quiet 22 6"):
+        reply = handle(conn, text)
+        assert "đồng bộ" in reply and "thử lại" in reply.lower()
+    assert pending(conn) is None
+    assert get_state(conn, "quiet_hours") is None
+    assert all("not synced" in d for d in command_events(conn))
+    for text in ("/now", "/status", "/help", "/forecast", "/report"):
+        assert handle(conn, text)
+    # injection trực tiếp cũng được tôn trọng
+    reply = bot.handle_update(upd("/fan on"), conn, CFG, NOW, clock_synced=lambda: True)
+    assert pending(conn)["fan"] is True and "bật" in reply
+
+
+def test_poll_once_passes_clock_check(conn):
+    client = FakeClient([[upd("/fan on", uid=5)]])
+    bot.poll_once(conn, client, CFG, NOW, clock_synced=lambda: False)
+    assert pending(conn) is None
+    assert "đồng bộ" in client.sent[0][1]
+    assert get_state(conn, "telegram_offset") == "6"
+
+
+class FakeStop:
+    """Event giả: ghi lại các lần chờ, tự dừng sau n lần."""
+
+    def __init__(self, n):
+        self.n = n
+        self.waits = []
+
+    def is_set(self):
+        return len(self.waits) >= self.n
+
+    def wait(self, t):
+        self.waits.append(t)
+        return self.is_set()
+
+
+def test_polling_backoff_capped_at_60s(conn):
+    client = FakeClient([TelegramError("mạng lỗi")] * 10)
+    stop = FakeStop(10)
+    bot.run_polling(conn, client, CFG, stop)
+    assert stop.waits[:5] == [5, 10, 20, 40, 60]
+    assert max(stop.waits) == 60 == bot.POLL_BACKOFF_MAX_S
+
+
+def test_polling_honors_retry_after(conn):
+    stop = FakeStop(1)
+    bot.run_polling(conn, FakeClient([TelegramError("x", status=429, retry_after=9)]), CFG, stop)
+    assert stop.waits == [9]
 
 
 # ---------------- gửi outbox ----------------

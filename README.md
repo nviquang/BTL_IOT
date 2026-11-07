@@ -369,7 +369,9 @@ gửi mọi tin trong bảng `outbox` (cảnh báo của controller, gửi bù k
 chạm GPIO: `/fan`, `/mode` chỉ ghi khoá `pending_override` để controller áp dụng trong
 vòng `loop_s` giây. Lệnh: `/now`, `/status`, `/fan on|off`, `/mode auto|manual`,
 `/quiet 22 6`, `/help`; `/forecast` và `/report` trả lời "chưa sẵn sàng" cho tới khi có dự báo
-và báo cáo sáng. Lệnh điều khiển gửi quá 120 s trước (ví dụ lúc mất mạng) bị bỏ.
+và báo cáo sáng. Lệnh điều khiển lệch quá 120 s so với đồng hồ Pi (ví dụ gửi lúc mất mạng)
+bị bỏ; khi đồng hồ Pi chưa đồng bộ NTP (vừa khởi động lại, chưa có mạng; Pi không có RTC)
+thì lệnh điều khiển bị từ chối, lệnh chỉ đọc vẫn trả lời.
 
 **Bước 1 — Tạo bot:** trong Telegram nhắn `@BotFather` → `/newbot` → đặt tên → nhận token
 dạng `123456789:AA...`. Giữ token như mật khẩu; lộ thì `/revoke` trong BotFather để đổi.

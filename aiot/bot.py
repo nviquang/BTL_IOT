@@ -10,10 +10,13 @@ Dịch vụ bot Telegram: long polling nhận lệnh, gửi tin trong outbox (g�
 - /quiet ghi khoá 'quiet_hours' ("start,end") mà notifier dùng.
 - Mọi lệnh điều khiển (/fan, /mode, /quiet) được ghi vào events (kind 'command',
   detail = văn bản lệnh + chat id), cùng transaction với lệnh ghi state.
-- Lệnh điều khiển gửi quá telegram.stale_command_s giây trước (thường do mất mạng rồi
-  Telegram giao lại) bị bỏ. Lệnh chỉ đọc luôn được trả lời.
-- Offset getUpdates lưu ở khoá 'telegram_offset' và luôn tăng, kể cả khi xử lý một update
-  bị lỗi, để một tin hỏng không làm bot lặp lại mãi.
+- Lệnh điều khiển lệch quá telegram.stale_command_s giây so với đồng hồ Pi (cũ hoặc "ở
+  tương lai") bị bỏ. Pi không có RTC, nên khi đồng hồ chưa đồng bộ NTP thì lệnh điều
+  khiển bị từ chối hẳn. Lệnh chỉ đọc luôn được trả lời.
+- Offset getUpdates lưu ở khoá 'telegram_offset', commit cùng transaction với thay đổi
+  của lệnh (crash giữa chừng không áp dụng lại lệnh), và luôn tăng kể cả khi xử lý một
+  update bị lỗi, để một tin hỏng không làm bot lặp lại mãi.
+- Lỗi mạng khi long polling: chờ lâu dần nhưng tối đa POLL_BACKOFF_MAX_S (60 s).
 - Hai luồng trong cùng tiến trình, mỗi luồng một kết nối SQLite và một TelegramClient:
   long polling (trả lời lệnh) và gửi outbox (mỗi DELIVERY_INTERVAL_S giây; lỗi mạng thì
   giữ tin và chờ lâu dần; HTTP 429 thì chờ retry_after).
@@ -35,6 +38,7 @@ from pathlib import Path
 
 from aiot.aqi import classify
 from aiot.control import ControlState, fan_on, override_active
+from aiot.collector import is_clock_synced
 from aiot.db import connect, get_state, init_schema, log_event, set_state
 from aiot.notifier import collapse_stale_alerts, mark_sent, pending_messages, quiet_window
 from aiot.telegram_api import TelegramClient, TelegramError, install_log_redaction
@@ -49,6 +53,7 @@ NOW_MAX_AGE_S = 300                    # /now: mẫu cũ hơn 5 phút coi như c
 DELIVERY_INTERVAL_S = 5
 BACKOFF_MIN_S = 5
 BACKOFF_MAX_S = 300
+POLL_BACKOFF_MAX_S = 60                # lệnh gửi ngay khi có mạng lại không bị chờ tới quá cũ
 PERMANENT_STATUSES = frozenset({400, 403})   # chat không tồn tại / chặn bot: bỏ chat đó
 
 HELP = ("Các lệnh:\n"
@@ -186,15 +191,19 @@ def cmd_help(conn, cfg, now, args):
 
 
 # ---------------- lệnh điều khiển ----------------
-def _apply_control(conn, now, chat_id, text, writes):
-    """Ghi các khoá state và sự kiện 'command' trong MỘT transaction."""
+def _apply_control(conn, now, ctx, writes):
+    """Ghi các khoá state và sự kiện 'command' trong MỘT transaction.
+    ctx["commit"] False: người gọi (poll_once) commit cùng offset."""
     try:
         for key, value in writes:
             set_state(conn, key, value, commit=False)
-        log_event(conn, now, "command", f"{text.strip()[:200]} chat={chat_id}", commit=False)
-        conn.commit()
+        log_event(conn, now, "command", f"{ctx['text'].strip()[:200]} chat={ctx['chat_id']}",
+                  commit=False)
+        if ctx["commit"]:
+            conn.commit()
     except BaseException:
-        conn.rollback()
+        if ctx["commit"]:
+            conn.rollback()
         raise
 
 
@@ -211,7 +220,7 @@ def cmd_fan(conn, cfg, now, args, ctx):
         return USAGE_FAN
     on = args[0] == "on"
     ttl = cfg.control.override_ttl_s
-    _apply_control(conn, now, ctx["chat_id"], ctx["text"],
+    _apply_control(conn, now, ctx,
                    [(PENDING_KEY, _pending_json(on, ctx["update_id"], ttl))])
     return (f"Đã gửi lệnh {_on_off(on)} quạt thủ công. Bộ điều khiển áp dụng trong khoảng "
             f"{cfg.control.loop_s} giây; ghi đè có hiệu lực {_fmt_age(ttl)} "
@@ -222,14 +231,14 @@ def cmd_mode(conn, cfg, now, args, ctx):
     if len(args) != 1 or args[0] not in ("auto", "manual"):
         return USAGE_MODE
     if args[0] == "auto":
-        _apply_control(conn, now, ctx["chat_id"], ctx["text"],
+        _apply_control(conn, now, ctx,
                        [(PENDING_KEY, _pending_json(None, ctx["update_id"]))])
         return (f"Đã gửi lệnh về chế độ tự động: quạt theo luật PM2.5 trong khoảng "
                 f"{cfg.control.loop_s} giây.")
     st, _ = _control_state(conn)
     on = fan_on(st, now) if st is not None else False
     ttl = cfg.control.override_ttl_s
-    _apply_control(conn, now, ctx["chat_id"], ctx["text"],
+    _apply_control(conn, now, ctx,
                    [(PENDING_KEY, _pending_json(on, ctx["update_id"], ttl))])
     return (f"Đã chuyển sang thủ công: giữ quạt đang {_on_off(on)} trong {_fmt_age(ttl)} "
             f"(tới {_fmt_time(now + ttl)}). Gửi /fan on|off để đổi, /mode auto để về tự động.")
@@ -241,7 +250,7 @@ def cmd_quiet(conn, cfg, now, args, ctx):
     start, end = int(args[0]), int(args[1])
     if not (0 <= start < 24 and 0 <= end < 24):
         return USAGE_QUIET
-    _apply_control(conn, now, ctx["chat_id"], ctx["text"], [(QUIET_KEY, f"{start},{end}")])
+    _apply_control(conn, now, ctx, [(QUIET_KEY, f"{start},{end}")])
     if start == end:
         return "Đã tắt giờ yên lặng: cảnh báo được gửi mọi lúc."
     return (f"Đã đặt giờ yên lặng từ {start}h tới {end}h. Trong giờ này chỉ cảnh báo "
@@ -263,17 +272,20 @@ CONTROL = {
 }
 
 
-def handle_update(update, conn, cfg, now):
+def handle_update(update, conn, cfg, now, *, clock_synced=None, commit=True):
     """Xử lý một update của Telegram. Trả về văn bản trả lời, hoặc None nếu không trả lời
-    (chat không được phép, không phải tin chữ)."""
+    (chat không được phép, không phải tin chữ).
+
+    clock_synced: hàm () -> bool, mặc định aiot.collector.is_clock_synced. Pi không có
+    RTC: khi đồng hồ chưa đồng bộ NTP thì không so được tuổi lệnh, nên lệnh điều khiển
+    bị từ chối. commit False: không commit (poll_once commit cùng offset)."""
     now = int(now)
     message = update.get("message") if isinstance(update, dict) else None
     if not isinstance(message, dict):
         return None
     chat = message.get("chat")
     chat_id = chat.get("id") if isinstance(chat, dict) else None
-    if not isinstance(chat_id, int) or isinstance(chat_id, bool) \
-            or chat_id not in cfg.secrets.allowed_chat_ids:
+    if not isinstance(chat_id, int) or isinstance(chat_id, bool)             or chat_id not in cfg.secrets.allowed_chat_ids:
         log.debug("Bỏ qua update %s từ chat không được phép", update.get("update_id"))
         return None
     text = message.get("text")
@@ -285,15 +297,30 @@ def handle_update(update, conn, cfg, now):
     args = [p.lower() for p in parts[1:]]
 
     if command in CONTROL:
+        detail = f"{text.strip()[:200]} chat={chat_id}"
+        synced = (clock_synced if clock_synced is not None else is_clock_synced)()
+        if not synced:
+            log.info("Bỏ lệnh %s từ chat %s: đồng hồ Pi chưa đồng bộ NTP", command, chat_id)
+            log_event(conn, now, "command", f"{detail} dropped: clock not synced", commit=commit)
+            return (f"Chưa thực hiện lệnh {command}: đồng hồ của Pi chưa đồng bộ (vừa khởi động "
+                    f"lại hoặc chưa có mạng), nên không kiểm tra được lệnh có cũ không. "
+                    f"Thử lại sau vài phút.")
         stale_s = cfg.telegram.stale_command_s
         date = message.get("date")
-        if not isinstance(date, int) or now - date > stale_s:
-            age = f"cách đây {_fmt_age(now - date)}" if isinstance(date, int) else "không rõ giờ"
+        # abs(): lệnh "ở tương lai" cũng bị bỏ (đồng hồ lệch), không coi là mới
+        if not isinstance(date, int) or isinstance(date, bool) or abs(now - date) > stale_s:
+            if not isinstance(date, int) or isinstance(date, bool):
+                age = "không rõ giờ"
+            elif date > now:
+                age = f"với giờ lệch {_fmt_age(date - now)} so với đồng hồ Pi"
+            else:
+                age = f"cách đây {_fmt_age(now - date)}"
             log.info("Bỏ lệnh cũ %s từ chat %s (%s)", command, chat_id, age)
-            log_event(conn, now, "command", f"{text.strip()[:200]} chat={chat_id} dropped: stale")
+            log_event(conn, now, "command", f"{detail} dropped: stale", commit=commit)
             return (f"Đã bỏ lệnh {command}: lệnh gửi {age}, quá {stale_s} giây "
                     f"(có thể do mất mạng). Gửi lại nếu vẫn cần.")
-        ctx = {"chat_id": chat_id, "text": text, "update_id": update.get("update_id")}
+        ctx = {"chat_id": chat_id, "text": text, "update_id": update.get("update_id"),
+               "commit": commit}
         log.info("Lệnh %s từ chat %s", text.strip()[:100], chat_id)
         return CONTROL[command](conn, cfg, now, args, ctx)
 
@@ -315,25 +342,36 @@ def _load_offset(conn):
         return None
 
 
-def poll_once(conn, client, cfg, now=None):
+def poll_once(conn, client, cfg, now=None, *, clock_synced=None):
     """Một lần getUpdates rồi xử lý từng update. now None: dùng giờ hiện tại sau khi nhận.
-    Offset được lưu sau mỗi update, kể cả khi xử lý lỗi; trả lời gửi lỗi chỉ ghi log."""
+
+    Mỗi update: thay đổi của lệnh, sự kiện 'command' và offset mới được commit MỘT lần,
+    nên crash giữa chừng không làm lệnh bị áp dụng lại. Xử lý lỗi thì rollback rồi vẫn
+    ghi offset, để một tin hỏng không làm bot lặp lại mãi. Trả lời gửi lỗi chỉ ghi log."""
     offset = _load_offset(conn)
     updates = client.get_updates(offset, cfg.telegram.poll_timeout_s)
     for update in updates:
         if not isinstance(update, dict):
             continue
         update_id = update.get("update_id")
+        new_offset = None
+        if isinstance(update_id, int) and not isinstance(update_id, bool)                 and (offset is None or update_id + 1 > offset):
+            new_offset = update_id + 1
         t = int(time.time()) if now is None else int(now)
         reply = None
         try:
-            reply = handle_update(update, conn, cfg, t)
+            reply = handle_update(update, conn, cfg, t, clock_synced=clock_synced, commit=False)
+            if new_offset is not None:
+                set_state(conn, OFFSET_KEY, new_offset, commit=False)
+            conn.commit()
         except Exception:
             log.exception("Lỗi khi xử lý update %s, bỏ qua", update_id)
             conn.rollback()
-        if isinstance(update_id, int) and (offset is None or update_id + 1 > offset):
-            offset = update_id + 1
-            set_state(conn, OFFSET_KEY, offset)
+            reply = None
+            if new_offset is not None:
+                set_state(conn, OFFSET_KEY, new_offset)
+        if new_offset is not None:
+            offset = new_offset
         if reply:
             chat_id = update["message"]["chat"]["id"]
             try:
@@ -342,8 +380,8 @@ def poll_once(conn, client, cfg, now=None):
                 log.warning("Không gửi được trả lời tới chat %s: %s", chat_id, e)
 
 
-def _next_backoff(current):
-    return min(max(current * 2, BACKOFF_MIN_S), BACKOFF_MAX_S)
+def _next_backoff(current, maximum=BACKOFF_MAX_S):
+    return min(max(current * 2, BACKOFF_MIN_S), maximum)
 
 
 def run_polling(conn, client, cfg, stop):
@@ -356,7 +394,7 @@ def run_polling(conn, client, cfg, stop):
             if e.retry_after:
                 wait = e.retry_after
             else:
-                backoff = _next_backoff(backoff)
+                backoff = _next_backoff(backoff, POLL_BACKOFF_MAX_S)
                 wait = backoff
             log.warning("getUpdates lỗi: %s; thử lại sau %s giây", e, wait)
             stop.wait(wait)
