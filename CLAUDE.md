@@ -120,22 +120,36 @@ CSV hiện tại trên cả Pi và laptop có đúng định dạng `timestamp,d
 - Laptop: `C:\mqtt\data\sensors.csv`
 - Topic MQTT: `nha/pi01/sensor`, `nha/pi01/sensor_status`, `nha/pi01/image`, `nha/pi01/detection`, `nha/pi01/status`
 
-Lược đồ SQLite dự kiến:
+Lược đồ SQLite (`aiot/db.py`, file DB dùng chung cho mọi dịch vụ, bật WAL và `busy_timeout=5000`). Mẫu thô 10 giây vào `raw_readings`, được gộp thành `readings` theo cửa sổ 5 phút căn theo bội số 300 giây (`ts` là đầu cửa sổ):
 
 ```sql
-CREATE TABLE readings (            -- trung bình 5 phút
+CREATE TABLE raw_readings (        -- mẫu thô 10 giây, xoá dần bằng purge_raw
+  ts INTEGER PRIMARY KEY,          -- trùng ts thì giữ bản ghi đầu
+  pm1 REAL, pm25 REAL, pm10 REAL,
+  temp REAL, hum REAL, lux REAL,   -- NULL khi đọc lỗi
+  mq135_do INTEGER,
+  clock_synced INTEGER NOT NULL    -- 0 = đồng hồ chưa đồng bộ NTP
+);
+CREATE TABLE readings (            -- trung bình 5 phút; cửa sổ không có mẫu thì không có dòng
   ts INTEGER PRIMARY KEY,
   pm1 REAL, pm25 REAL, pm10 REAL,
   temp REAL, hum REAL, lux REAL,
-  mq135_do INTEGER,                -- 0 = vượt ngưỡng, 1 = chưa vượt
-  valid INTEGER DEFAULT 1
+  mq135_do INTEGER,                -- 0 = vượt ngưỡng, 1 = chưa vượt; 0 nếu có mẫu nào bằng 0
+  valid INTEGER DEFAULT 1          -- 1 khi >= nửa số mẫu PM2.5 hợp lệ và đồng hồ đã đồng bộ
 );
 CREATE TABLE forecasts (
   made_at INTEGER, horizon_h INTEGER, pm25_pred REAL,
+  model TEXT NOT NULL,             -- 'lstm', 'persistence', ...
   PRIMARY KEY (made_at, horizon_h)
 );
 CREATE TABLE events (              -- 'fan_on', 'fan_off', 'override', 'sensor_fault'...
   ts INTEGER, kind TEXT, detail TEXT
+);                                 -- có chỉ mục theo ts
+CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE outbox (              -- tin Telegram chờ gửi, gửi bù khi có mạng
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at INTEGER NOT NULL, kind TEXT NOT NULL,
+  text TEXT NOT NULL, sent_at INTEGER
 );
 ```
 
