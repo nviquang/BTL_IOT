@@ -247,6 +247,15 @@ def test_prepare_input_uses_left_context_for_leading_gap():
     assert x[0] == x[1] == 8.0
 
 
+def test_prepare_input_rejects_gap_straddling_window_start():
+    values = [float(i) for i in range(30)]
+    values[5] = values[6] = values[7] = None       # 1 giờ trước cửa sổ + 2 giờ đầu cửa sổ
+    assert prepare_input(series_of(values)) is None
+    values[5] = 5.0                                # chỉ còn 2 giờ trống: vẫn nội suy được
+    x = prepare_input(series_of(values))
+    assert x[0] == pytest.approx(6.0) and x[1] == pytest.approx(7.0)
+
+
 def test_negative_predictions_clipped_to_zero(conn):
     fill(conn, LAST - 23 * H, LAST, lambda t: 20.0)
     model, preds = run_forecast(conn, NOW, predictor=lambda x: [-3.0, 0.0, 5.0, -0.1, 1.0, 2.0])

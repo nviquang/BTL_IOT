@@ -92,21 +92,22 @@ def prepare_input(series: Series, hours: int = INPUT_HOURS, max_gap_h: int = 2,
     Khoảng trống tối đa max_gap_h giờ liên tiếp được nội suy tuyến tính. Khoảng trống ở đầu
     cửa sổ được nội suy từ điểm hợp lệ bên trái nếu có trong max_gap_h giờ ngay trước cửa sổ
     (series dài hơn `hours`), ngược lại lấy giá trị hợp lệ đầu tiên.
-    None khi: chưa đủ `hours` điểm, có khoảng trống dài hơn, ít hơn min_valid điểm hợp lệ,
-    hoặc điểm cuối bị thiếu (không có điểm bên phải để nội suy)."""
+    None khi: chưa đủ `hours` điểm, có khoảng trống dài hơn (tính cả phần ngữ cảnh bên trái,
+    nên khoảng trống vắt qua đầu cửa sổ cũng bị giới hạn max_gap_h), ít hơn min_valid điểm
+    hợp lệ, hoặc điểm cuối bị thiếu (không có điểm bên phải để nội suy)."""
     if len(series) < hours:
         return None
     values = [v for _, v in series[-hours:]]
     if values[-1] is None or sum(v is not None for v in values) < min_valid:
         return None
+    ext = [v for _, v in series[-(hours + max_gap_h):]]     # thêm ngữ cảnh bên trái
     run = 0
-    for v in values:
+    for v in ext:                   # cùng đoạn sẽ được nội suy bên dưới
         run = run + 1 if v is None else 0
         if run > max_gap_h:
             return None
 
     import numpy as np
-    ext = [v for _, v in series[-(hours + max_gap_h):]]     # thêm ngữ cảnh bên trái
     x = np.array([math.nan if v is None else float(v) for v in ext], dtype=float)
     known = ~np.isnan(x)
     idx = np.arange(len(x))
