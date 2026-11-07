@@ -17,9 +17,13 @@ Không thuộc hệ thống (đã loại khỏi thiết kế):
 | Mạch: DHT11, PMS7003, BH1750, MQ135 DO, relay + quạt | Đạt `test_all.py` ngày 04/11/2026 |
 | Thu thập DHT11 + BH1750 → CSV + MQTT → dashboard Streamlit | Có code (`pi_sensor_client.py`, `server_app.py`) |
 | Camera + nhận diện người YOLOv8n qua MQTT | Có code (`pi_camera_client.py`, `pi_detection_client.py`) |
-| Collector `aiot/collector.py`: DHT11, BH1750, PMS7003, MQ135 → SQLite `raw_readings` + CSV + MQTT, gộp 5 phút | Có code và test, chưa triển khai lên Pi (README mục 2.4a, unit `deploy/aiot-collector.service`) |
-| Điều khiển quạt tự động | Chưa có |
-| SQLite, dự báo LSTM, Gemini, Telegram | Chưa có, mới là kế hoạch |
+| Collector `aiot/collector.py`: 4 cảm biến → SQLite + CSV + MQTT, gộp 5 phút | Có code, đã chạy thử 75 s trên Pi ngày 07/11/2026, chưa cài dịch vụ (README 2.4a) |
+| Điều khiển quạt tự động `aiot/controller.py` | Có code, chưa thử trên mạch (README 2.4c) |
+| Bot Telegram, cảnh báo, báo cáo sáng, lời khuyên Gemini | Có code, chưa thử với bot thật và Gemini thật (README 2.4d, 2.4f) |
+| Dự báo PM2.5 mỗi giờ (đối chứng + LSTM) | Có code; LSTM đã huấn luyện/đánh giá trên dữ liệu CAMS công khai, chưa triển khai (README 2.4e, 2.4g) |
+| Nghiệm thu 7 ngày | Có `scripts/acceptance_report.py`; chưa đo, kết quả ghi ở `docs/nghiem_thu.md` |
+
+Việc còn lại theo thứ tự nằm ở mục "Việc cần làm trên Pi" trong `README.md`.
 
 ## Phần cứng
 
@@ -178,11 +182,13 @@ Thử khói chỉ dùng lượng nhỏ, nơi thoáng, có người trông. Quạ
 
 ## Cần chốt
 
-- Thang AQI (US EPA hay VN_AQI) và ngưỡng điều khiển cuối cùng
+Các mục có ghi "tạm" đã có giá trị mặc định trong `config.yaml`/code, nhóm vẫn cần xác nhận:
+
+- Thang AQI (US EPA hay VN_AQI) và ngưỡng điều khiển cuối cùng — tạm: US EPA 2024, ngưỡng như bảng trên (`control` trong `config.yaml`)
 - Vị trí đặt cảm biến, và một hay hai cảm biến PM
-- SQLite thay CSV hay dùng song song, và có giữ MQTT + dashboard + camera trong sản phẩm cuối không
-- Có dùng bit MQ135 cho cảnh báo hay điều khiển không (thiết kế hiện chỉ điều khiển theo PM2.5)
-- Model Gemini và số lần gọi mỗi ngày
+- SQLite thay CSV hay dùng song song, và có giữ MQTT + dashboard + camera trong sản phẩm cuối không — tạm: SQLite và CSV song song, collector vẫn gửi MQTT
+- Có dùng bit MQ135 cho cảnh báo hay điều khiển không — tạm: không, chỉ ghi lại; quạt chỉ theo PM2.5
+- Model Gemini và số lần gọi mỗi ngày — tạm: `gemini-3.5-flash-lite`, tối đa 3 lần/ngày
 - Mốc nộp bài và phân công
 
 ## Làm việc với Pi
