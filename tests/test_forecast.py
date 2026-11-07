@@ -241,7 +241,8 @@ def test_latest_forecast_incomplete_returns_none(conn):
 
 # ---------- chạy một lần ----------
 
-def test_main_exits_zero_without_data(tmp_path):
+def test_main_exits_zero_without_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(forecast, "is_clock_synced", lambda: True)
     db = tmp_path / "aiot.db"
     cfg = tmp_path / "config.yaml"
     cfg.write_text(f"db_path: {db.as_posix()}\n", encoding="utf-8")
@@ -249,3 +250,20 @@ def test_main_exits_zero_without_data(tmp_path):
     c = connect(db)
     assert c.execute("SELECT COUNT(*) FROM forecasts").fetchone()[0] == 0
     c.close()
+
+
+def test_main_skips_when_clock_not_synced(tmp_path, monkeypatch, caplog):
+    """Khởi động lại trước khi có NTP: không lập dự báo với giờ sai (có thể bị coi là mới)."""
+    db = tmp_path / "aiot.db"
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(f"db_path: {db.as_posix()}\n", encoding="utf-8")
+    called = []
+    monkeypatch.setattr(forecast, "is_clock_synced", lambda: False)
+    monkeypatch.setattr(forecast, "run_forecast", lambda *a, **kw: called.append(a))
+    with caplog.at_level(logging.INFO, logger="aiot.forecast"):
+        assert forecast.main(["--config", str(cfg)]) == 0
+    assert called == []
+    assert "đồng bộ" in caplog.text
+    monkeypatch.setattr(forecast, "is_clock_synced", lambda: True)
+    assert forecast.main(["--config", str(cfg)]) == 0
+    assert len(called) == 1

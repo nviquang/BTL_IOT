@@ -40,8 +40,9 @@ from aiot.aqi import classify
 from aiot.control import ControlState, fan_on, override_active
 from aiot.collector import is_clock_synced
 from aiot.db import connect, get_state, init_schema, log_event, set_state
-from aiot.forecast import latest_rows
+from aiot.forecast import MODEL_NAMES, latest_rows
 from aiot.notifier import collapse_stale_alerts, mark_sent, pending_messages, quiet_window
+from aiot.report import build_report
 from aiot.telegram_api import TelegramClient, TelegramError, install_log_redaction
 
 log = logging.getLogger("aiot.bot")
@@ -70,7 +71,6 @@ USAGE_FAN = "Cách dùng: /fan on hoặc /fan off"
 USAGE_MODE = "Cách dùng: /mode auto hoặc /mode manual"
 USAGE_QUIET = ("Cách dùng: /quiet <giờ bắt đầu> <giờ kết thúc>, mỗi giờ từ 0 tới 23, "
                "ví dụ /quiet 22 6. Gửi /quiet 0 0 để tắt giờ yên lặng.")
-NOT_READY = "Chức năng này chưa sẵn sàng."
 _HOUR_RE = re.compile(r"[0-9]{1,2}", re.ASCII)
 
 
@@ -183,13 +183,6 @@ def cmd_status(conn, cfg, now, args):
     return "\n".join(lines)
 
 
-MODEL_NAMES = {
-    "persistence": "giữ nguyên giờ gần nhất",
-    "seasonal_naive": "cùng giờ hôm qua",
-    "lstm": "mạng LSTM",
-}
-
-
 def cmd_forecast(conn, cfg, now, args):
     max_age = cfg.control.forecast_max_age_s
     found = latest_rows(conn, now, max_age)
@@ -213,8 +206,14 @@ def cmd_forecast(conn, cfg, now, args):
     return "\n".join(lines)
 
 
-def cmd_not_ready(conn, cfg, now, args):
-    return NOT_READY
+def cmd_report(conn, cfg, now, args):
+    """Báo cáo 24 giờ qua, trả lời trực tiếp (không qua outbox, không đụng khoá báo cáo
+    sáng). Có thể gọi Gemini (tối đa gemini.timeout_s giây, tính vào giới hạn mỗi ngày)."""
+    try:
+        return build_report(conn, now, cfg)
+    except Exception:
+        log.exception("Lỗi khi lập báo cáo")
+        return "Không lập được báo cáo lúc này. Gửi /now để xem số liệu hiện tại, thử lại sau."
 
 
 def cmd_help(conn, cfg, now, args):
@@ -292,7 +291,7 @@ READ_ONLY = {
     "/now": cmd_now,
     "/status": cmd_status,
     "/forecast": cmd_forecast,
-    "/report": cmd_not_ready,       # Task 10
+    "/report": cmd_report,
     "/help": cmd_help,
     "/start": cmd_help,
 }

@@ -310,7 +310,8 @@ Mỗi giờ (phút 02) timer chạy một lần dự báo PM2.5 trung bình gi�
 `readings` và ghi vào bảng `forecasts`. Hiện dùng mô hình đối chứng: `seasonal_naive` (cùng
 giờ hôm qua) khi có đủ 24 giờ dữ liệu, ngược lại `persistence` (giữ nguyên giờ gần nhất);
 LSTM sẽ thay vào ở Task 12. Không có giờ hợp lệ nào trong 3 giờ gần đây thì không ghi dự báo
-(vẫn thoát 0). Controller dùng TB 3 giờ đầu cho luật "Chủ động" (> 100 µg/m³ thì bật quạt
+(vẫn thoát 0). Đồng hồ Pi chưa đồng bộ NTP (vừa khởi động, chưa có mạng) thì bỏ lần chạy đó
+(log "chưa đồng bộ NTP", thoát 0), để lần chạy bù lúc khởi động không ghi dự báo với giờ sai. Controller dùng TB 3 giờ đầu cho luật "Chủ động" (> 100 µg/m³ thì bật quạt
 trước); dự báo cũ hơn `control.forecast_max_age_s` (5400 s) bị bỏ qua. Bot trả lời `/forecast`.
 
 ```bash
@@ -390,8 +391,8 @@ Bot dùng long polling (không cần mở port), chỉ trả lời chat trong `A
 gửi mọi tin trong bảng `outbox` (cảnh báo của controller, gửi bù khi có mạng lại). Bot không
 chạm GPIO: `/fan`, `/mode` chỉ ghi khoá `pending_override` để controller áp dụng trong
 vòng `loop_s` giây. Lệnh: `/now`, `/status`, `/fan on|off`, `/mode auto|manual`,
-`/quiet 22 6`, `/forecast` (6 giờ tới, nhãn AQI, tên mô hình; xem 2.4e), `/help`; `/report`
-trả lời "chưa sẵn sàng" cho tới khi có báo cáo sáng. Lệnh điều khiển lệch quá 120 s so với đồng hồ Pi (ví dụ gửi lúc mất mạng)
+`/quiet 22 6`, `/forecast` (6 giờ tới, nhãn AQI, tên mô hình; xem 2.4e), `/help`, `/report`
+(báo cáo 24 giờ qua, trả lời ngay, có thể gọi Gemini; xem 2.4f). Lệnh điều khiển lệch quá 120 s so với đồng hồ Pi (ví dụ gửi lúc mất mạng)
 bị bỏ; khi đồng hồ Pi chưa đồng bộ NTP (vừa khởi động lại, chưa có mạng; Pi không có RTC)
 thì lệnh điều khiển bị từ chối, lệnh chỉ đọc vẫn trả lời.
 
@@ -437,6 +438,47 @@ journalctl -u aiot-bot -f                        # thấy "Bot bắt đầu: ...
    có mạng lại thì tin trong outbox được gửi bù (cảnh báo cũ hơn 1 giờ được gộp thành một tin).
 5. Token không lọt vào log: `journalctl -u aiot-bot | grep -c "<phần đầu token, ví dụ 9 chữ số trước dấu :>"` phải ra `0`.
 6. Nhật ký lệnh: `sqlite3 ~/iot_data/aiot.db "select datetime(ts,'unixepoch','localtime'), detail from events where kind='command' order by rowid desc limit 10;"`
+
+### 2.4f. Báo cáo sáng và lời khuyên Gemini (`aiot/report.py`, `aiot/advice.py`)
+
+> **Trạng thái: có code và unit test (client Gemini giả), CHƯA THỬ VỚI API KEY THẬT.**
+> Không ghi API key vào tài liệu, chat nhóm hay commit.
+
+Mỗi ngày 06:30 timer lập báo cáo 24 giờ qua (PM2.5 TB/thấp/cao kèm nhãn AQI, số giờ theo
+nhóm, nhiệt độ, độ ẩm, độ phủ dữ liệu, dự báo 6 giờ kèm tên mô hình, trạng thái quạt, MQ135
+nếu có vượt ngưỡng) và ghi vào outbox; bot gửi (gửi bù khi có mạng lại). Mỗi ngày chỉ một
+bản (khoá `morning_report_date`); `Persistent=true` chạy bù nếu Pi tắt lúc 06:30. Đồng hồ
+chưa đồng bộ NTP thì chờ tối đa 15 phút rồi vẫn gửi, kèm ghi chú giờ có thể sai.
+
+Gemini chỉ viết lời khuyên (`{headline, advice}`, temperature 0.2), chỉ nhận số liệu tổng hợp
+(không có device id, chat id, mẫu thô), không điều khiển quạt. Tối đa
+`gemini.max_calls_per_day` (3) lần/ngày, `/report` cũng tính. Không có model/API key/thư viện,
+lỗi mạng, hết hạn mức, quá `timeout_s`, JSON sai hoặc quá 800 ký tự: dùng lời khuyên mẫu theo
+nhóm AQI (ghi "(lời khuyên mẫu)"), bản tin vẫn gửi. Model đặt ở `gemini.model` trong
+`config.yaml`; kiểm tra lại tên model và hạn mức hiện hành trước khi triển khai.
+
+```bash
+cd ~/BTL_IOT && source venv/bin/activate && pip install -r requirements-pi.txt   # có google-genai
+nano .env          # thêm: GEMINI_API_KEY=<key từ Google AI Studio>; giữ chmod 600 .env
+python -m aiot.report                                # chạy thử: thêm 1 tin morning_report vào outbox
+sudo cp deploy/aiot-morning.service deploy/aiot-morning.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now aiot-morning.timer
+systemctl list-timers aiot-morning.timer            # lần chạy kế tiếp lúc 06:30
+journalctl -u aiot-morning -n 20
+sqlite3 ~/iot_data/aiot.db "select key, value from state where key like 'gemini_calls:%' or key = 'morning_report_date';"
+```
+
+Lưu ý: `python -m aiot.report` chạy thử trong ngày sẽ ghi `morning_report_date`, nên timer
+06:30 cùng ngày không gửi lại; muốn thử lại thì xoá khoá đó bằng sqlite3.
+
+**Kiểm tra thật (nhóm tự làm, cần API key thật):**
+
+1. Có `GEMINI_API_KEY` đúng và bot đang chạy: gửi `/report` → lời khuyên không có chữ
+   "(lời khuyên mẫu)"; `journalctl -u aiot-bot` không có cảnh báo "Gọi Gemini lỗi".
+2. Đặt key sai trong `.env` (`sudo systemctl restart aiot-bot`), gửi `/report` → vẫn có báo
+   cáo, có "(lời khuyên mẫu)", log có "Gọi Gemini lỗi" và không in key. Đặt lại key đúng.
+3. Gửi `/report` quá 3 lần trong ngày → các lần sau dùng lời khuyên mẫu.
 
 ### 2.4b. Client cũ `pi_sensor_client.py` (chỉ DHT11 + BH1750)
 

@@ -1,0 +1,12 @@
+# Chạy aiot-morning.service mỗi ngày lúc 06:30 (giờ địa phương của Pi).
+# Persistent: Pi tắt/mất điện lúc 06:30 thì chạy bù khi bật lại (trùng ngày thì không gửi lại).
+# Cài: xem aiot-morning.service. Kiểm tra: systemctl list-timers aiot-morning.timer
+[Unit]
+Description=Run AIoT morning report daily at 06:30
+
+[Timer]
+OnCalendar=*-*-* 06:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

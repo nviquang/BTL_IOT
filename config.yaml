@@ -37,8 +37,14 @@ telegram:
   stale_command_s: 120
   poll_timeout_s: 50
 
+# Gemini chỉ viết lời khuyên cho báo cáo; lỗi/hết lượt/model rỗng thì dùng lời khuyên mẫu.
 gemini:
-  model: ""                 # chốt sau khi kiểm tra model và hạn mức hiện hành
+  # Model kiểm tra ngày 07/11/2026 tại https://ai.google.dev/gemini-api/docs/models
+  # (chuyển tới aistudio.google.com/docs/models): gemini-3.5-flash-lite là bản Stable rẻ nhất
+  # dòng 3.5; https://ai.google.dev/gemini-api/docs/pricing ghi Free Tier "Free of charge".
+  # Hạn mức RPM/RPD từng model chỉ xem được trong AI Studio (docs/rate-limits), RPD đặt lại
+  # lúc nửa đêm giờ Thái Bình Dương. Kiểm tra lại trước khi triển khai; "" = luôn dùng mẫu.
+  model: gemini-3.5-flash-lite
   temperature: 0.2
   max_calls_per_day: 3
   timeout_s: 20

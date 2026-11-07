@@ -12,6 +12,8 @@ Dự báo PM2.5 trung bình giờ cho 6 giờ tới bằng mô hình đối ch�
   Task 12) nếu có thì dùng trước, model 'lstm'; lỗi hoặc kết quả sai thì về đối chứng.
 - Giờ hợp lệ mới nhất đã kết thúc quá 3 giờ: không dự báo, không ghi gì, không raise.
 - Ghi 6 dòng bằng INSERT OR REPLACE trong một transaction (chạy lại cùng giờ thì ghi đè).
+- main() bỏ qua lần chạy (thoát 0) khi đồng hồ chưa đồng bộ NTP, để lần chạy bù lúc khởi
+  động không ghi dự báo với giờ sai.
 
 Chạy một lần: cd ~/BTL_IOT && venv/bin/python -m aiot.forecast (timer mỗi giờ, phút 02).
 """
@@ -21,6 +23,8 @@ import math
 import time
 from pathlib import Path
 from typing import Callable
+
+from aiot.collector import is_clock_synced
 
 log = logging.getLogger("aiot.forecast")
 
@@ -32,6 +36,13 @@ INPUT_HOURS = 24
 MAX_DATA_AGE_S = 3 * HOUR_S             # dữ liệu cũ hơn thì không dự báo
 
 Series = list[tuple[int, float | None]]
+
+# Tên hiển thị của mô hình (bot /forecast và báo cáo sáng)
+MODEL_NAMES = {
+    "persistence": "giữ nguyên giờ gần nhất",
+    "seasonal_naive": "cùng giờ hôm qua",
+    "lstm": "mạng LSTM",
+}
 
 
 # ---------------- dữ liệu vào ----------------
@@ -212,6 +223,11 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config, root / ".env")
+    if not is_clock_synced():
+        # Pi không có RTC: trước khi có NTP, giờ có thể là lúc tắt máy lần trước, dự báo ghi
+        # với made_at đó sẽ bị controller và /forecast coi là còn mới. Timer chạy lại giờ sau.
+        log.warning("Đồng hồ Pi chưa đồng bộ NTP: bỏ lần dự báo này")
+        return 0
     conn = connect(cfg.db_path)
     try:
         init_schema(conn)

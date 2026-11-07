@@ -1,0 +1,17 @@
+# Báo cáo không khí sáng (chạy một lần, do aiot-morning.timer gọi lúc 06:30).
+# Cài: sudo cp deploy/aiot-morning.service deploy/aiot-morning.timer /etc/systemd/system/
+#      sudo systemctl daemon-reload && sudo systemctl enable --now aiot-morning.timer
+# Đồng hồ chưa đồng bộ NTP thì chờ tối đa 15 phút rồi vẫn gửi (kèm ghi chú), nên cho phép
+# chạy tới 20 phút. Tin được ghi vào outbox; aiot-bot gửi (gửi bù khi có mạng lại).
+[Unit]
+Description=AIoT air station morning report (one shot)
+# Không bắt buộc có mạng: lỗi Gemini thì dùng lời khuyên mẫu, bot gửi bù sau.
+After=aiot-collector.service time-sync.target
+
+[Service]
+Type=oneshot
+User=admin
+WorkingDirectory=/home/admin/BTL_IOT
+ExecStart=/home/admin/BTL_IOT/venv/bin/python -m aiot.report
+TimeoutStartSec=20min
+Environment=PYTHONUNBUFFERED=1

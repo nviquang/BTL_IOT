@@ -234,8 +234,23 @@ def test_status_without_state_defaults_normal(conn):
     assert "BÌNH THƯỜNG" in reply and "tắt" in reply
 
 
-def test_report_not_ready(conn):
-    assert "chưa sẵn sàng" in handle(conn, "/report").lower()
+def test_report_uses_build_report(conn, monkeypatch):
+    calls = []
+
+    def fake_build(c, now, cfg, client=None):
+        calls.append(now)
+        return "BÁO CÁO"
+    monkeypatch.setattr(bot, "build_report", fake_build)
+    assert handle(conn, "/report") == "BÁO CÁO"
+    assert calls == [NOW]
+    assert pending_messages(conn) == []                 # trả lời trực tiếp, không qua outbox
+
+
+def test_report_without_gemini_uses_template(conn):
+    # CFG không có model/API key: không gọi mạng, báo thiếu dữ liệu, lời khuyên mẫu
+    reply = handle(conn, "/report")
+    assert "thiếu dữ liệu" in reply.lower() and "(lời khuyên mẫu)" in reply
+    assert get_state(conn, "morning_report_date") is None
 
 
 def put_forecast(conn, made_at, preds, model="seasonal_naive"):
