@@ -589,6 +589,9 @@ Mở <http://localhost:8501>. Giao diện tự làm mới mỗi giây.
 
 ## 2.7. Nghiệm thu
 
+Mục này kiểm tra nhanh luồng MQTT + dashboard. Nghiệm thu 7 ngày của trạm AIoT (ổn định, điều
+khiển, Telegram, Gemini, an toàn) xem `docs/nghiem_thu.md` và `scripts/acceptance_report.py`.
+
 Dashboard phải hiện:
 
 | Vị trí | Giá trị đúng |

@@ -14,8 +14,10 @@ chỉ dùng thư viện chuẩn, numpy và gói aiot.
   (collector chỉ giữ mẫu thô 7 ngày). Với luật mặc định, chuỗi bước từ thấp lên cao kỳ vọng
   phản ứng trong khoảng enter_mean_s + enter_hold_s + loop_s; mức nguy hại trong
   danger_window_s + loop_s.
-- count_flaps: số lần đổi trạng thái quạt (fan_on <-> fan_off, bỏ qua sự kiện trùng loại)
-  xảy ra chưa tới min_state_s sau lần đổi trước.
+- count_flaps: số lần nhảy trạng thái sai luật aiot.control.decide: BẢO VỆ giữ chưa tới
+  min_state_s (fan_on -> fan_off), hoặc vào lại vì 'enter' chưa tới enter_hold_s sau fan_off.
+  Trạng thái trước lần đổi đầu tiên lấy từ sự kiện quạt trước start. quick_reentries đếm riêng
+  các lần vào lại < min_state_s sau khi thoát (đúng luật, chỉ để tham khảo).
 - report_punctuality: một ngày (giờ địa phương) đúng giờ khi có tin 'morning_report' tạo trong
   ngày đó và đã gửi (sent_at) trong khoảng [giờ báo cáo, giờ báo cáo + tolerance_s]. Việc gộp
   tin cũ (collapse_stale_alerts) không bao giờ đụng 'morning_report', nên sent_at là giờ gửi
@@ -86,19 +88,43 @@ def control_reaction_times(conn, start, end, enter_pm25=55.0, gap_s=120) -> list
     return out
 
 
-def count_flaps(conn, start, end, min_state_s=600) -> int:
-    """Số lần đổi trạng thái quạt sớm hơn min_state_s sau lần đổi trước."""
+def _fan_transitions(conn, start, end):
+    """[(trước, sau)] mỗi lần đổi trạng thái quạt có ts trong [start, end); mỗi phần tử là
+    (ts, kind, detail). Đọc cả sự kiện trước start để biết trạng thái trước lần đổi đầu tiên;
+    sự kiện trùng loại liên tiếp không phải lần đổi."""
     rows = conn.execute(
-        "SELECT ts, kind FROM events WHERE kind IN ('fan_on', 'fan_off') AND ts >= ? AND ts < ? "
-        "ORDER BY ts, rowid", (int(start), int(end))).fetchall()
-    flaps, last_kind, last_ts = 0, None, None
-    for ts, kind in rows:
-        if kind == last_kind:
+        "SELECT ts, kind, detail FROM events WHERE kind IN ('fan_on', 'fan_off') AND ts < ? "
+        "ORDER BY ts, rowid", (int(end),)).fetchall()
+    out, prev = [], None
+    for row in rows:
+        if prev is not None and row[1] == prev[1]:
             continue
-        if last_ts is not None and ts - last_ts < min_state_s:
+        if prev is not None and row[0] >= start:
+            out.append((prev, row))
+        prev = row
+    return out
+
+
+def count_flaps(conn, start, end, min_state_s=600, enter_hold_s=300) -> int:
+    """Số lần nhảy trạng thái SAI LUẬT trong [start, end):
+    - BẢO VỆ giữ chưa tới min_state_s (fan_on rồi fan_off sớm hơn), hoặc
+    - vào lại BẢO VỆ vì 'enter' chưa tới enter_hold_s sau khi thoát.
+    Vào lại vì 'danger'/'proactive' ngay sau khi thoát là đúng luật (xem quick_reentries)."""
+    flaps = 0
+    for (p_ts, p_kind, _), (ts, kind, detail) in _fan_transitions(conn, start, end):
+        gap = ts - p_ts
+        if p_kind == "fan_on" and gap < min_state_s:
             flaps += 1
-        last_kind, last_ts = kind, ts
+        elif kind == "fan_on" and (detail or "").split(" ")[0] == "enter" and gap < enter_hold_s:
+            flaps += 1
     return flaps
+
+
+def quick_reentries(conn, start, end, min_state_s=600) -> int:
+    """Số lần vào lại BẢO VỆ chưa tới min_state_s sau khi thoát (chỉ để tham khảo: luật cho
+    phép vào lại sau enter_hold_s, hoặc ngay lập tức khi nguy hại/dự báo cao)."""
+    return sum(1 for (p_ts, p_kind, _), (ts, kind, _) in _fan_transitions(conn, start, end)
+               if p_kind == "fan_off" and ts - p_ts < min_state_s)
 
 
 # ---------------- Telegram ----------------
@@ -256,8 +282,11 @@ def main(argv=None) -> int:
             print("Thời gian phản ứng (s): " + ", ".join(f"{t:.0f}" for t in times))
             print(f"Lâu nhất {max(times):.0f} s; kỳ vọng <= {bound} s "
                   f"(enter_mean_s + enter_hold_s + loop_s)")
-        print(f"Số lần nhảy trạng thái (< {ctl.min_state_s} s): "
-              f"{count_flaps(conn, start, end, ctl.min_state_s)} (tiêu chí 0)")
+        flaps = count_flaps(conn, start, end, ctl.min_state_s, ctl.enter_hold_s)
+        print(f"Số lần nhảy trạng thái sai luật (BẢO VỆ < {ctl.min_state_s} s, hoặc vào lại "
+              f"vì vượt ngưỡng < {ctl.enter_hold_s} s sau khi thoát): {flaps} (tiêu chí 0)")
+        print(f"Tham khảo: vào lại BẢO VỆ < {ctl.min_state_s} s sau khi thoát: "
+              f"{quick_reentries(conn, start, end, ctl.min_state_s)} lần (đúng luật)")
 
         print("\n[Hiệu quả lọc]")
         fx = fan_effect(conn, start, end)

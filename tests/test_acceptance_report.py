@@ -84,14 +84,28 @@ def test_control_reaction_time_breaks_run_on_data_gap(conn):
 
 def test_count_flaps(conn):
     log_event(conn, T0, "fan_on", "enter")
-    log_event(conn, T0 + 1200, "fan_off", "exit")      # giữ 20 phút: bình thường
-    log_event(conn, T0 + 1500, "fan_on", "enter")      # 5 phút sau khi tắt: nhảy
-    log_event(conn, T0 + 1600, "fan_off", "exit")      # 100 s sau khi bật: nhảy
+    log_event(conn, T0 + 1200, "fan_off", "exit")      # giữ BẢO VỆ 20 phút: đúng
+    log_event(conn, T0 + 1500, "fan_on", "enter")      # vào lại 300 s sau khi thoát: hợp lệ
+    log_event(conn, T0 + 1600, "fan_off", "exit")      # BẢO VỆ chỉ 100 s < min_state_s: lỗi
     log_event(conn, T0 + 1700, "fan_off", "exit")      # trùng loại, không phải đổi trạng thái
-    log_event(conn, T0 + 9000, "fan_on", "enter")
+    log_event(conn, T0 + 1800, "fan_on", "enter")      # 'enter' sau 200 s < enter_hold_s: lỗi
+    log_event(conn, T0 + 9000, "fan_off", "exit")
+    log_event(conn, T0 + 9010, "fan_on", "danger")     # nguy hại vào lại ngay: hợp lệ
     log_event(conn, T0 + 9100, "danger", "x")          # loại khác không tính
     assert ar.count_flaps(conn, T0, T0 + 3 * H) == 2
-    assert ar.count_flaps(conn, T0, T0 + 3 * H, min_state_s=60) == 0
+    assert ar.count_flaps(conn, T0, T0 + 3 * H, min_state_s=60, enter_hold_s=60) == 0
+    # vào lại nhanh (< min_state_s sau khi thoát) chỉ để tham khảo: 1500, 1800, 9010
+    assert ar.quick_reentries(conn, T0, T0 + 3 * H) == 3
+
+
+def test_count_flaps_seeds_state_from_before_start(conn):
+    log_event(conn, T0 - 100, "fan_on", "enter")       # trước khoảng đo
+    log_event(conn, T0 + 200, "fan_off", "exit")       # BẢO VỆ 300 s: lỗi, dù fan_on ở ngoài
+    log_event(conn, T0 + 400, "fan_off", "exit")       # trùng loại
+    assert ar.count_flaps(conn, T0, T0 + H) == 1
+    # chỉ sự kiện trong [start, end) mới được đếm; sự kiện mồi không tự tính
+    assert ar.count_flaps(conn, T0 + 300, T0 + H) == 0
+    assert ar.count_flaps(conn, T0 - 200, T0 + 100) == 0
 
 
 # ---------- Telegram ----------
