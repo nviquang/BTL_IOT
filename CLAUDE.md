@@ -71,8 +71,8 @@ Hai trạng thái: BÌNH THƯỜNG (quạt tắt) và BẢO VỆ (quạt bật).
 | Tham số | Giá trị đề xuất |
 | ------- | --------------- |
 | Vào BẢO VỆ | PM2.5 TB 10 phút > 55 µg/m³, liên tục ≥ 5 phút |
-| Thoát BẢO VỆ | PM2.5 TB 15 phút < 35 µg/m³, liên tục ≥ 15 phút, và đã giữ trạng thái ≥ 10 phút |
-| Nguy hại | ≥ 150 µg/m³: vào ngay, kèm cảnh báo mạnh |
+| Thoát BẢO VỆ | PM2.5 TB 15 phút < 35 µg/m³, liên tục ≥ 15 phút, và đã giữ trạng thái ≥ 10 phút; không thoát khi còn dự báo mới (≤ 90 phút) với TB 3 giờ tới > 100 µg/m³ |
+| Khẩn cấp | Trung vị PM2.5 1 phút (cần ≥ 3 mẫu) ≥ 150 µg/m³: vào ngay, kèm cảnh báo mạnh. Không nhầm với nhóm AQI "Nguy hại" (≥ 225,5) |
 | Chủ động | Dự báo TB 3 giờ tới > 100 µg/m³: bật quạt trước |
 | Chế độ demo | Rút ngắn thời gian chờ, ví dụ 20 giây |
 
