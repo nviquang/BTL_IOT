@@ -47,6 +47,7 @@ foreground (đọc đủ cảm biến, ghi CSV + SQLite, dừng sạch). **Chưa
       `.env` trên Pi, bật `aiot-bot` (2.4d).
 - [ ] **Gemini và dự báo:** thêm `GEMINI_API_KEY` vào `.env`, bật `aiot-morning.timer` (2.4f)
       và `aiot-forecast.timer` (2.4e). Chép mô hình LSTM lên Pi nếu muốn dùng (2.4g).
+- [ ] **Nắng/mưa và ảnh:** bật `aiot-weather.timer`, khởi động lại `aiot-bot`, thử `/photo` (2.4h).
 - [ ] **Nghiệm thu:** thu dữ liệu ít nhất 7 ngày, rồi chạy
       `venv/bin/python scripts/acceptance_report.py --start <ngày đầu> --end <ngày cuối>` và
       ghi kết quả vào `docs/nghiem_thu.md`.
@@ -428,7 +429,7 @@ Bot dùng long polling (không cần mở port), chỉ trả lời chat trong `A
 gửi mọi tin trong bảng `outbox` (cảnh báo của controller, gửi bù khi có mạng lại). Bot không
 chạm GPIO: `/fan`, `/mode` chỉ ghi khoá `pending_override` để controller áp dụng trong
 vòng `loop_s` giây. Lệnh: `/now`, `/status`, `/fan on|off`, `/mode auto|manual`,
-`/quiet 22 6`, `/forecast` (6 giờ tới, nhãn AQI, tên mô hình; xem 2.4e), `/help`, `/report`
+`/quiet 22 6`, `/forecast` (6 giờ tới, nhãn AQI, tên mô hình; xem 2.4e), `/photo` (xem 2.4h), `/help`, `/report`
 (báo cáo 24 giờ qua, trả lời ngay, có thể gọi Gemini; xem 2.4f). Lệnh điều khiển lệch quá 120 s so với đồng hồ Pi (ví dụ gửi lúc mất mạng)
 bị bỏ; khi đồng hồ Pi chưa tin được (chưa đồng bộ NTP lần nào từ lúc khởi động; Pi không có
 RTC) thì lệnh điều khiển bị từ chối, lệnh chỉ đọc vẫn trả lời. `/report` cũ hơn 120 s (tồn đọng
@@ -578,6 +579,49 @@ cd ~/BTL_IOT && venv/bin/python -m aiot.forecast
 sqlite3 ~/iot_data/aiot.db "select model, count(*) from forecasts group by model;"
 # kỳ vọng có dòng model = 'lstm'. Xoá file mô hình thì lần chạy sau về seasonal_naive/persistence.
 ```
+
+### 2.4h. Cảnh báo nắng/mưa và ảnh (`aiot/weather.py`, `aiot/camera.py`)
+
+> **Trạng thái: có code và unit test, CHƯA THỬ THẬT** (chưa thử với nắng/mưa thật, camera
+> thật và bot thật).
+
+DHT11, BH1750 và camera USB (`/dev/video0`) đặt ngoài ban công. Mỗi 5 phút
+`aiot-weather.timer` chạy `python -m aiot.weather` một lần, xét bảng `readings` (trung bình
+5 phút, không cần `valid=1`):
+
+| Cảnh báo | Điều kiện (mục `weather` trong `config.yaml`) |
+| -------- | --------------------------------------------- |
+| Nắng gắt | lux > 30000 **và** nhiệt độ ≥ 33 °C |
+| Có thể sắp mưa | độ ẩm ≥ 85% **và** lux < 5000, chỉ từ 6h tới 18h |
+
+Điều kiện phải đúng ở 3 cửa sổ 5 phút liền nhau, cửa sổ mới nhất không cũ quá 10 phút
+(thiếu dữ liệu thì không kết luận). Chỉ báo khi **chuyển sang** trạng thái đó, tối đa 1 tin
+mỗi loại mỗi 3 giờ, theo giờ yên lặng chung (`/quiet`). Khi báo, job chụp một ảnh (lưu ở
+`/home/admin/iot_data/photos`, xoá sau 7 ngày) và ghi tin kèm ảnh vào `outbox`; chụp lỗi thì
+gửi chữ kèm "(không chụp được ảnh)". Tin chờ quá 1 giờ (mất mạng) bị gộp vào tin tóm tắt,
+không gửi ảnh. Đây là **ước lượng từ cảm biến, không phải dự báo thời tiết**; đồng hồ Pi
+chưa đồng bộ NTP thì job bỏ qua lần chạy đó.
+
+Lệnh `/photo` của bot chụp và gửi ảnh ngay (lệnh cũ hơn 120 s bị bỏ, giống `/report`). Khi
+khởi động, bot đặt menu lệnh của Telegram (gõ `/` để thấy danh sách).
+
+```bash
+cd ~/BTL_IOT && git pull
+venv/bin/python -m aiot.weather            # chạy thử một lần, xem log
+sudo cp deploy/aiot-weather.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now aiot-weather.timer
+sudo systemctl restart aiot-bot            # nạp code mới: gửi ảnh, /photo, menu lệnh
+systemctl list-timers aiot-weather.timer
+```
+
+Lưu ý:
+- **Camera dùng chung:** mỗi lần chụp mở rồi đóng `/dev/video0`. Nếu `pi_camera_client.py`
+  (hoặc `pi_detection_client.py` qua nó) đang chạy thì camera bận: cảnh báo được gửi chữ,
+  `/photo` trả lời "Không chụp được ảnh". Muốn có ảnh thì không chạy client camera cũ cùng lúc.
+- **DHT11 phải được che nắng trực tiếp** (hộp thông gió, không kín): phơi nắng sẽ đọc nhiệt
+  độ cao hơn không khí nhiều và báo nắng gắt sai.
+- **Mạch không chống nước:** Pi, breadboard, cảm biến và camera phải có mái che mưa hắt.
+- **BH1750 bão hoà khoảng 65000 lux:** nắng trưa trực tiếp có thể đọc kịch trần, vẫn đủ để
+  vượt ngưỡng 30000.
 
 ## 2.5. Chạy nhận diện trên Pi (terminal 2)
 

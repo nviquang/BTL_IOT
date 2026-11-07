@@ -191,3 +191,24 @@ def test_env_inline_comment_stripped_from_unquoted_values(tmp_path):
     assert values["D"] == "abc#def"           # không có khoảng trắng trước '#': là một phần giá trị
     assert values["E"] == "x y"
     assert values["F"] == ""
+
+
+def test_weather_section_defaults_and_override(tmp_path):
+    cfg = load_config(*write(tmp_path))
+    w = cfg.weather
+    assert w.sunny_lux == 30000 and w.sunny_temp_c == 33.0
+    assert w.rain_hum_pct == 85.0 and w.rain_lux == 5000
+    assert (w.day_start_h, w.day_end_h) == (6, 18)
+    assert w.sustain_windows == 3 and w.cooldown_s == 10800
+    assert w.photo_dir == "/home/admin/iot_data/photos"
+    assert w.photo_keep_days == 7 and w.camera_index == 0
+    cfg = load_config(*write(tmp_path, "weather:\n  sunny_lux: 25000\n  camera_index: 1\n"))
+    assert cfg.weather.sunny_lux == 25000 and cfg.weather.camera_index == 1
+    with pytest.raises(ValueError):
+        load_config(*write(tmp_path, "weather:\n  sunny_luxx: 1\n"))
+
+
+def test_repo_config_yaml_weather_matches_defaults(tmp_path):
+    from aiot.config import WeatherCfg
+    cfg = load_config(REPO_CONFIG, tmp_path / "khong_co.env")
+    assert cfg.weather == WeatherCfg()

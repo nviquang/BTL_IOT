@@ -76,6 +76,22 @@ class ReportCfg:
 
 
 @dataclass(frozen=True)
+class WeatherCfg:
+    """Cảnh báo nắng gắt / có thể mưa từ cảm biến ngoài ban công (aiot/weather.py)."""
+    sunny_lux: float = 30000.0      # nắng gắt: lux > sunny_lux VÀ nhiệt độ >= sunny_temp_c
+    sunny_temp_c: float = 33.0
+    rain_hum_pct: float = 85.0      # có thể mưa: độ ẩm >= rain_hum_pct VÀ lux < rain_lux,
+    rain_lux: float = 5000.0        # chỉ xét trong [day_start_h, day_end_h) giờ địa phương
+    day_start_h: int = 6
+    day_end_h: int = 18
+    sustain_windows: int = 3        # số cửa sổ 5 phút liền nhau phải thoả điều kiện
+    cooldown_s: int = 10800         # tối đa 1 tin cùng loại mỗi 3 giờ
+    photo_dir: str = "/home/admin/iot_data/photos"
+    photo_keep_days: int = 7
+    camera_index: int = 0           # /dev/video0
+
+
+@dataclass(frozen=True)
 class Secrets:
     telegram_token: str | None = None
     gemini_api_key: str | None = None
@@ -105,6 +121,7 @@ class Config:
     gemini: GeminiCfg = field(default_factory=GeminiCfg)
     forecast: ForecastCfg = field(default_factory=ForecastCfg)
     report: ReportCfg = field(default_factory=ReportCfg)
+    weather: WeatherCfg = field(default_factory=WeatherCfg)
     secrets: Secrets = field(default_factory=Secrets)
 
 
@@ -116,6 +133,7 @@ SECTIONS = {
     "gemini": GeminiCfg,
     "forecast": ForecastCfg,
     "report": ReportCfg,
+    "weather": WeatherCfg,
 }
 TOP_LEVEL_KEYS = ("db_path", "csv_path", "device_id")
 

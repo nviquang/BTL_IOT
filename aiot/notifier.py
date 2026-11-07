@@ -27,6 +27,8 @@ log = logging.getLogger("aiot.notifier")
 ALERT_KINDS = frozenset({
     "aqi_change", "danger", "sensor_fault", "sensor_recovered",
     "fan_on", "fan_off", "override_expired", "relay_error", "alert_summary",
+    # Nắng/mưa (aiot.weather): tin cũ hơn 1 giờ không còn đúng nên cũng bị gộp (bỏ ảnh)
+    "weather_sunny", "weather_rain",
 })
 URGENT_KINDS = frozenset({"danger"})
 # Không bao giờ gộp: 'morning_report', 'reply' (và mọi loại không thuộc ALERT_KINDS)
@@ -60,13 +62,15 @@ class OutboxRow(NamedTuple):
     created_at: int
     kind: str
     text: str
+    photo_path: str | None = None   # ảnh gửi kèm (text làm chú thích); None: chỉ chữ
 
 
 # ---------------- outbox ----------------
-def enqueue(conn, kind, text, now, *, commit=True):
-    """Thêm một tin chờ gửi. Không kiểm tra chính sách (dùng send_alert cho cảnh báo)."""
-    conn.execute("INSERT INTO outbox (created_at, kind, text) VALUES (?, ?, ?)",
-                 (int(now), kind, text))
+def enqueue(conn, kind, text, now, *, photo_path=None, commit=True):
+    """Thêm một tin chờ gửi. Không kiểm tra chính sách (dùng send_alert cho cảnh báo).
+    photo_path: ảnh JPEG gửi kèm; file mất khi tới lúc gửi thì bot gửi chữ."""
+    conn.execute("INSERT INTO outbox (created_at, kind, text, photo_path) VALUES (?, ?, ?, ?)",
+                 (int(now), kind, text, photo_path))
     if commit:
         conn.commit()
 
@@ -74,7 +78,7 @@ def enqueue(conn, kind, text, now, *, commit=True):
 def pending_messages(conn):
     """Tin chưa gửi, cũ trước."""
     rows = conn.execute(
-        "SELECT id, created_at, kind, text FROM outbox WHERE sent_at IS NULL "
+        "SELECT id, created_at, kind, text, photo_path FROM outbox WHERE sent_at IS NULL "
         "ORDER BY created_at, id").fetchall()
     return [OutboxRow(*r) for r in rows]
 
@@ -88,7 +92,8 @@ def mark_sent(conn, id, now, *, commit=True):
 def collapse_stale_alerts(conn, now, max_age_s=3600, *, commit=True):
     """Gộp các cảnh báo chưa gửi cũ hơn max_age_s (thường sau khi mất mạng) thành MỘT tin
     'alert_summary'. Tin gốc được đánh dấu sent_at = now (giữ lại làm dấu vết, không xoá).
-    Báo cáo sáng, trả lời lệnh và tin tóm tắt có sẵn không bị gộp."""
+    Báo cáo sáng, trả lời lệnh và tin tóm tắt có sẵn không bị gộp. Ảnh của tin bị gộp
+    (nắng/mưa) không được gửi."""
     kinds = sorted(ALERT_KINDS - {"alert_summary"})
     marks = ",".join("?" * len(kinds))
     cutoff = int(now) - int(max_age_s)

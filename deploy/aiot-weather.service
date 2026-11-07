@@ -1,0 +1,18 @@
+# Cảnh báo nắng gắt / có thể mưa kèm ảnh camera (chạy một lần, do aiot-weather.timer gọi
+# mỗi 5 phút).
+# Cài: sudo cp deploy/aiot-weather.service deploy/aiot-weather.timer /etc/systemd/system/
+#      sudo systemctl daemon-reload && sudo systemctl enable --now aiot-weather.timer
+# Tin được ghi vào outbox; aiot-bot gửi (ảnh bằng sendPhoto). Đồng hồ chưa đồng bộ NTP thì
+# bỏ qua lần chạy. Luôn thoát 0. Camera bận (pi_camera_client.py đang chạy) thì gửi chữ.
+[Unit]
+Description=AIoT balcony sunny/rain alert with camera photo (one shot)
+After=aiot-collector.service
+
+[Service]
+Type=oneshot
+User=admin
+WorkingDirectory=/home/admin/BTL_IOT
+ExecStart=/home/admin/BTL_IOT/venv/bin/python -m aiot.weather
+# Camera treo không được giữ job tới lượt sau
+TimeoutStartSec=2min
+Environment=PYTHONUNBUFFERED=1

@@ -1,5 +1,6 @@
 """
-Client tối thiểu cho Telegram Bot API (long polling getUpdates, sendMessage) bằng requests.
+Client tối thiểu cho Telegram Bot API (getUpdates, sendMessage, sendPhoto, setMyCommands)
+bằng requests.
 
 - Token nằm trong URL (https://api.telegram.org/bot<token>/...), nên mọi lỗi của requests
   đều có thể chứa token. TelegramError luôn được tạo từ thông báo đã che token
@@ -11,14 +12,17 @@ Client tối thiểu cho Telegram Bot API (long polling getUpdates, sendMessage)
   Markdown/HTML và Telegram sẽ từ chối cả tin.
 """
 import logging
+import os
 from urllib.parse import quote
 
 import requests
 
 API_URL = "https://api.telegram.org"
 MAX_TEXT = 4096                 # giới hạn độ dài một tin của Telegram
+MAX_CAPTION = 1024              # giới hạn chú thích ảnh
 HTTP_MARGIN_S = 15              # timeout HTTP = timeout long polling + khoảng này
 SEND_TIMEOUT_S = 20
+PHOTO_TIMEOUT_S = 60            # tải ảnh lên chậm hơn khi mạng yếu
 
 
 def redact(text, token):
@@ -59,9 +63,15 @@ class TelegramClient:
     def __repr__(self):
         return "TelegramClient(token=<token>)"
 
-    def _call(self, method, payload, timeout):
+    def _call(self, method, payload, timeout, files=None):
+        """files None: gửi JSON; có files: gửi multipart (payload là các trường form)."""
         try:
-            response = self._session.post(f"{self._base}/{method}", json=payload, timeout=timeout)
+            if files is None:
+                response = self._session.post(f"{self._base}/{method}", json=payload,
+                                              timeout=timeout)
+            else:
+                response = self._session.post(f"{self._base}/{method}", data=payload,
+                                              files=files, timeout=timeout)
         except requests.RequestException as e:
             raise TelegramError(
                 f"{method}: lỗi mạng {type(e).__name__}: {redact(e, self._token)}") from None
@@ -97,6 +107,25 @@ class TelegramClient:
             text = text[:MAX_TEXT - 1] + "…"
         self._call("sendMessage",
                    {"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
+                   timeout=SEND_TIMEOUT_S)
+
+    def send_photo(self, chat_id, path, caption):
+        """Gửi ảnh JPEG (multipart sendPhoto) kèm chú thích chữ thường (không parse_mode),
+        cắt còn MAX_CAPTION ký tự. Lỗi Telegram/mạng: TelegramError như send(); không mở
+        được file: OSError (người gọi tự gửi chữ thay thế)."""
+        caption = str(caption)
+        if len(caption) > MAX_CAPTION:
+            caption = caption[:MAX_CAPTION - 1] + "…"
+        with open(path, "rb") as f:
+            self._call("sendPhoto", {"chat_id": str(chat_id), "caption": caption},
+                       timeout=PHOTO_TIMEOUT_S,
+                       files={"photo": (os.path.basename(path), f, "image/jpeg")})
+
+    def set_my_commands(self, commands):
+        """Đặt menu lệnh của bot. commands: [{"command": "now", "description": "..."}]."""
+        self._call("setMyCommands",
+                   {"commands": [{"command": c["command"], "description": c["description"]}
+                                 for c in commands]},
                    timeout=SEND_TIMEOUT_S)
 
 

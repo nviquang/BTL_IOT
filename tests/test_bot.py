@@ -714,3 +714,196 @@ def test_old_report_request_dropped_without_building_report(conn, monkeypatch):
     assert calls == [] and "bỏ" in reply.lower() and "/report" in reply
     assert handle(conn, "/report", date=NOW - CFG.telegram.stale_command_s) == "BÁO CÁO"
     assert calls == [1]
+
+
+# ---------------- ảnh: sendPhoto, outbox có ảnh, /photo ----------------
+class MultipartSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def post(self, url, json=None, data=None, files=None, timeout=None):
+        uploaded = None
+        if files:
+            name, f, mime = files["photo"]
+            uploaded = (name, f.read(), mime)
+        self.calls.append({"url": url, "json": json, "data": data, "files": uploaded,
+                           "timeout": timeout})
+        r = self.responses.pop(0)
+        if isinstance(r, BaseException):
+            raise r
+        return r
+
+
+def test_send_photo_multipart_plain_caption(tmp_path):
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"JPEG")
+    session = MultipartSession([FakeResponse(payload={"ok": True, "result": {}})])
+    TelegramClient(TOKEN, session=session).send_photo(CHAT, str(photo), "x" * 2000)
+    call = session.calls[0]
+    assert call["url"].endswith("/sendPhoto")
+    assert call["files"] == ("a.jpg", b"JPEG", "image/jpeg")
+    assert str(call["data"]["chat_id"]) == str(CHAT)
+    assert len(call["data"]["caption"]) <= 1024
+    assert "parse_mode" not in call["data"]
+
+
+def test_send_photo_errors_hide_token(tmp_path):
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"JPEG")
+    err = requests.exceptions.ConnectionError(f"lỗi /bot{TOKEN}/sendPhoto")
+    session = MultipartSession([err, FakeResponse(429, {"ok": False, "error_code": 429,
+                                                        "parameters": {"retry_after": 3}})])
+    client = TelegramClient(TOKEN, session=session)
+    with pytest.raises(TelegramError) as info:
+        client.send_photo(CHAT, str(photo), "c")
+    assert TOKEN not in str(info.value) and info.value.network
+    with pytest.raises(TelegramError) as info:
+        client.send_photo(CHAT, str(photo), "c")
+    assert info.value.retry_after == 3
+
+
+def test_set_my_commands_payload():
+    session = FakeSession([FakeResponse(payload={"ok": True, "result": True})])
+    TelegramClient(TOKEN, session=session).set_my_commands(bot.BOT_COMMANDS)
+    call = session.calls[0]
+    assert call["url"].endswith("/setMyCommands")
+    commands = call["json"]["commands"]
+    assert [c["command"] for c in commands] == [
+        "now", "status", "forecast", "report", "photo", "fan", "mode", "quiet", "help"]
+    for c in commands:
+        assert set(c) == {"command", "description"}
+        assert 1 <= len(c["description"]) <= 256 and not c["command"].startswith("/")
+
+
+class PhotoClient(FakeClient):
+    def __init__(self, *a, photo_errors=(), commands_error=None, **kw):
+        super().__init__(*a, **kw)
+        self.photos = []
+        self.photo_errors = list(photo_errors)
+        self.commands = None
+        self.commands_error = commands_error
+
+    def send_photo(self, chat_id, path, caption):
+        if self.photo_errors:
+            e = self.photo_errors.pop(0)
+            if e is not None:
+                raise e
+        self.photos.append((chat_id, path, caption))
+
+    def set_my_commands(self, commands):
+        if self.commands_error is not None:
+            raise self.commands_error
+        self.commands = commands
+
+
+def test_register_commands_failure_only_warns(caplog):
+    client = PhotoClient()
+    bot.register_commands(client)
+    assert client.commands == bot.BOT_COMMANDS
+    for error in (TelegramError("mạng lỗi"), RuntimeError("lạ")):
+        with caplog.at_level(logging.WARNING, logger="aiot.bot"):
+            bot.register_commands(PhotoClient(commands_error=error))   # không raise
+    assert "setMyCommands" in caplog.text
+
+
+def test_outbox_row_with_photo_uses_send_photo(conn, tmp_path):
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"JPEG")
+    enqueue(conn, "weather_sunny", "Trời nắng", NOW - 10, photo_path=str(photo))
+    client = PhotoClient()
+    assert bot.OutboxSender(client, [111, 222]).deliver(conn, NOW) == 0
+    assert client.photos == [(111, str(photo), "Trời nắng"), (222, str(photo), "Trời nắng")]
+    assert client.sent == [] and pending_messages(conn) == []
+
+
+def test_outbox_missing_photo_falls_back_to_text(conn, tmp_path):
+    enqueue(conn, "weather_rain", "Có thể mưa", NOW - 10, photo_path=str(tmp_path / "mat.jpg"))
+    client = PhotoClient()
+    assert bot.OutboxSender(client, [CHAT]).deliver(conn, NOW) == 0
+    assert client.photos == [] and client.sent == [(CHAT, "Có thể mưa")]
+
+
+def test_outbox_photo_deleted_during_send_falls_back_to_text(conn, tmp_path):
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"JPEG")
+    enqueue(conn, "weather_rain", "Có thể mưa", NOW - 10, photo_path=str(photo))
+    client = PhotoClient(photo_errors=[FileNotFoundError("đã xoá")])
+    assert bot.OutboxSender(client, [CHAT]).deliver(conn, NOW) == 0
+    assert client.sent == [(CHAT, "Có thể mưa")]
+
+
+def test_outbox_photo_network_error_keeps_message(conn, tmp_path):
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"JPEG")
+    enqueue(conn, "weather_sunny", "Nắng", NOW - 10, photo_path=str(photo))
+    client = PhotoClient(photo_errors=[TelegramError("mạng lỗi")])
+    sender = bot.OutboxSender(client, [CHAT])
+    assert sender.deliver(conn, NOW) > 0
+    assert len(pending_messages(conn)) == 1 and client.sent == []
+    assert sender.deliver(conn, NOW) == 0
+    assert client.photos == [(CHAT, str(photo), "Nắng")]
+
+
+def _cfg_photos(tmp_path):
+    return dataclasses.replace(
+        CFG, weather=dataclasses.replace(CFG.weather, photo_dir=str(tmp_path / "photos"),
+                                         camera_index=2))
+
+
+def test_photo_command_captures_and_returns_photo(conn, tmp_path, monkeypatch):
+    calls = []
+
+    def fake_capture(path, index=0, **kw):
+        calls.append((path, index))
+        return True
+    monkeypatch.setattr(bot, "capture_jpeg", fake_capture)
+    cfg = _cfg_photos(tmp_path)
+    reply = bot.handle_update(upd("/photo"), conn, cfg, NOW)
+    assert isinstance(reply, bot.PhotoReply)
+    assert reply.path == calls[0][0] and calls[0][1] == 2
+    assert reply.path.startswith(str(tmp_path / "photos"))
+    assert "14:00" in reply.caption
+    assert pending_messages(conn) == []                       # gửi trực tiếp, không qua outbox
+
+
+def test_photo_command_capture_failure_replies_text(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "capture_jpeg", lambda path, index=0, **kw: False)
+    reply = bot.handle_update(upd("/photo"), conn, _cfg_photos(tmp_path), NOW)
+    assert isinstance(reply, str) and "Không chụp được ảnh" in reply
+
+
+def test_stale_photo_command_does_not_capture(conn, tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(bot, "capture_jpeg", lambda *a, **k: calls.append(a) or True)
+    reply = bot.handle_update(upd("/photo", date=NOW - 3600), conn, _cfg_photos(tmp_path), NOW)
+    assert calls == [] and isinstance(reply, str) and "/photo" in reply
+
+
+def test_photo_works_while_clock_unsynced(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "capture_jpeg", lambda path, index=0, **kw: True)
+    reply = bot.handle_update(upd("/photo"), conn, _cfg_photos(tmp_path), NOW,
+                              clock_synced=lambda: False)
+    assert isinstance(reply, bot.PhotoReply)
+
+
+def test_poll_once_sends_photo_reply(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "capture_jpeg", lambda path, index=0, **kw: True)
+    client = PhotoClient([[upd("/photo", uid=7)]])
+    bot.poll_once(conn, client, _cfg_photos(tmp_path), NOW)
+    assert len(client.photos) == 1 and client.photos[0][0] == CHAT
+    assert client.sent == []
+
+
+def test_poll_once_photo_send_failure_falls_back_or_logs(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "capture_jpeg", lambda path, index=0, **kw: True)
+    client = PhotoClient([[upd("/photo", uid=8)]], photo_errors=[FileNotFoundError("mất")])
+    bot.poll_once(conn, client, _cfg_photos(tmp_path), NOW)
+    assert len(client.sent) == 1 and "Không gửi được ảnh" in client.sent[0][1]
+    client = PhotoClient([[upd("/photo", uid=9)]], photo_errors=[TelegramError("mạng")])
+    bot.poll_once(conn, client, _cfg_photos(tmp_path), NOW)   # không raise
+    assert get_state(conn, "telegram_offset") == "10"
+
+
+def test_help_lists_photo(conn):
+    assert "/photo" in handle(conn, "/help")

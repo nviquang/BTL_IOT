@@ -173,3 +173,26 @@ def test_pm25_series_drops_out_of_range_values(tmp_path):
     insert_raw(conn, sample(1030, pm25=1000.5))
     insert_raw(conn, sample(1040, pm25=65535.0))
     assert pm25_series(conn, 0) == [(1010, 0.0), (1020, 1000.0)]
+
+
+def test_outbox_has_photo_path_column(tmp_path):
+    conn = open_db(tmp_path / "aiot.db")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(outbox)")}
+    assert "photo_path" in cols
+
+
+def test_init_schema_migrates_old_outbox(tmp_path):
+    """DB tạo trước khi có photo_path: init_schema thêm cột, giữ tin cũ, chạy lại không lỗi."""
+    path = tmp_path / "aiot.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "created_at INTEGER NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, "
+                "sent_at INTEGER)")
+    old.execute("INSERT INTO outbox (created_at, kind, text) VALUES (1, 'reply', 'cũ')")
+    old.commit()
+    old.close()
+    conn = open_db(path)
+    init_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(outbox)")}
+    assert "photo_path" in cols
+    assert conn.execute("SELECT text, photo_path FROM outbox").fetchall() == [("cũ", None)]

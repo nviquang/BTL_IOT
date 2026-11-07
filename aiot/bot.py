@@ -16,8 +16,14 @@ Dịch vụ bot Telegram: long polling nhận lệnh, gửi tin trong outbox (g�
 - Lệnh điều khiển lệch quá telegram.stale_command_s giây so với đồng hồ Pi (cũ hoặc "ở
   tương lai") bị bỏ. Pi không có RTC, nên khi đồng hồ chưa tin được (chưa đồng bộ NTP lần
   nào từ lúc khởi động, xem aiot.collector.is_clock_trusted) thì lệnh điều khiển bị từ chối
-  hẳn. Lệnh chỉ đọc luôn được trả lời, trừ /report cũ hơn stale_command_s (tồn đọng 24 giờ
-  khi bot chạy lần đầu hay sau khi mất mạng): bỏ để không gọi Gemini cho từng tin cũ.
+  hẳn. Lệnh chỉ đọc luôn được trả lời, trừ /report và /photo cũ hơn stale_command_s (tồn
+  đọng 24 giờ khi bot chạy lần đầu hay sau khi mất mạng): bỏ để không gọi Gemini hay chụp
+  ảnh cho từng tin cũ.
+- /photo chụp ảnh camera USB ngay (aiot.camera) và trả lời bằng ảnh, không qua outbox.
+  Chụp lỗi (camera bận vì pi_camera_client.py, không có camera/cv2) thì trả lời chữ.
+- Tin outbox có photo_path (cảnh báo nắng/mưa của aiot.weather) được gửi bằng sendPhoto,
+  chữ làm chú thích; file ảnh không còn thì gửi chữ.
+- Khi khởi động, bot đặt menu lệnh (setMyCommands); lỗi chỉ ghi cảnh báo.
 - Offset getUpdates lưu ở khoá 'telegram_offset', commit cùng transaction với thay đổi
   của lệnh (crash giữa chừng không áp dụng lại lệnh), và luôn tăng kể cả khi xử lý một
   update bị lỗi, để một tin hỏng không làm bot lặp lại mãi.
@@ -37,11 +43,14 @@ import logging
 import re
 import signal
 import threading
+import os
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from aiot.aqi import classify
+from aiot.camera import capture_jpeg
 from aiot.control import ControlState, fan_on, override_active
 from aiot.collector import is_clock_trusted
 from aiot.db import connect, get_state, init_schema, log_event, set_state
@@ -70,10 +79,23 @@ HELP = ("Các lệnh:\n"
         "/status - chế độ, quạt, ghi đè, cảm biến, giờ yên lặng\n"
         "/forecast - dự báo PM2.5 6 giờ tới\n"
         "/report - báo cáo 24 giờ qua\n"
+        "/photo - chụp ảnh ban công ngay\n"
         "/fan on | /fan off - bật/tắt quạt thủ công (có thời hạn)\n"
         "/mode auto - về tự động theo PM2.5\n"
         "/mode manual - giữ quạt như hiện tại (có thời hạn)\n"
         "/quiet 22 6 - đặt giờ yên lặng từ 22h tới 6h")
+# Menu lệnh hiện khi gõ "/" trong Telegram (setMyCommands); mô tả tối đa 256 ký tự
+BOT_COMMANDS = [
+    {"command": "now", "description": "Số liệu cảm biến mới nhất"},
+    {"command": "status", "description": "Chế độ, quạt, ghi đè, cảm biến, giờ yên lặng"},
+    {"command": "forecast", "description": "Dự báo PM2.5 6 giờ tới"},
+    {"command": "report", "description": "Báo cáo không khí 24 giờ qua"},
+    {"command": "photo", "description": "Chụp ảnh ban công ngay"},
+    {"command": "fan", "description": "Bật/tắt quạt thủ công: /fan on hoặc /fan off"},
+    {"command": "mode", "description": "Chế độ quạt: /mode auto hoặc /mode manual"},
+    {"command": "quiet", "description": "Đặt giờ yên lặng, ví dụ /quiet 22 6"},
+    {"command": "help", "description": "Danh sách lệnh"},
+]
 USAGE_FAN = "Cách dùng: /fan on hoặc /fan off"
 USAGE_MODE = "Cách dùng: /mode auto hoặc /mode manual"
 USAGE_QUIET = ("Cách dùng: /quiet <giờ bắt đầu> <giờ kết thúc>, mỗi giờ từ 0 tới 23, "
@@ -243,6 +265,22 @@ def cmd_report(conn, cfg, now, args):
         return "Không lập được báo cáo lúc này. Gửi /now để xem số liệu hiện tại, thử lại sau."
 
 
+class PhotoReply(NamedTuple):
+    """Trả lời bằng ảnh (poll_once gửi bằng sendPhoto)."""
+    path: str
+    caption: str
+
+
+def cmd_photo(conn, cfg, now, args):
+    """Chụp ảnh camera USB ngay. Ảnh lưu trong weather.photo_dir (aiot.weather xoá ảnh cũ)."""
+    w = cfg.weather
+    path = os.path.join(w.photo_dir, f"{datetime.fromtimestamp(now):%Y%m%d_%H%M%S}_photo.jpg")
+    if not capture_jpeg(path, index=w.camera_index):
+        return ("Không chụp được ảnh lúc này (camera không có, đang bị chương trình khác dùng "
+                "như pi_camera_client.py, hoặc thiếu OpenCV). Thử lại sau.")
+    return PhotoReply(path, f"Ảnh ban công lúc {_fmt_time(now, seconds=True)}.")
+
+
 def cmd_help(conn, cfg, now, args):
     return HELP
 
@@ -323,9 +361,11 @@ READ_ONLY = {
     "/status": cmd_status,
     "/forecast": cmd_forecast,
     "/report": cmd_report,
+    "/photo": cmd_photo,
     "/help": cmd_help,
     "/start": cmd_help,
 }
+STALE_READ_ONLY = frozenset({"/report", "/photo"})   # lệnh chỉ đọc "đắt": bỏ khi quá cũ
 CONTROL = {
     "/fan": cmd_fan,
     "/mode": cmd_mode,
@@ -334,8 +374,8 @@ CONTROL = {
 
 
 def handle_update(update, conn, cfg, now, *, clock_synced=None, commit=True):
-    """Xử lý một update của Telegram. Trả về văn bản trả lời, hoặc None nếu không trả lời
-    (chat không được phép, không phải tin chữ).
+    """Xử lý một update của Telegram. Trả về văn bản trả lời, PhotoReply (/photo), hoặc None
+    nếu không trả lời (chat không được phép, không phải tin chữ).
 
     clock_synced: hàm () -> bool, mặc định aiot.collector.is_clock_trusted. Pi không có
     RTC: khi đồng hồ chưa tin được thì không so được tuổi lệnh, nên lệnh điều khiển
@@ -385,14 +425,15 @@ def handle_update(update, conn, cfg, now, *, clock_synced=None, commit=True):
         log.info("Lệnh %s từ chat %s", text.strip()[:100], chat_id)
         return CONTROL[command](conn, cfg, now, args, ctx)
 
-    if command == "/report":
+    if command in STALE_READ_ONLY:
         date = message.get("date")
         stale_s = cfg.telegram.stale_command_s
         if isinstance(date, int) and not isinstance(date, bool) and now - date > stale_s:
-            # Tồn đọng sau khi bot dừng/mất mạng: mỗi /report cũ sẽ gọi Gemini một lần
-            log.info("Bỏ /report cũ từ chat %s (cách đây %s giây)", chat_id, now - date)
-            return (f"Đã bỏ lệnh /report gửi cách đây {_fmt_age(now - date)} (quá {stale_s} "
-                    f"giây, có thể do bot dừng hoặc mất mạng). Gửi lại /report nếu vẫn cần.")
+            # Tồn đọng sau khi bot dừng/mất mạng: mỗi /report cũ gọi Gemini một lần,
+            # mỗi /photo cũ chụp một ảnh
+            log.info("Bỏ %s cũ từ chat %s (cách đây %s giây)", command, chat_id, now - date)
+            return (f"Đã bỏ lệnh {command} gửi cách đây {_fmt_age(now - date)} (quá {stale_s} "
+                    f"giây, có thể do bot dừng hoặc mất mạng). Gửi lại {command} nếu vẫn cần.")
     handler = READ_ONLY.get(command)
     if handler is not None:
         return handler(conn, cfg, now, args)
@@ -442,11 +483,32 @@ def poll_once(conn, client, cfg, now=None, *, clock_synced=None):
         if new_offset is not None:
             offset = new_offset
         if reply:
-            chat_id = update["message"]["chat"]["id"]
+            _send_reply(client, update["message"]["chat"]["id"], reply)
+
+
+def _send_reply(client, chat_id, reply):
+    """Gửi trả lời (chữ hoặc PhotoReply). Lỗi chỉ ghi log."""
+    try:
+        if isinstance(reply, PhotoReply):
             try:
-                client.send(chat_id, reply)
-            except TelegramError as e:
-                log.warning("Không gửi được trả lời tới chat %s: %s", chat_id, e)
+                client.send_photo(chat_id, reply.path, reply.caption)
+            except OSError as e:
+                log.warning("Không mở được ảnh vừa chụp: %s", e)
+                client.send(chat_id, "Không gửi được ảnh vừa chụp (file ảnh bị mất). "
+                                     "Thử lại /photo.")
+        else:
+            client.send(chat_id, reply)
+    except TelegramError as e:
+        log.warning("Không gửi được trả lời tới chat %s: %s", chat_id, e)
+
+
+def register_commands(client):
+    """Đặt menu lệnh của bot (setMyCommands). Lỗi chỉ ghi cảnh báo, bot vẫn chạy."""
+    try:
+        client.set_my_commands(BOT_COMMANDS)
+        log.info("Đã đặt menu lệnh (%d lệnh)", len(BOT_COMMANDS))
+    except Exception as e:
+        log.warning("setMyCommands lỗi, bỏ qua (menu lệnh có thể chưa cập nhật): %s", e)
 
 
 def _next_backoff(current, maximum=BACKOFF_MAX_S):
@@ -501,7 +563,7 @@ class OutboxSender:
                 if chat_id in done:
                     continue
                 try:
-                    self.client.send(chat_id, row.text)
+                    self._send_row(chat_id, row)
                 except TelegramError as e:
                     if e.retry_after:
                         log.warning("Telegram yêu cầu chờ %s giây (HTTP 429)", e.retry_after)
@@ -520,6 +582,16 @@ class OutboxSender:
             log.info("Đã gửi tin %s (%s)", row.id, row.kind)
         self._backoff = 0
         return 0
+
+    def _send_row(self, chat_id, row):
+        """Tin có ảnh còn trên đĩa: sendPhoto (chữ làm chú thích); không thì gửi chữ."""
+        if row.photo_path and os.path.isfile(row.photo_path):
+            try:
+                self.client.send_photo(chat_id, row.photo_path, row.text)
+                return
+            except OSError as e:
+                log.warning("Không mở được ảnh của tin %s, gửi chữ: %s", row.id, e)
+        self.client.send(chat_id, row.text)
 
 
 def run_delivery(conn, sender, stop, wall=time.time):
@@ -604,6 +676,7 @@ def main(argv=None) -> int:
         run_delivery(c, OutboxSender(TelegramClient(token), cfg.secrets.allowed_chat_ids), stop)
 
     # Luồng long polling có thể đang chờ HTTP tới ~65 giây: để daemon, không chờ nó khi dừng
+    register_commands(TelegramClient(token))
     poll_thread = worker("telegram-poll", polling)
     send_thread = worker("telegram-send", delivery)
     poll_thread.start()

@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS outbox (            -- tin Telegram chờ gửi (gửi bù khi có mạng)
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at INTEGER NOT NULL, kind TEXT NOT NULL,
-  text TEXT NOT NULL, sent_at INTEGER
+  text TEXT NOT NULL, sent_at INTEGER,
+  photo_path TEXT                              -- ảnh JPEG gửi kèm (NULL: chỉ chữ)
 );
 """
 
@@ -74,9 +75,23 @@ def connect(path) -> sqlite3.Connection:
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    """Tạo bảng nếu chưa có; chạy nhiều lần không sao."""
+    """Tạo bảng nếu chưa có và thêm cột mới vào DB cũ; chạy nhiều lần không sao."""
     conn.executescript(SCHEMA)
+    _add_column(conn, "outbox", "photo_path", "TEXT")
     conn.commit()
+
+
+def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    """ALTER TABLE ... ADD COLUMN nếu bảng (tạo bởi phiên bản cũ) chưa có cột.
+    Hai dịch vụ cùng khởi động có thể cùng thêm: lỗi 'duplicate column' thì bỏ qua."""
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column in cols:
+        return
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
 
 
 def insert_raw(conn: sqlite3.Connection, s: RawSample) -> None:

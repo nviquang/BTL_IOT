@@ -21,6 +21,7 @@ Không thuộc hệ thống (đã loại khỏi thiết kế):
 | Điều khiển quạt tự động `aiot/controller.py` | Có code, chưa thử trên mạch (README 2.4c) |
 | Bot Telegram, cảnh báo, báo cáo sáng, lời khuyên Gemini | Có code, chưa thử với bot thật và Gemini thật (README 2.4d, 2.4f) |
 | Dự báo PM2.5 mỗi giờ (đối chứng + LSTM) | Có code; LSTM đã huấn luyện/đánh giá trên dữ liệu CAMS công khai, chưa triển khai (README 2.4e, 2.4g) |
+| Cảnh báo nắng/mưa kèm ảnh camera (`aiot/weather.py`, `/photo`, menu lệnh bot) | Có code, chưa thử thật (README 2.4h) |
 | Nghiệm thu 7 ngày | Có `scripts/acceptance_report.py`; chưa đo, kết quả ghi ở `docs/nghiem_thu.md` |
 
 Việc còn lại theo thứ tự nằm ở mục "Việc cần làm trên Pi" trong `README.md`.
@@ -36,6 +37,7 @@ Raspberry Pi 4 Model B 4GB. Số chân là số vật lý trên header 40 chân.
 | PMS7003 | PM1.0, PM2.5, PM10 | UART pin 8, 10 (`/dev/serial0`); 5V |
 | MQ135 | 1 bit vượt ngưỡng | DO qua cầu chia áp 10 kΩ / 20 kΩ → pin 37 (GPIO26); 5V từ pin 4, GND pin 20 |
 | Relay + quạt 5V | Mô phỏng máy lọc | IN → pin 16 (GPIO23); tải nối COM/NO |
+| Camera USB | Ảnh | /dev/video0 |
 
 Những điều dễ sai:
 - **MQ135 DO:** `0` = đèn DO sáng = vượt ngưỡng, `1` = chưa vượt. Không có giá trị nồng độ. Ngưỡng chỉnh bằng biến trở và chưa thử với khí thật.

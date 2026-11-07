@@ -230,3 +230,23 @@ def test_collapse_nothing_stale_is_noop(conn):
 def test_relay_error_is_an_alert_kind():
     from aiot.notifier import ALERT_KINDS
     assert "relay_error" in ALERT_KINDS
+
+
+def test_enqueue_with_photo_path(conn):
+    enqueue(conn, "weather_sunny", "nắng", 100, photo_path="/tmp/a.jpg")
+    enqueue(conn, "reply", "chữ", 200)
+    rows = pending_messages(conn)
+    assert [r.photo_path for r in rows] == ["/tmp/a.jpg", None]
+
+
+def test_stale_weather_alerts_are_collapsed(conn):
+    """Tin nắng/mưa cũ hơn 1 giờ (sau khi mất mạng) không còn đúng: gộp vào tin tóm tắt
+    (bỏ ảnh); tin còn mới giữ nguyên kèm ảnh."""
+    now = at(15)
+    enqueue(conn, "weather_sunny", "nắng cũ", at(12), photo_path="/p/a.jpg")
+    enqueue(conn, "weather_rain", "mưa mới", now - 600, photo_path="/p/b.jpg")
+    collapse_stale_alerts(conn, now)
+    rows = pending_messages(conn)
+    assert [r.kind for r in rows] == ["alert_summary", "weather_rain"]
+    assert rows[0].photo_path is None and "1 cảnh báo" in rows[0].text
+    assert rows[1].photo_path == "/p/b.jpg"
