@@ -15,6 +15,9 @@ và bật/tắt quạt qua relay GPIO23.
   AQI theo PM2.5 TB exit_mean_s (15 phút) được ghi vào outbox trong CÙNG transaction với
   trạng thái và sự kiện, đặt sau SAVEPOINT riêng: lỗi trong phần tin nhắn chỉ huỷ phần
   tin nhắn, ghi log rồi tiếp tục; trạng thái, sự kiện và relay không bị ảnh hưởng.
+- Dự báo (Task 9): mỗi bước đọc latest_forecast (TB 3 giờ tới của dự báo mới nhất, bỏ
+  qua nếu cũ hơn control.forecast_max_age_s) cho luật 'Chủ động'. Đọc lỗi thì coi như
+  không có dự báo, ghi log một lần, vẫn điều khiển bình thường.
 - SIGTERM/SIGINT: đưa GPIO23 về LOW, nhả chip, thoát 0.
 - Không phụ thuộc Internet hay Gemini.
 
@@ -32,6 +35,7 @@ from pathlib import Path
 from aiot.config import TelegramCfg
 from aiot.control import ControlState, Event, apply_override, decide, fan_on, inputs_from_series
 from aiot.db import connect, delete_state, get_state, init_schema, log_event, pm25_series, set_state
+from aiot.forecast import latest_forecast
 from aiot.notifier import (FAULT_PENDING_KEY, check_aqi_change, event_message, resend_suppressed,
                            send_alert)
 
@@ -40,6 +44,8 @@ log = logging.getLogger("aiot.controller")
 STATE_KEY = "control_state"
 PENDING_KEY = "pending_override"
 RELAY_FAULT_KEY = "relay_fault"     # "1" khi đang trong chuỗi lỗi relay
+
+_forecast_error_logged = False      # lỗi đọc dự báo chỉ ghi log một lần mỗi chuỗi lỗi
 
 
 def _fmt_ts(ts: int) -> str:
@@ -168,6 +174,22 @@ def _drive(conn, relay, on: bool, now: int) -> bool:
     return True
 
 
+def _read_forecast(conn, cfg, now: int):
+    """(TB 3 giờ tới, made_at) hoặc (None, None). Không bao giờ raise."""
+    global _forecast_error_logged
+    try:
+        found = latest_forecast(conn, now, cfg.forecast_max_age_s)
+    except Exception as e:
+        if not _forecast_error_logged:
+            log.warning("Không đọc được dự báo, điều khiển không có dự báo: %s", e)
+            _forecast_error_logged = True
+        return None, None
+    if _forecast_error_logged:
+        log.info("Đọc được dự báo trở lại")
+        _forecast_error_logged = False
+    return found if found is not None else (None, None)
+
+
 # ---------------- Khôi phục và một bước ----------------
 def restore_state(conn, now: int) -> ControlState:
     """Trạng thái sau khởi động lại (đã lưu lại DB), chưa chạm relay."""
@@ -204,8 +226,9 @@ def step(conn, relay, cfg, now: int, *, tcfg: TelegramCfg | None = None) -> Cont
 
     lookback = max(cfg.enter_mean_s, cfg.exit_mean_s, cfg.danger_window_s) + 60
     series = pm25_series(conn, now - lookback)
-    # Task 9 sẽ truyền thêm dự báo 3 giờ tới
-    inp = inputs_from_series(series, now, cfg)
+    forecast_3h, forecast_made_at = _read_forecast(conn, cfg, now)
+    inp = inputs_from_series(series, now, cfg, forecast_3h=forecast_3h,
+                             forecast_made_at=forecast_made_at)
     st, decide_events = decide(st, inp, cfg)
     events += decide_events
 

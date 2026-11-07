@@ -22,5 +22,6 @@ smbus2                          # test_all.py quét bus I2C
 
 # Dịch vụ aiot/
 PyYAML                          # đọc config.yaml
+numpy                           # aiot/forecast.py (không dùng pandas trên Pi)
 requests                        # Telegram Bot API, Open-Meteo
 google-genai                    # Gemini viết lời khuyên

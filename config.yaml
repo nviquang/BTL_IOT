@@ -23,7 +23,7 @@ control:
   danger_pm25: 150.0        # mức khẩn cấp: vào ngay, kèm cảnh báo mạnh
   danger_window_s: 60
   proactive_pm25: 100.0     # dự báo TB 3 giờ tới > 100 thì bật quạt trước
-  forecast_max_age_s: 5400
+  forecast_max_age_s: 5400  # dự báo cũ hơn (giây) thì controller và /forecast bỏ qua
   stale_s: 120              # mất dữ liệu PM > 2 phút: giữ nguyên trạng thái, cảnh báo
   override_ttl_s: 7200      # ghi đè thủ công hết hạn sau 2 giờ
   loop_s: 20
@@ -46,7 +46,6 @@ gemini:
 forecast:
   model_path: /home/admin/BTL_IOT/models/pm25_lstm.tflite
   scaler_path: /home/admin/BTL_IOT/models/scaler.json
-  max_age_s: 5400
 
 report:
   time: "06:30"

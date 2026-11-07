@@ -79,6 +79,15 @@ def test_unknown_key_rejected(tmp_path):
         load_config(*write(tmp_path, "control:\n  enter_pm2_5: 80\n"))
 
 
+def test_forecast_max_age_owned_by_control_only(tmp_path):
+    """Tuổi tối đa của dự báo chỉ đặt ở control.forecast_max_age_s (một nơi duy nhất)."""
+    cfg = load_config(*write(tmp_path, "control:\n  forecast_max_age_s: 3600\n"))
+    assert cfg.control.forecast_max_age_s == 3600
+    assert not hasattr(cfg.forecast, "max_age_s")
+    with pytest.raises(ValueError, match="max_age_s"):
+        load_config(*write(tmp_path, "forecast:\n  max_age_s: 5400\n"))
+
+
 def test_secrets_come_from_env_not_yaml(tmp_path, monkeypatch):
     cfg = load_config(*write(tmp_path, env_text=(
         "# bình luận\n"

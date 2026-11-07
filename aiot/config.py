@@ -67,7 +67,7 @@ class GeminiCfg:
 class ForecastCfg:
     model_path: str = "/home/admin/BTL_IOT/models/pm25_lstm.tflite"
     scaler_path: str = "/home/admin/BTL_IOT/models/scaler.json"
-    max_age_s: int = 5400
+    # Tuổi tối đa của dự báo chỉ đặt ở control.forecast_max_age_s
 
 
 @dataclass(frozen=True)

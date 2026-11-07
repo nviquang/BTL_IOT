@@ -40,6 +40,7 @@ from aiot.aqi import classify
 from aiot.control import ControlState, fan_on, override_active
 from aiot.collector import is_clock_synced
 from aiot.db import connect, get_state, init_schema, log_event, set_state
+from aiot.forecast import latest_rows
 from aiot.notifier import collapse_stale_alerts, mark_sent, pending_messages, quiet_window
 from aiot.telegram_api import TelegramClient, TelegramError, install_log_redaction
 
@@ -182,6 +183,36 @@ def cmd_status(conn, cfg, now, args):
     return "\n".join(lines)
 
 
+MODEL_NAMES = {
+    "persistence": "giữ nguyên giờ gần nhất",
+    "seasonal_naive": "cùng giờ hôm qua",
+    "lstm": "mạng LSTM",
+}
+
+
+def cmd_forecast(conn, cfg, now, args):
+    max_age = cfg.control.forecast_max_age_s
+    found = latest_rows(conn, now, max_age)
+    if found is None or not found[2]:
+        return (f"Chưa có dự báo (hoặc dự báo gần nhất cũ hơn {_fmt_age(max_age)}). "
+                f"Dự báo được lập mỗi giờ khi có đủ dữ liệu PM2.5 của 3 giờ gần đây.")
+    made_at, model, rows = found
+    name = MODEL_NAMES.get(model)
+    model_text = f"{model} ({name})" if name else model
+    lines = [f"Dự báo PM2.5 trung bình từng giờ (lập lúc {_fmt_time(made_at)}, "
+             f"cách đây {_fmt_age(now - made_at)}):"]
+    for horizon, value in rows:
+        start = made_at + (horizon - 1) * 3600
+        try:
+            label = f" ({classify(value).label})"
+        except ValueError:
+            label = ""
+        lines.append(f"- {datetime.fromtimestamp(start).strftime('%H:00')}: "
+                     f"{_num(value, unit='µg/m³')}{label}")
+    lines.append(f"Mô hình: {model_text}")
+    return "\n".join(lines)
+
+
 def cmd_not_ready(conn, cfg, now, args):
     return NOT_READY
 
@@ -260,7 +291,7 @@ def cmd_quiet(conn, cfg, now, args, ctx):
 READ_ONLY = {
     "/now": cmd_now,
     "/status": cmd_status,
-    "/forecast": cmd_not_ready,     # Task 9
+    "/forecast": cmd_forecast,
     "/report": cmd_not_ready,       # Task 10
     "/help": cmd_help,
     "/start": cmd_help,

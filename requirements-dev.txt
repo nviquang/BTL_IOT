@@ -5,3 +5,4 @@
 
 pytest
 PyYAML        # aiot/config.py đọc config.yaml
+numpy         # aiot/forecast.py

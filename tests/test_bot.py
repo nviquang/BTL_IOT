@@ -234,9 +234,42 @@ def test_status_without_state_defaults_normal(conn):
     assert "BÌNH THƯỜNG" in reply and "tắt" in reply
 
 
-def test_forecast_and_report_not_ready(conn):
-    assert "chưa sẵn sàng" in handle(conn, "/forecast").lower()
+def test_report_not_ready(conn):
     assert "chưa sẵn sàng" in handle(conn, "/report").lower()
+
+
+def put_forecast(conn, made_at, preds, model="seasonal_naive"):
+    conn.executemany("INSERT INTO forecasts VALUES (?, ?, ?, ?)",
+                     [(made_at, k + 1, v, model) for k, v in enumerate(preds)])
+    conn.commit()
+
+
+def test_forecast_none_yet(conn):
+    assert "chưa có dự báo" in handle(conn, "/forecast").lower()
+
+
+def test_forecast_shows_six_hours_with_aqi_and_model(conn):
+    made_at = NOW // 3600 * 3600
+    put_forecast(conn, made_at - 3600, [1.0] * 6, model="persistence")     # cũ hơn: không hiện
+    put_forecast(conn, made_at, [5.0, 12.34, 40.0, 60.0, 130.0, 230.0])
+    reply = handle(conn, "/forecast", now=made_at + 1200)
+    for k in range(6):
+        assert datetime.fromtimestamp(made_at + k * 3600).strftime("%H:00") in reply
+    for text in ("5,0", "12,3", "40,0", "60,0", "130,0", "230,0"):
+        assert text in reply
+    for label in ("Tốt", "Trung bình", "Kém", "Xấu", "Rất xấu", "Nguy hại"):
+        assert label in reply
+    assert "seasonal_naive" in reply and "persistence" not in reply
+    assert "20 phút" in reply                                               # tuổi dự báo
+    assert "12.3" not in reply
+
+
+def test_forecast_too_old_not_shown(conn):
+    made_at = NOW // 3600 * 3600
+    put_forecast(conn, made_at, [20.0] * 6)
+    reply = handle(conn, "/forecast", now=made_at + CFG.control.forecast_max_age_s + 1)
+    assert "chưa có dự báo" in reply.lower()
+    assert "20,0" not in reply
 
 
 def test_unknown_command_gives_help(conn):

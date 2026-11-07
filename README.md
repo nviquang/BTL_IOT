@@ -304,6 +304,28 @@ tail -3 ~/iot_data/sensors.csv
 
 Dừng/khởi động lại: `sudo systemctl stop aiot-collector` / `sudo systemctl restart aiot-collector`.
 
+### 2.4e. Dự báo PM2.5 mỗi giờ (`aiot/forecast.py`)
+
+Mỗi giờ (phút 02) timer chạy một lần dự báo PM2.5 trung bình giờ cho 6 giờ tới từ bảng
+`readings` và ghi vào bảng `forecasts`. Hiện dùng mô hình đối chứng: `seasonal_naive` (cùng
+giờ hôm qua) khi có đủ 24 giờ dữ liệu, ngược lại `persistence` (giữ nguyên giờ gần nhất);
+LSTM sẽ thay vào ở Task 12. Không có giờ hợp lệ nào trong 3 giờ gần đây thì không ghi dự báo
+(vẫn thoát 0). Controller dùng TB 3 giờ đầu cho luật "Chủ động" (> 100 µg/m³ thì bật quạt
+trước); dự báo cũ hơn `control.forecast_max_age_s` (5400 s) bị bỏ qua. Bot trả lời `/forecast`.
+
+```bash
+cd ~/BTL_IOT && source venv/bin/activate
+python -c "import numpy; print(numpy.__version__)"   # cần numpy (đã có trong requirements-pi.txt)
+python -m aiot.forecast                              # chạy thử một lần, xem log "Dự báo made_at=..."
+sudo cp deploy/aiot-forecast.service deploy/aiot-forecast.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now aiot-forecast.timer
+systemctl list-timers aiot-forecast.timer           # thấy lần chạy kế tiếp ở phút 02
+journalctl -u aiot-forecast -n 20
+# Sau một giờ phải có dòng mới:
+sqlite3 ~/iot_data/aiot.db "select datetime(made_at,'unixepoch','localtime'), horizon_h, round(pm25_pred,1), model from forecasts order by made_at desc, horizon_h limit 6;"
+```
+
 ### 2.4c. Bộ điều khiển quạt (`aiot/controller.py`)
 
 > **Trạng thái: có code và unit test, CHƯA KIỂM TRA TRÊN MẠCH.** Hai bước dưới (demo có
@@ -368,8 +390,8 @@ Bot dùng long polling (không cần mở port), chỉ trả lời chat trong `A
 gửi mọi tin trong bảng `outbox` (cảnh báo của controller, gửi bù khi có mạng lại). Bot không
 chạm GPIO: `/fan`, `/mode` chỉ ghi khoá `pending_override` để controller áp dụng trong
 vòng `loop_s` giây. Lệnh: `/now`, `/status`, `/fan on|off`, `/mode auto|manual`,
-`/quiet 22 6`, `/help`; `/forecast` và `/report` trả lời "chưa sẵn sàng" cho tới khi có dự báo
-và báo cáo sáng. Lệnh điều khiển lệch quá 120 s so với đồng hồ Pi (ví dụ gửi lúc mất mạng)
+`/quiet 22 6`, `/forecast` (6 giờ tới, nhãn AQI, tên mô hình; xem 2.4e), `/help`; `/report`
+trả lời "chưa sẵn sàng" cho tới khi có báo cáo sáng. Lệnh điều khiển lệch quá 120 s so với đồng hồ Pi (ví dụ gửi lúc mất mạng)
 bị bỏ; khi đồng hồ Pi chưa đồng bộ NTP (vừa khởi động lại, chưa có mạng; Pi không có RTC)
 thì lệnh điều khiển bị từ chối, lệnh chỉ đọc vẫn trả lời.
 

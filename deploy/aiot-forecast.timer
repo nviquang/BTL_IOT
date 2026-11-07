@@ -1,0 +1,12 @@
+# Chạy aiot-forecast.service mỗi giờ, phút 02 (sau khi collector ghi xong cửa sổ 5 phút
+# cuối của giờ trước). Persistent: Pi tắt lúc tới giờ thì chạy bù khi bật lại.
+# Cài: xem aiot-forecast.service. Kiểm tra: systemctl list-timers aiot-forecast.timer
+[Unit]
+Description=Run AIoT PM2.5 forecast hourly
+
+[Timer]
+OnCalendar=*-*-* *:02:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

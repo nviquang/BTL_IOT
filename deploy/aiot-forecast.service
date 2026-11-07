@@ -1,0 +1,15 @@
+# Dự báo PM2.5 6 giờ tới (chạy một lần, do aiot-forecast.timer gọi mỗi giờ).
+# Cài: sudo cp deploy/aiot-forecast.service deploy/aiot-forecast.timer /etc/systemd/system/
+#      sudo systemctl daemon-reload && sudo systemctl enable --now aiot-forecast.timer
+# Không đủ dữ liệu thì không ghi dự báo và vẫn thoát 0.
+[Unit]
+Description=AIoT air station PM2.5 forecast (one shot)
+# Không phụ thuộc mạng: dự báo chạy cục bộ từ bảng readings.
+After=aiot-collector.service
+
+[Service]
+Type=oneshot
+User=admin
+WorkingDirectory=/home/admin/BTL_IOT
+ExecStart=/home/admin/BTL_IOT/venv/bin/python -m aiot.forecast
+Environment=PYTHONUNBUFFERED=1

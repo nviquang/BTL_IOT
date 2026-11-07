@@ -1,6 +1,7 @@
 """Test dịch vụ controller: khôi phục sau khởi động lại, ghi đè, ghi sự kiện, lỗi relay."""
 import importlib.util
 import json
+import logging
 import sys
 import threading
 import types
@@ -604,3 +605,44 @@ def test_deferred_fault_resent_by_controller_after_quiet(conn):
     later = 1000 + 3600 * 2                            # hết giờ yên lặng, vẫn mất dữ liệu
     step(conn, FakeRelay(), CFG, later, tcfg=TCFG)
     assert [k for k, _ in outbox(conn)] == ["sensor_fault"]
+
+
+# ---------- dự báo (Task 9) ----------
+
+def put_forecast(conn, made_at, preds):
+    conn.executemany("INSERT INTO forecasts VALUES (?, ?, ?, 'persistence')",
+                     [(made_at, k + 1, v) for k, v in enumerate(preds)])
+    conn.commit()
+
+
+def test_fresh_high_forecast_turns_fan_on_proactively(conn):
+    add_pm(conn, 9000, 10_000, 20.0)
+    put_forecast(conn, 7200, [90.0, 110.0, 130.0, 0.0, 0.0, 0.0])      # TB 3 giờ = 110
+    relay = FakeRelay()
+    st = step(conn, relay, CFG, 10_000)
+    assert st.mode == "PROTECT"
+    assert ("fan_on", "proactive") in [(k, d) for _, k, d in events(conn)]
+    assert relay.calls == [True]
+
+
+def test_stale_forecast_ignored_by_step(conn):
+    add_pm(conn, 9000, 10_000, 20.0)
+    put_forecast(conn, 10_000 - CFG.forecast_max_age_s - 1, [300.0] * 6)
+    st = step(conn, FakeRelay(), CFG, 10_000)
+    assert st.mode == "NORMAL"
+
+
+def test_forecast_read_failure_does_not_break_control(conn, monkeypatch, caplog):
+    def broken(*a, **kw):
+        raise RuntimeError("forecasts hỏng")
+
+    monkeypatch.setattr("aiot.controller.latest_forecast", broken)
+    monkeypatch.setattr("aiot.controller._forecast_error_logged", False)
+    add_pm(conn, 800, 1100, 200.0)
+    relay = FakeRelay()
+    with caplog.at_level(logging.WARNING, logger="aiot.controller"):
+        st = step(conn, relay, CFG, 1000)
+        step(conn, relay, CFG, 1020)
+        step(conn, relay, CFG, 1040)
+    assert st.mode == "PROTECT" and relay.calls == [True, True, True]
+    assert sum("forecasts hỏng" in r.getMessage() for r in caplog.records) == 1
