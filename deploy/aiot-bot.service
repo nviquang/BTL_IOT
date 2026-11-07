@@ -1,0 +1,27 @@
+# Dịch vụ bot Telegram của trạm quan trắc không khí AIoT (lệnh + gửi tin trong outbox).
+# Cài: sudo cp deploy/aiot-bot.service /etc/systemd/system/
+#      sudo systemctl daemon-reload && sudo systemctl enable --now aiot-bot
+# Cần TELEGRAM_TOKEN và ALLOWED_CHAT_IDS trong /home/admin/BTL_IOT/.env (không commit).
+# Bot không chạm GPIO: lệnh /fan, /mode chỉ ghi pending_override cho controller.
+[Unit]
+Description=AIoT air station Telegram bot (long polling, allowlist, outbox delivery)
+# Không phụ thuộc cứng vào mạng: mất mạng thì bot tự thử lại, tin chờ trong outbox
+# và được gửi bù khi có mạng lại.
+After=aiot-collector.service aiot-controller.service
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/BTL_IOT
+ExecStart=/home/admin/BTL_IOT/venv/bin/python -m aiot.bot
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+# Mã 2 = thiếu TELEGRAM_TOKEN hoặc ALLOWED_CHAT_IDS: không khởi động lại liên tục,
+# sửa .env rồi chạy: sudo systemctl restart aiot-bot
+RestartPreventExitStatus=2
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -7,10 +7,14 @@
 - Thiếu bí mật không làm lỗi: collector vẫn phải chạy khi chưa có token.
 """
 import dataclasses
+import logging
 import os
+import re
 from dataclasses import dataclass, field
 
 import yaml
+
+log = logging.getLogger("aiot.config")
 
 
 @dataclass(frozen=True)
@@ -139,17 +143,26 @@ def read_env_file(path):
     return values
 
 
+_CHAT_ID_RE = re.compile(r"-?[0-9]+", re.ASCII)
+
+
 def parse_chat_ids(text):
-    """'1, 2' -> frozenset({1, 2}). Bỏ phần tử rỗng, ID nhóm có thể âm."""
+    """'1, 2' -> frozenset({1, 2}). Bỏ phần tử rỗng, ID nhóm có thể âm.
+
+    Không bao giờ raise: phần tử không phải số nguyên thập phân (ví dụ 'abc', '1_000',
+    '+5', '2.5') bị bỏ kèm cảnh báo, để một dòng .env gõ sai không làm hỏng mọi dịch vụ.
+    Cảnh báo chỉ nêu vị trí, không in giá trị (có thể là bí mật dán nhầm chỗ).
+    Bot tự từ chối chạy khi danh sách rỗng.
+    """
     ids = set()
-    for part in (text or "").split(","):
+    for position, part in enumerate((text or "").split(","), start=1):
         part = part.strip()
         if not part:
             continue
-        try:
+        if _CHAT_ID_RE.fullmatch(part):
             ids.add(int(part))
-        except ValueError:
-            raise ValueError(f"ALLOWED_CHAT_IDS chứa giá trị không phải số: {part!r}") from None
+        else:
+            log.warning("ALLOWED_CHAT_IDS: phần tử thứ %d không phải số nguyên, bỏ qua", position)
     return frozenset(ids)
 
 

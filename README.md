@@ -359,6 +359,61 @@ Dừng: `sudo systemctl stop aiot-controller` (quạt tắt). Ghi đè thủ cô
 Telegram (khoá state `pending_override`); trước khi có bot, có thể thử bằng tay:
 `sqlite3 ~/iot_data/aiot.db "insert or replace into state values('pending_override','{\"fan\": true, \"ttl_s\": 600}');"`
 
+### 2.4d. Bot Telegram (`aiot/bot.py`)
+
+> **Trạng thái: có code và unit test, CHƯA THỬ VỚI BOT THẬT.** Các bước dưới do nhóm tự làm;
+> không ghi token vào tài liệu, chat nhóm hay commit.
+
+Bot dùng long polling (không cần mở port), chỉ trả lời chat trong `ALLOWED_CHAT_IDS`, và
+gửi mọi tin trong bảng `outbox` (cảnh báo của controller, gửi bù khi có mạng lại). Bot không
+chạm GPIO: `/fan`, `/mode` chỉ ghi khoá `pending_override` để controller áp dụng trong
+vòng `loop_s` giây. Lệnh: `/now`, `/status`, `/fan on|off`, `/mode auto|manual`,
+`/quiet 22 6`, `/help`; `/forecast` và `/report` trả lời "chưa sẵn sàng" cho tới khi có dự báo
+và báo cáo sáng. Lệnh điều khiển gửi quá 120 s trước (ví dụ lúc mất mạng) bị bỏ.
+
+**Bước 1 — Tạo bot:** trong Telegram nhắn `@BotFather` → `/newbot` → đặt tên → nhận token
+dạng `123456789:AA...`. Giữ token như mật khẩu; lộ thì `/revoke` trong BotFather để đổi.
+
+**Bước 2 — Tìm chat id:** mỗi thành viên nhắn một tin bất kỳ cho bot (hoặc thêm bot vào
+nhóm rồi nhắn trong nhóm), sau đó mở trên máy của mình (không dán link này vào đâu cả):
+`https://api.telegram.org/bot<TOKEN>/getUpdates` và đọc `message.chat.id` (nhóm có id âm).
+Nếu thấy lỗi 409 "webhook" thì gọi `.../bot<TOKEN>/deleteWebhook` một lần.
+
+**Bước 3 — Điền `.env` trên Pi** (`~/BTL_IOT/.env`, đã nằm trong `.gitignore`):
+
+```bash
+cd ~/BTL_IOT
+nano .env          # thêm 2 dòng, nhiều chat cách nhau bằng dấu phẩy
+#   TELEGRAM_TOKEN=<token từ BotFather>
+#   ALLOWED_CHAT_IDS=<id1>,<id2>
+chmod 600 .env
+```
+
+ID sai định dạng bị bỏ kèm cảnh báo trong log (các dịch vụ khác vẫn chạy). Thiếu token hoặc
+không còn id hợp lệ nào thì bot ghi lỗi và thoát mã 2, systemd không tự khởi động lại.
+
+**Bước 4 — Cài dịch vụ:**
+
+```bash
+cd ~/BTL_IOT && source venv/bin/activate && pip install -r requirements-pi.txt   # có requests
+sudo cp deploy/aiot-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now aiot-bot
+journalctl -u aiot-bot -f                        # thấy "Bot bắt đầu: ... chat được phép"
+```
+
+**Bước 5 — Kiểm tra thật** (controller và collector đang chạy):
+
+1. Gửi lần lượt `/help`, `/now`, `/status`, `/quiet 22 6`, `/mode manual`, `/mode auto`: mỗi lệnh có trả lời.
+2. `/fan on`: quạt quay trong khoảng `loop_s` (20 s); `/status` thấy ghi đè và giờ hết hạn;
+   `/mode auto` thì quạt về theo luật.
+3. Từ một tài khoản không có trong `ALLOWED_CHAT_IDS`: gửi `/now` → không có trả lời.
+4. Tắt Wi-Fi 10 phút (`sudo nmcli radio wifi off`, có người đứng cạnh, bật lại bằng
+   `sudo nmcli radio wifi on` hoặc qua bàn phím/màn hình): quạt và thu dữ liệu vẫn chạy;
+   có mạng lại thì tin trong outbox được gửi bù (cảnh báo cũ hơn 1 giờ được gộp thành một tin).
+5. Token không lọt vào log: `journalctl -u aiot-bot | grep -c "<phần đầu token, ví dụ 9 chữ số trước dấu :>"` phải ra `0`.
+6. Nhật ký lệnh: `sqlite3 ~/iot_data/aiot.db "select datetime(ts,'unixepoch','localtime'), detail from events where kind='command' order by rowid desc limit 10;"`
+
 ### 2.4b. Client cũ `pi_sensor_client.py` (chỉ DHT11 + BH1750)
 
 Chỉ dùng khi collector đã dừng (`sudo systemctl stop aiot-collector`).

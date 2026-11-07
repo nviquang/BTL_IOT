@@ -127,7 +127,8 @@ def in_quiet_hours(hour, start, end):
     return hour >= start or hour < end          # vắt qua nửa đêm, ví dụ 22 -> 6
 
 
-def _quiet_window(conn, cfg):
+def quiet_window(conn, cfg):
+    """(start, end) giờ yên lặng đang áp dụng: khoá quiet_hours thắng cấu hình."""
     tg = _tg(cfg)
     text = get_state(conn, QUIET_KEY)
     if text is not None:
@@ -148,7 +149,7 @@ def should_alert(kind, now, conn, cfg, urgent=False):
         return False
     if urgent:
         return True
-    start, end = _quiet_window(conn, cfg)
+    start, end = quiet_window(conn, cfg)
     return not in_quiet_hours(datetime.fromtimestamp(int(now)).hour, start, end)
 
 

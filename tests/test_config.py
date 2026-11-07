@@ -126,9 +126,20 @@ def test_allowed_chat_ids_accepts_group_ids(tmp_path):
     assert cfg.secrets.allowed_chat_ids == frozenset({-100123, 42})
 
 
-def test_allowed_chat_ids_invalid_raises(tmp_path):
-    with pytest.raises(ValueError, match="ALLOWED_CHAT_IDS"):
-        load_config(*write(tmp_path, env_text="ALLOWED_CHAT_IDS=1,abc\n"))
+def test_allowed_chat_ids_invalid_items_skipped_with_warning(tmp_path, caplog):
+    # ALLOWED_CHAT_IDS sai không được làm hỏng load_config (collector vẫn phải chạy),
+    # nhưng phần tử sai không bao giờ được chấp nhận.
+    env = "ALLOWED_CHAT_IDS=1,abc, 1_000 ,+5,2.5,-100123,0x10,٣\n"
+    with caplog.at_level("WARNING", logger="aiot.config"):
+        cfg = load_config(*write(tmp_path, env_text=env))
+    assert cfg.secrets.allowed_chat_ids == frozenset({1, -100123})
+    assert "ALLOWED_CHAT_IDS" in caplog.text
+    assert "abc" not in caplog.text            # không in giá trị (có thể là bí mật dán nhầm)
+
+
+def test_allowed_chat_ids_all_invalid_gives_empty_set(tmp_path):
+    cfg = load_config(*write(tmp_path, env_text="ALLOWED_CHAT_IDS=abc\n"))
+    assert cfg.secrets.allowed_chat_ids == frozenset()
 
 
 def test_missing_telegram_token_does_not_raise(tmp_path):

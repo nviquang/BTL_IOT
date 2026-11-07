@@ -1,0 +1,530 @@
+"""Test bot Telegram: allowlist, lệnh, lệnh cũ, che token, offset, gửi outbox. Không dùng mạng."""
+import dataclasses
+import json
+import logging
+import sys
+from datetime import datetime
+
+import pytest
+import requests
+
+from aiot import bot
+from aiot.config import Config, Secrets
+from aiot.control import ControlState
+from aiot.db import RawSample, connect, get_state, init_schema, insert_raw, set_state
+from aiot.notifier import enqueue, pending_messages
+from aiot.telegram_api import TelegramClient, TelegramError, install_log_redaction
+
+TOKEN = "123456789:AAH-secret_TokenValue-xyz"
+CHAT = 111
+OTHER = 999
+NOW = int(datetime(2026, 11, 7, 14, 0, 0).timestamp())
+CFG = dataclasses.replace(
+    Config(), secrets=Secrets(telegram_token=TOKEN, allowed_chat_ids=frozenset({CHAT, 222})))
+
+
+@pytest.fixture
+def conn(tmp_path):
+    c = connect(tmp_path / "aiot.db")
+    init_schema(c)
+    yield c
+    c.close()
+
+
+def upd(text, chat=CHAT, date=NOW, uid=1000):
+    return {"update_id": uid,
+            "message": {"message_id": 5, "date": date, "text": text,
+                        "chat": {"id": chat, "type": "private"}}}
+
+
+def handle(conn, text, **kw):
+    now = kw.pop("now", NOW)
+    return bot.handle_update(upd(text, **kw), conn, CFG, now)
+
+
+def pending(conn):
+    text = get_state(conn, "pending_override")
+    return None if text is None else json.loads(text)
+
+
+def command_events(conn):
+    return [r[0] for r in conn.execute(
+        "SELECT detail FROM events WHERE kind = 'command' ORDER BY rowid")]
+
+
+def add_sample(conn, ts, pm25=20.0, mq=1):
+    insert_raw(conn, RawSample(ts, 12.0, pm25, 30.0, 27.5, 70.0, 150.0, mq, True))
+
+
+# ---------------- allowlist ----------------
+def test_unauthorized_chat_ignored_and_no_reply(conn):
+    for text in ("/fan on", "/now", "/status", "xin chào", "/quiet 22 6"):
+        assert handle(conn, text, chat=OTHER) is None
+    assert pending(conn) is None
+    assert get_state(conn, "quiet_hours") is None
+    assert conn.execute("SELECT count(*) FROM events").fetchone()[0] == 0
+
+
+def test_update_without_message_or_text_ignored(conn):
+    assert bot.handle_update({"update_id": 1}, conn, CFG, NOW) is None
+    no_text = upd("x")
+    del no_text["message"]["text"]
+    assert bot.handle_update(no_text, conn, CFG, NOW) is None
+
+
+# ---------------- lệnh điều khiển ----------------
+def test_fan_on_writes_pending_override_and_logs(conn):
+    reply = handle(conn, "/fan on", uid=4242)
+    assert pending(conn) == {"fan": True, "ttl_s": CFG.control.override_ttl_s, "id": 4242}
+    assert "bật" in reply
+    events = command_events(conn)
+    assert len(events) == 1 and "/fan on" in events[0] and str(CHAT) in events[0]
+    assert TOKEN not in events[0]
+    # bot không bao giờ chạm GPIO: không import aiot.relay hay thư viện GPIO
+    imported = _imported_modules(bot) | _imported_modules(sys.modules["aiot.telegram_api"])
+    assert not imported & {"aiot.relay", "lgpio", "gpiozero", "RPi.GPIO"}
+
+
+def _imported_modules(module):
+    import ast
+    tree = ast.parse(open(module.__file__, encoding="utf-8").read())
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module)
+    return names
+
+
+def test_fan_off_and_bot_suffix(conn):
+    handle(conn, "/fan@TramKhongKhiBot OFF", uid=7)
+    assert pending(conn) == {"fan": False, "ttl_s": CFG.control.override_ttl_s, "id": 7}
+
+
+def test_identical_consecutive_commands_are_distinct_texts(conn):
+    handle(conn, "/fan on", uid=1)
+    first = get_state(conn, "pending_override")
+    handle(conn, "/fan on", uid=2)
+    assert get_state(conn, "pending_override") != first
+
+
+def test_fan_without_valid_argument_shows_usage(conn):
+    for text in ("/fan", "/fan maybe"):
+        reply = handle(conn, text)
+        assert "/fan on" in reply and "/fan off" in reply
+    assert pending(conn) is None
+
+
+def test_mode_auto_clears_override(conn):
+    handle(conn, "/mode auto", uid=9)
+    assert pending(conn) == {"fan": None, "id": 9}
+    assert any("/mode auto" in d for d in command_events(conn))
+
+
+def test_mode_manual_keeps_current_fan_state(conn):
+    # chưa có trạng thái: BÌNH THƯỜNG -> quạt tắt
+    handle(conn, "/mode manual", uid=1)
+    assert pending(conn) == {"fan": False, "ttl_s": CFG.control.override_ttl_s, "id": 1}
+    # đang BẢO VỆ -> giữ quạt bật
+    set_state(conn, "control_state", ControlState(mode="PROTECT", entered_at=NOW - 60).to_json())
+    handle(conn, "/mode manual", uid=2)
+    assert pending(conn)["fan"] is True
+    # BẢO VỆ nhưng ghi đè tắt còn hạn -> quạt đang tắt
+    set_state(conn, "control_state", ControlState(
+        mode="PROTECT", override_fan=False, override_until=NOW + 600).to_json())
+    handle(conn, "/mode manual", uid=3)
+    assert pending(conn)["fan"] is False
+
+
+def test_mode_without_valid_argument_shows_usage(conn):
+    reply = handle(conn, "/mode turbo")
+    assert "/mode auto" in reply and pending(conn) is None
+
+
+def test_stale_command_rejected(conn):
+    old = NOW - CFG.telegram.stale_command_s - 1
+    for text in ("/fan on", "/mode auto", "/quiet 22 6"):
+        reply = handle(conn, text, date=old)
+        assert "bỏ" in reply.lower()
+    assert pending(conn) is None
+    assert get_state(conn, "quiet_hours") is None
+    # lệnh chỉ đọc vẫn được trả lời
+    for text in ("/now", "/status", "/help", "/forecast", "/report"):
+        assert handle(conn, text, date=old)
+    # đúng ngưỡng thì vẫn áp dụng
+    handle(conn, "/fan on", date=NOW - CFG.telegram.stale_command_s)
+    assert pending(conn)["fan"] is True
+
+
+def test_quiet_validates_input(conn):
+    reply = handle(conn, "/quiet 22 6")
+    assert get_state(conn, "quiet_hours") == "22,6"
+    assert "22" in reply and "6" in reply
+    assert any("/quiet 22 6" in d for d in command_events(conn))
+    for text in ("/quiet 25 6", "/quiet", "/quiet 22", "/quiet a b", "/quiet -1 6"):
+        reply = handle(conn, text)
+        assert "/quiet" in reply and "0" in reply      # cách dùng
+        assert get_state(conn, "quiet_hours") == "22,6"
+
+
+# ---------------- lệnh chỉ đọc ----------------
+def test_now_reports_missing_data(conn):
+    reply = handle(conn, "/now")
+    assert "chưa có dữ liệu" in reply.lower()
+
+
+def test_now_reports_old_data_with_age(conn):
+    add_sample(conn, NOW - 20 * 60)
+    reply = handle(conn, "/now")
+    assert "chưa có dữ liệu" in reply.lower()
+    assert "20 phút" in reply
+
+
+def test_now_reports_latest_sample(conn):
+    add_sample(conn, NOW - 100, pm25=40.0)
+    add_sample(conn, NOW - 30, pm25=60.0, mq=0)
+    reply = handle(conn, "/now")
+    assert "60,0" in reply and "Xấu" in reply           # PM2.5 và nhãn AQI
+    assert "12,0" in reply and "30,0" in reply           # PM1, PM10
+    assert "27,5" in reply and "70" in reply and "150" in reply
+    assert "vượt ngưỡng" in reply.lower()
+    assert "co2" not in reply.lower() and "co₂" not in reply.lower()
+    assert "30 giây" in reply
+
+
+def test_now_handles_missing_values(conn):
+    insert_raw(conn, RawSample(NOW - 10, None, None, None, 26.0, None, None, None, True))
+    reply = handle(conn, "/now")
+    assert "26,0" in reply
+    assert "PM2.5" in reply
+
+
+def test_status_shows_mode_fan_and_data_age(conn):
+    add_sample(conn, NOW - 45)
+    set_state(conn, "control_state", ControlState(mode="PROTECT", entered_at=NOW - 600).to_json())
+    reply = handle(conn, "/status")
+    assert "BẢO VỆ" in reply
+    assert "bật" in reply
+    assert "45 giây" in reply
+    assert "22" in reply and "6" in reply                # giờ yên lặng mặc định
+
+
+def test_status_shows_override_fault_and_custom_quiet(conn):
+    until = NOW + 3600
+    set_state(conn, "control_state", ControlState(
+        mode="NORMAL", fault_active=True, override_fan=True, override_until=until).to_json())
+    set_state(conn, "quiet_hours", "23,7")
+    reply = handle(conn, "/status")
+    assert "BÌNH THƯỜNG" in reply
+    assert datetime.fromtimestamp(until).strftime("%H:%M") in reply
+    assert "lỗi" in reply.lower()
+    assert "23" in reply and "7" in reply
+    assert "chưa có dữ liệu" in reply.lower()
+
+
+def test_status_without_state_defaults_normal(conn):
+    reply = handle(conn, "/status")
+    assert "BÌNH THƯỜNG" in reply and "tắt" in reply
+
+
+def test_forecast_and_report_not_ready(conn):
+    assert "chưa sẵn sàng" in handle(conn, "/forecast").lower()
+    assert "chưa sẵn sàng" in handle(conn, "/report").lower()
+
+
+def test_unknown_command_gives_help(conn):
+    for text in ("/abc", "xin chào", "/help", "/start"):
+        reply = handle(conn, text)
+        for cmd in ("/now", "/status", "/fan", "/mode", "/quiet"):
+            assert cmd in reply
+
+
+# ---------------- TelegramClient ----------------
+class FakeResponse:
+    def __init__(self, status=200, payload=None, bad_json=False):
+        self.status_code = status
+        self._payload = payload if payload is not None else {"ok": True, "result": []}
+        self._bad_json = bad_json
+
+    def json(self):
+        if self._bad_json:
+            raise ValueError("no json")
+        return self._payload
+
+
+class FakeSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def post(self, url, json=None, timeout=None):
+        self.calls.append({"url": url, "json": json, "timeout": timeout})
+        r = self.responses.pop(0)
+        if isinstance(r, BaseException):
+            raise r
+        return r
+
+
+def test_error_message_hides_token():
+    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+    err = requests.exceptions.ConnectionError(
+        f"HTTPSConnectionPool(host='api.telegram.org', port=443): Max retries exceeded with url: "
+        f"/bot{TOKEN}/getUpdates (Caused by NewConnectionError) {url}")
+    client = TelegramClient(TOKEN, session=FakeSession([err]))
+    with pytest.raises(TelegramError) as info:
+        client.get_updates(None, 50)
+    assert TOKEN not in str(info.value)
+    assert TOKEN not in repr(info.value)
+    assert "<token>" in str(info.value)
+    assert info.value.__cause__ is None and info.value.__suppress_context__
+
+
+def test_error_message_hides_url_encoded_token():
+    from urllib.parse import quote
+    err = requests.exceptions.ReadTimeout(f"timeout /bot{quote(TOKEN, safe='')}/sendMessage")
+    client = TelegramClient(TOKEN, session=FakeSession([err]))
+    with pytest.raises(TelegramError) as info:
+        client.send(CHAT, "hi")
+    assert quote(TOKEN, safe="") not in str(info.value)
+
+
+def test_log_redaction_filter_hides_token():
+    records = []
+
+    class Capture(logging.Handler):
+        def emit(self, record):
+            records.append(self.format(record))
+
+    cap = Capture()
+    logger = logging.getLogger("aiot.test_redact")
+    logger.addHandler(cap)
+    logger.propagate = False
+    try:
+        install_log_redaction(TOKEN, handlers=[cap])
+        logger.warning("url là %s", f"https://api.telegram.org/bot{TOKEN}/x")
+        try:
+            raise RuntimeError(f"lỗi với {TOKEN}")
+        except RuntimeError:
+            logger.exception("có lỗi")
+    finally:
+        logger.removeHandler(cap)
+    assert records and all(TOKEN not in r for r in records)
+    assert "<token>" in records[0]
+
+
+def test_urllib3_logging_silenced():
+    bot.configure_logging()
+    assert logging.getLogger("urllib3").getEffectiveLevel() >= logging.WARNING
+
+
+def test_get_updates_uses_long_polling_and_offset():
+    session = FakeSession([FakeResponse(payload={"ok": True, "result": [{"update_id": 5}]})])
+    client = TelegramClient(TOKEN, session=session)
+    assert client.get_updates(42, 50) == [{"update_id": 5}]
+    call = session.calls[0]
+    assert call["url"].endswith("/getUpdates")
+    assert call["json"]["timeout"] == 50 and call["json"]["offset"] == 42
+    assert call["timeout"] > 50                       # timeout HTTP dài hơn long polling
+
+
+def test_send_uses_plain_text():
+    session = FakeSession([FakeResponse(payload={"ok": True, "result": {}})])
+    client = TelegramClient(TOKEN, session=session)
+    client.send(CHAT, "*không phải* _markdown_ [x](y)")
+    call = session.calls[0]
+    assert call["url"].endswith("/sendMessage")
+    assert call["json"]["chat_id"] == CHAT
+    assert call["json"]["text"] == "*không phải* _markdown_ [x](y)"
+    assert "parse_mode" not in call["json"]
+
+
+def test_send_truncates_long_text():
+    session = FakeSession([FakeResponse(payload={"ok": True, "result": {}})])
+    TelegramClient(TOKEN, session=session).send(CHAT, "a" * 5000)
+    assert len(session.calls[0]["json"]["text"]) <= 4096
+
+
+def test_http_429_carries_retry_after():
+    session = FakeSession([FakeResponse(429, {"ok": False, "error_code": 429,
+                                              "description": "Too Many Requests",
+                                              "parameters": {"retry_after": 7}})])
+    with pytest.raises(TelegramError) as info:
+        TelegramClient(TOKEN, session=session).send(CHAT, "x")
+    assert info.value.retry_after == 7 and info.value.status == 429
+
+
+def test_api_error_and_bad_json_raise_telegram_error():
+    session = FakeSession([FakeResponse(403, {"ok": False, "error_code": 403,
+                                              "description": "Forbidden: bot was blocked"}),
+                           FakeResponse(502, bad_json=True)])
+    client = TelegramClient(TOKEN, session=session)
+    with pytest.raises(TelegramError) as info:
+        client.send(CHAT, "x")
+    assert info.value.status == 403 and "blocked" in str(info.value)
+    with pytest.raises(TelegramError) as info:
+        client.send(CHAT, "x")
+    assert info.value.status == 502
+
+
+# ---------------- vòng long polling ----------------
+class FakeClient:
+    def __init__(self, batches=(), send_errors=()):
+        self.batches = list(batches)
+        self.offsets = []
+        self.sent = []
+        self.send_errors = list(send_errors)
+
+    def get_updates(self, offset, timeout):
+        self.offsets.append(offset)
+        b = self.batches.pop(0) if self.batches else []
+        if isinstance(b, BaseException):
+            raise b
+        return b
+
+    def send(self, chat_id, text):
+        if self.send_errors:
+            e = self.send_errors.pop(0)
+            if e is not None:
+                raise e
+        self.sent.append((chat_id, text))
+
+
+def test_offset_persisted_and_advanced_even_on_handler_error(conn, monkeypatch):
+    real = bot.handle_update
+
+    def flaky(update, conn_, cfg, now):
+        if update["update_id"] == 10:
+            raise RuntimeError("handler hỏng")
+        return real(update, conn_, cfg, now)
+
+    monkeypatch.setattr(bot, "handle_update", flaky)
+    client = FakeClient([[upd("/fan on", uid=10), upd("/status", uid=11)], []])
+    bot.poll_once(conn, client, CFG, NOW)
+    assert get_state(conn, "telegram_offset") == "12"
+    assert [c for c, _ in client.sent] == [CHAT]          # chỉ trả lời update 11
+    bot.poll_once(conn, client, CFG, NOW)
+    assert client.offsets == [None, 12]                   # không lặp lại tin lỗi
+
+
+def test_poll_once_reply_send_failure_does_not_block(conn):
+    client = FakeClient([[upd("/fan on", uid=3)]], send_errors=[TelegramError("mạng lỗi")])
+    bot.poll_once(conn, client, CFG, NOW)
+    assert get_state(conn, "telegram_offset") == "4"
+    assert pending(conn)["fan"] is True
+
+
+def test_poll_once_rolls_back_partial_writes_on_handler_error(conn, monkeypatch):
+    def broken(update, conn_, cfg, now):
+        conn_.execute("INSERT INTO events (ts, kind, detail) VALUES (1, 'x', 'y')")
+        raise RuntimeError("hỏng giữa chừng")
+
+    monkeypatch.setattr(bot, "handle_update", broken)
+    bot.poll_once(conn, FakeClient([[upd("/fan on", uid=1)]]), CFG, NOW)
+    assert conn.execute("SELECT count(*) FROM events WHERE kind = 'x'").fetchone()[0] == 0
+    assert get_state(conn, "telegram_offset") == "2"
+
+
+# ---------------- gửi outbox ----------------
+def test_outbox_retries_after_network_failure_and_honors_429(conn):
+    enqueue(conn, "fan_on", "Đã bật quạt", NOW - 10)
+    client = FakeClient(send_errors=[TelegramError("mạng lỗi")])
+    sender = bot.OutboxSender(client, [CHAT])
+    wait = sender.deliver(conn, NOW)
+    assert wait > 0
+    assert len(pending_messages(conn)) == 1               # lỗi mạng: giữ tin
+
+    client.send_errors = [TelegramError("chậm lại", status=429, retry_after=7)]
+    wait = sender.deliver(conn, NOW)
+    assert wait >= 7
+    assert len(pending_messages(conn)) == 1
+
+    assert sender.deliver(conn, NOW) == 0
+    assert pending_messages(conn) == []
+    assert client.sent == [(CHAT, "Đã bật quạt")]
+
+
+def test_outbox_marks_sent_only_after_all_chats(conn):
+    enqueue(conn, "fan_on", "A", NOW - 10)
+    client = FakeClient(send_errors=[None, TelegramError("mạng lỗi")])
+    sender = bot.OutboxSender(client, [111, 222])
+    assert sender.deliver(conn, NOW) > 0
+    assert len(pending_messages(conn)) == 1
+    assert sender.deliver(conn, NOW) == 0
+    assert pending_messages(conn) == []
+    # chat đã nhận không bị gửi lại
+    assert client.sent == [(111, "A"), (222, "A")]
+
+
+def test_outbox_keeps_order_and_stops_at_first_failure(conn):
+    enqueue(conn, "fan_on", "1", NOW - 30)
+    enqueue(conn, "fan_off", "2", NOW - 20)
+    client = FakeClient(send_errors=[TelegramError("mạng lỗi")])
+    bot.OutboxSender(client, [CHAT]).deliver(conn, NOW)
+    assert client.sent == []
+    assert [r.text for r in pending_messages(conn)] == ["1", "2"]
+
+
+def test_outbox_collapses_stale_alerts_before_sending(conn):
+    for i in range(3):
+        enqueue(conn, "aqi_change", f"cũ {i}", NOW - 7200 - i)
+    client = FakeClient()
+    bot.OutboxSender(client, [CHAT]).deliver(conn, NOW)
+    assert len(client.sent) == 1 and "3 cảnh báo" in client.sent[0][1]
+
+
+def test_outbox_permanent_chat_error_does_not_block_queue(conn):
+    enqueue(conn, "fan_on", "A", NOW - 10)
+    client = FakeClient(send_errors=[TelegramError("Forbidden", status=403), None])
+    sender = bot.OutboxSender(client, [111, 222])
+    assert sender.deliver(conn, NOW) == 0
+    assert pending_messages(conn) == []
+    assert client.sent == [(222, "A")]
+
+
+def test_outbox_backoff_grows_and_resets(conn):
+    enqueue(conn, "fan_on", "A", NOW)
+    client = FakeClient(send_errors=[TelegramError("x"), TelegramError("x")])
+    sender = bot.OutboxSender(client, [CHAT])
+    w1 = sender.deliver(conn, NOW)
+    w2 = sender.deliver(conn, NOW)
+    assert w2 > w1
+    assert sender.deliver(conn, NOW) == 0
+
+
+# ---------------- khởi động ----------------
+def test_main_refuses_without_token_or_allowlist(tmp_path, monkeypatch, caplog):
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(f"db_path: {(tmp_path / 'a.db').as_posix()}\n", encoding="utf-8")
+    env = tmp_path / ".env"
+    for var in ("TELEGRAM_TOKEN", "ALLOWED_CHAT_IDS"):
+        monkeypatch.delenv(var, raising=False)
+
+    env.write_text("ALLOWED_CHAT_IDS=1\n", encoding="utf-8")
+    with caplog.at_level(logging.ERROR):
+        assert bot.main(["--config", str(cfg_path), "--env", str(env)]) != 0
+    assert "TELEGRAM_TOKEN" in caplog.text
+
+    caplog.clear()
+    env.write_text(f"TELEGRAM_TOKEN={TOKEN}\nALLOWED_CHAT_IDS=abc\n", encoding="utf-8")
+    with caplog.at_level(logging.ERROR):
+        assert bot.main(["--config", str(cfg_path), "--env", str(env)]) != 0
+    assert "ALLOWED_CHAT_IDS" in caplog.text
+    assert TOKEN not in caplog.text
+
+
+def test_main_exits_nonzero_when_worker_thread_dies(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(f"db_path: {(tmp_path / 'a.db').as_posix()}\n", encoding="utf-8")
+    env = tmp_path / ".env"
+    env.write_text(f"TELEGRAM_TOKEN={TOKEN}\nALLOWED_CHAT_IDS={CHAT}\n", encoding="utf-8")
+    for var in ("TELEGRAM_TOKEN", "ALLOWED_CHAT_IDS"):
+        monkeypatch.delenv(var, raising=False)
+
+    def broken_polling(conn, client, cfg, stop):
+        raise RuntimeError("hỏng")
+
+    monkeypatch.setattr(bot, "run_polling", broken_polling)
+    monkeypatch.setattr(bot, "run_delivery", lambda conn, sender, stop: stop.wait(5))
+    monkeypatch.setattr(bot.signal, "signal", lambda *a: None)
+    assert bot.main(["--config", str(cfg_path), "--env", str(env)]) == 1

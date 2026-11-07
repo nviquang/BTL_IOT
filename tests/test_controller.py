@@ -208,6 +208,19 @@ def test_pending_override_without_ttl_uses_config_default(conn):
     assert st.override_until == 1000 + CFG.override_ttl_s
 
 
+def test_pending_override_with_bot_id_key_accepted(conn):
+    # Bot thêm "id" (update_id) để hai lệnh giống nhau liên tiếp là hai văn bản khác nhau
+    add_pm(conn, 0, 1200, 20.0)
+    set_state(conn, PENDING_KEY, json.dumps({"fan": True, "ttl_s": 600, "id": 4242}))
+    st = step(conn, FakeRelay(), CFG, 1000)
+    assert st.override_fan is True and st.override_until == 1600
+    assert kinds(conn) == ["override"]
+    set_state(conn, PENDING_KEY, json.dumps({"fan": None, "id": 4243}))
+    st = step(conn, FakeRelay(), CFG, 1020)
+    assert st.override_fan is None
+    assert get_state(conn, PENDING_KEY) is None
+
+
 @pytest.mark.parametrize("text", [
     "garbage",
     "[]",
