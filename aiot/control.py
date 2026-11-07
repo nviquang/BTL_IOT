@@ -118,20 +118,25 @@ class ControlState:
                 raise ValueError(f"{n} phải là true/false")
         if data["override_fan"] is not None and not isinstance(data["override_fan"], bool):
             raise ValueError("override_fan phải là true/false hoặc null")
+        if data["override_fan"] is not None and data["override_until"] is None:
+            # Ghi đè không có hạn sẽ thành vĩnh viễn: không chấp nhận
+            raise ValueError("override_fan được đặt thì override_until phải có giá trị")
         return cls(**{n: data[n] for n in names})
 
 
 # ---------- ghi đè thủ công ----------
 
 def override_active(st, now):
-    return st.override_fan is not None and (st.override_until is None or now < st.override_until)
+    """Ghi đè còn hiệu lực. Thiếu override_until coi như không ghi đè (không cho vĩnh viễn)."""
+    return (st.override_fan is not None and st.override_until is not None
+            and now < st.override_until)
 
 
 def apply_override(st, fan, now, ttl_s):
     """/fan on|off: fan True/False, hết hạn sau ttl_s. fan None: xoá ghi đè (/mode auto)."""
     if fan is None:
         return dataclasses.replace(st, override_fan=None, override_until=None)
-    return dataclasses.replace(st, override_fan=bool(fan), override_until=now + ttl_s)
+    return dataclasses.replace(st, override_fan=bool(fan), override_until=int(now) + int(ttl_s))
 
 
 def fan_on(st, now):
@@ -152,7 +157,7 @@ def _since(prev, condition, now):
 
 def decide(st, inp, cfg):
     """Một bước điều khiển. Trả về (trạng thái mới, danh sách Event)."""
-    now = inp.now
+    now = int(inp.now)              # mốc thời gian lưu lại luôn là số nguyên
     events = []
 
     # Ghi đè hết hạn: xoá và báo một lần. Máy trạng thái vẫn chạy bên dưới ghi đè.

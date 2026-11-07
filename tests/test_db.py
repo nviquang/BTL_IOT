@@ -5,6 +5,7 @@ import threading
 from aiot.db import (
     RawSample,
     connect,
+    delete_state,
     get_state,
     init_schema,
     insert_raw,
@@ -115,6 +116,16 @@ def test_state_default_and_upsert(tmp_path):
     set_state(conn, "mode", "auto")
     assert get_state(conn, "mode") == "auto"
     assert conn.execute("SELECT COUNT(*) FROM state").fetchone()[0] == 1
+
+
+def test_delete_state(tmp_path):
+    conn = open_db(tmp_path / "aiot.db")
+    set_state(conn, "pending_override", '{"fan": null}')
+    delete_state(conn, "pending_override")
+    assert get_state(conn, "pending_override") is None
+    delete_state(conn, "pending_override")          # xoá khoá không có: không lỗi
+    other = sqlite3.connect(tmp_path / "aiot.db")   # đã commit
+    assert other.execute("SELECT COUNT(*) FROM state").fetchone()[0] == 0
 
 
 def test_log_event(tmp_path):

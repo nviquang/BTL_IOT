@@ -304,6 +304,61 @@ tail -3 ~/iot_data/sensors.csv
 
 Dừng/khởi động lại: `sudo systemctl stop aiot-collector` / `sudo systemctl restart aiot-collector`.
 
+### 2.4c. Bộ điều khiển quạt (`aiot/controller.py`)
+
+> **Trạng thái: có code và unit test, CHƯA KIỂM TRA TRÊN MẠCH.** Hai bước dưới (demo có
+> người đứng cạnh, rồi bật dịch vụ thật) do người vận hành tự làm.
+
+Controller đọc PM2.5 thô trong SQLite mỗi `loop_s` giây (20 s), chạy luật trong
+`aiot/control.py` và bật/tắt quạt qua relay GPIO23 (HIGH = quay). Chỉ controller được giữ
+GPIO23: không chạy cùng `test_all.py`, và không chạy bản demo cùng dịch vụ thật.
+Khởi động lại thì khôi phục trạng thái cuối trong DB (đang BẢO VỆ thì quạt quay lại ngay);
+dừng dịch vụ (SIGTERM/Ctrl+C) thì quạt tắt. Mọi chuyển trạng thái, ghi đè, lỗi relay
+nằm trong bảng `events`.
+
+**Bước 1 — Demo trên mạch với DB thử** (có người đứng cạnh quạt; code đã chép lên Pi như 2.4a):
+
+```bash
+cd ~/BTL_IOT && source venv/bin/activate
+sudo systemctl stop aiot-controller 2>/dev/null   # nếu đã cài dịch vụ thật
+
+# Config demo: DB thử + demo: true (mọi thời gian chờ còn 20 s). Không dùng DB thật.
+sed -e 's#^db_path:.*#db_path: /home/admin/iot_data/demo.db#' -e 's#^  demo: false#  demo: true#' config.yaml > /tmp/demo.yaml
+grep -E '^db_path|^  demo:' /tmp/demo.yaml       # phải thấy demo.db và demo: true
+
+# Terminal 1: controller dùng config demo (Ctrl+C để dừng, quạt sẽ tắt)
+python -m aiot.controller --config /tmp/demo.yaml
+
+# Terminal 2: bơm PM2.5 giả mỗi 10 s
+python scripts/inject_pm.py --db ~/iot_data/demo.db --profile high     # 80: quạt quay trong ~1 phút
+python scripts/inject_pm.py --db ~/iot_data/demo.db --profile low      # 20: quạt dừng sau ~1 phút
+python scripts/inject_pm.py --db ~/iot_data/demo.db --profile danger   # 200: quạt quay ngay (~30 s)
+python scripts/inject_pm.py --db ~/iot_data/demo.db --profile step --phase 12   # 2 phút 20, 2 phút 80, 2 phút 20
+
+# Kiểm tra trong lúc quạt chạy
+vcgencmd get_throttled                           # phải là throttled=0x0
+sqlite3 ~/iot_data/demo.db "select datetime(ts,'unixepoch','localtime'), kind, detail from events order by rowid desc limit 10;"
+```
+
+Thử khởi động lại khi đang BẢO VỆ: để quạt quay (profile `high`), rút nguồn Pi, cắm lại,
+chạy lại Terminal 1 và 2 → quạt quay lại ngay sau khi controller khởi động.
+Tắt Pi và rút nguồn trước khi đổi dây.
+
+**Bước 2 — Bật dịch vụ thật** (sau khi demo đạt; `demo: false` trong `config.yaml`):
+
+```bash
+cd ~/BTL_IOT
+grep -E '^  demo:' config.yaml                   # phải là demo: false
+sudo cp deploy/aiot-controller.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now aiot-controller
+journalctl -u aiot-controller -f                 # thấy "Controller bắt đầu: ... mode=NORMAL"
+```
+
+Dừng: `sudo systemctl stop aiot-controller` (quạt tắt). Ghi đè thủ công sẽ đến từ bot
+Telegram (khoá state `pending_override`); trước khi có bot, có thể thử bằng tay:
+`sqlite3 ~/iot_data/aiot.db "insert or replace into state values('pending_override','{\"fan\": true, \"ttl_s\": 600}');"`
+
 ### 2.4b. Client cũ `pi_sensor_client.py` (chỉ DHT11 + BH1750)
 
 Chỉ dùng khi collector đã dừng (`sudo systemctl stop aiot-collector`).

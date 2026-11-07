@@ -112,6 +112,12 @@ def set_state(conn: sqlite3.Connection, key: str, value) -> None:
     conn.commit()
 
 
+def delete_state(conn: sqlite3.Connection, key: str) -> None:
+    """Xoá một khoá trạng thái; không có khoá thì thôi."""
+    conn.execute("DELETE FROM state WHERE key = ?", (key,))
+    conn.commit()
+
+
 def log_event(conn: sqlite3.Connection, ts: int, kind: str, detail: str) -> None:
     conn.execute("INSERT INTO events (ts, kind, detail) VALUES (?, ?, ?)", (int(ts), kind, detail))
     conn.commit()

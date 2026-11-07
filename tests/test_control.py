@@ -342,3 +342,57 @@ def test_state_json_roundtrip():
 def test_state_from_bad_json_raises(text):
     with pytest.raises(ValueError):
         ControlState.from_json(text)
+
+
+@pytest.mark.parametrize("fan", [True, False])
+def test_state_rejects_override_without_expiry(fan):
+    text = json.dumps({**json.loads(ControlState().to_json()),
+                       "override_fan": fan, "override_until": None})
+    with pytest.raises(ValueError):
+        ControlState.from_json(text)
+
+
+def test_override_without_expiry_is_not_permanent():
+    st = ControlState(mode="NORMAL", override_fan=True, override_until=None)
+    assert fan_on(st, 10**9) is False
+    st = ControlState(mode="PROTECT", entered_at=0, override_fan=False, override_until=None)
+    assert fan_on(st, 10**9) is True
+
+
+# ---------- thời điểm luôn là số nguyên ----------
+
+def test_apply_override_coerces_now_to_int():
+    st = apply_override(ControlState(), True, 100.7, 7200)
+    assert st.override_until == 7300 and type(st.override_until) is int
+
+
+def test_decide_coerces_now_to_int():
+    st, _ = decide(ControlState(), Inputs(now=1000.6, last_sample_ts=1000, danger_level=200.0), CFG)
+    assert st.entered_at == 1000 and type(st.entered_at) is int
+    st, _ = decide(ControlState(), Inputs(now=1000.6, last_sample_ts=1000, mean_enter=60.0), CFG)
+    assert st.enter_since == 1000 and type(st.enter_since) is int
+    assert ControlState.from_json(st.to_json()) == st
+
+
+# ---------- chống nhảy trạng thái với Inputs trực tiếp ----------
+
+@pytest.mark.parametrize("start", [ControlState(), PROTECT_SINCE_0])
+def test_swinging_means_flip_at_most_once(start):
+    # 60 trong 4 phút rồi 20 trong 4 phút, lặp 1 giờ: vượt cả ngưỡng vào (55) lẫn thoát (35)
+    level = lambda t: 60.0 if (t // 240) % 2 == 0 else 20.0
+    st, log = run(start, range(1200, 1200 + 3600, 20), mean_enter=level, mean_exit=level)
+    assert transitions(log, start.mode) <= 1
+
+
+# ---------- biên mức khẩn cấp ----------
+
+def test_danger_boundary_exactly_150_enters():
+    st, events = decide(ControlState(), inp(1000, danger_level=150.0), CFG)
+    assert st.mode == "PROTECT"
+    assert events == [Event("danger"), Event("fan_on", "danger")]
+
+
+def test_danger_boundary_149_9_does_not_enter():
+    st, events = decide(ControlState(), inp(1000, danger_level=149.9), CFG)
+    assert st.mode == "NORMAL"
+    assert events == []

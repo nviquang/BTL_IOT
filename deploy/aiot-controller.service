@@ -1,0 +1,25 @@
+# Dịch vụ controller (bật/tắt quạt lọc qua relay GPIO23) của trạm quan trắc không khí AIoT.
+# Cài: sudo cp deploy/aiot-controller.service /etc/systemd/system/
+#      sudo systemctl daemon-reload && sudo systemctl enable --now aiot-controller
+# Chỉ dịch vụ này giữ GPIO23; không chạy test_all.py hay controller demo cùng lúc.
+[Unit]
+Description=AIoT air station controller (PM2.5 rules -> fan relay GPIO23)
+# Không phụ thuộc mạng: luật điều khiển chạy cục bộ, khởi động offline vẫn điều khiển.
+# Collector là nguồn dữ liệu nhưng không bắt buộc: thiếu dữ liệu thì controller giữ
+# nguyên trạng thái và ghi sensor_fault.
+After=aiot-collector.service
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/BTL_IOT
+ExecStart=/home/admin/BTL_IOT/venv/bin/python -m aiot.controller
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+# SIGTERM: controller đưa GPIO23 về LOW (quạt tắt) rồi thoát
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
