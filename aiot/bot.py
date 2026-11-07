@@ -87,7 +87,11 @@ HELP = ("Các lệnh:\n"
         "/fan on | /fan off - bật/tắt quạt thủ công (có thời hạn)\n"
         "/mode auto - về tự động theo PM2.5\n"
         "/mode manual - giữ quạt như hiện tại (có thời hạn)\n"
-        "/quiet 22 6 - đặt giờ yên lặng từ 22h tới 6h")
+        "/quiet 22 6 - đặt giờ yên lặng từ 22h tới 6h\n"
+        "/help - xem lại danh sách lệnh này\n"
+        "\n"
+        "Bot cũng tự gửi: cảnh báo đổi nhóm AQI, mức khẩn cấp, lỗi cảm biến, "
+        "báo cáo sáng 06:30, và cảnh báo nắng/sắp mưa kèm ảnh.")
 # Menu lệnh hiện khi gõ "/" trong Telegram (setMyCommands); mô tả tối đa 256 ký tự
 BOT_COMMANDS = [
     {"command": "now", "description": "Số liệu cảm biến mới nhất"},

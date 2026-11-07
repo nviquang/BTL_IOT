@@ -969,3 +969,10 @@ def test_polling_registers_commands_once_when_ok(conn):
 
     bot.run_polling(conn, client, CFG, Stop())
     assert calls == [1]
+
+
+def test_help_lists_every_menu_command():
+    """/help phải liệt kê mọi lệnh có trong menu gợi ý (setMyCommands)."""
+    for item in bot.BOT_COMMANDS:
+        assert f"/{item['command']}" in bot.HELP, item["command"]
+    assert "/help" in bot.HELP
