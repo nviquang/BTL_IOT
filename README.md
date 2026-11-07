@@ -379,6 +379,7 @@ Gõ `/` trong Telegram để thấy menu lệnh.
 | `/mode auto` | quạt về tự động theo PM2.5 |
 | `/mode manual` | giữ quạt như hiện tại trong 2 giờ |
 | `/quiet 22 6` | đặt giờ yên lặng 22h → 6h (chỉ cảnh báo khẩn cấp được gửi) |
+| `/clear` | xoá ngay tin của bot và của bạn trong 48 giờ qua (không hỏi lại) |
 | `/help` | danh sách lệnh |
 
 Lệnh điều khiển cũ hơn 2 phút (gửi lúc mất mạng hoặc lúc controller tắt) bị bỏ để quạt không
@@ -493,6 +494,7 @@ có người trông; quạt mini là mô phỏng (proof of concept).
 | MQ135 luôn `0` | đèn DO sáng: ngưỡng biến trở quá thấp | vặn biến trở tới khi đèn vừa tắt trong không khí sạch |
 | MQ135 luôn `1` dù đèn DO sáng | mất GND của module | kiểm tra dây GND, đèn nguồn |
 | `/photo` "Camera không phản hồi" | camera bận (client camera cũ đang chạy) hoặc rút cáp | tắt `pi_camera_client.py`/`pi_detection_client.py`; `ls /dev/video0` |
+| `/clear` không xoá tin cũ | Telegram chỉ cho bot xoá tin gửi chưa quá 48 giờ | dùng mục Xoá lịch sử của Telegram cho tin cũ hơn |
 | Bot không trả lời | `aiot-bot` dừng, thiếu token/chat id, hoặc chat không có trong `ALLOWED_CHAT_IDS` | `journalctl -u aiot-bot -n 30` |
 | Báo cáo luôn ghi "(lời khuyên mẫu)" | thiếu `GEMINI_API_KEY`, sai key, hết lượt, thiếu `google-genai` | kiểm tra `.env`, `venv/bin/pip install google-genai` |
 | `Checksum did not validate` liên tục | thiếu `libgpiod2`/`sysv-ipc`, dây DHT11 lỏng | cài gói ở 1.1, cắm lại dây |

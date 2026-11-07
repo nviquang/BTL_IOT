@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS outbox (            -- tin Telegram chờ gửi (gử
   text TEXT NOT NULL, sent_at INTEGER,
   photo_path TEXT                              -- ảnh JPEG gửi kèm (NULL: chỉ chữ)
 );
+CREATE TABLE IF NOT EXISTS tg_messages (       -- message_id Telegram (nhận và gửi) cho /clear
+  chat_id INTEGER, message_id INTEGER, ts INTEGER,
+  PRIMARY KEY (chat_id, message_id)
+);
 """
 
 
@@ -162,3 +166,35 @@ def purge_raw(conn: sqlite3.Connection, older_than_ts: int) -> None:
     """Xoá mẫu thô có ts < older_than_ts (bảng readings giữ nguyên)."""
     conn.execute("DELETE FROM raw_readings WHERE ts < ?", (int(older_than_ts),))
     conn.commit()
+
+
+def record_message(conn: sqlite3.Connection, chat_id: int, message_id: int, ts: int,
+                   *, commit: bool = True) -> None:
+    """Ghi message_id một tin Telegram (bot nhận hoặc gửi) để /clear xoá được; trùng thì bỏ qua."""
+    conn.execute("INSERT OR IGNORE INTO tg_messages (chat_id, message_id, ts) VALUES (?, ?, ?)",
+                 (int(chat_id), int(message_id), int(ts)))
+    if commit:
+        conn.commit()
+
+
+def recent_message_ids(conn: sqlite3.Connection, chat_id: int, since_ts: int) -> list[int]:
+    """message_id đã ghi của chat có ts >= since_ts."""
+    rows = conn.execute("SELECT message_id FROM tg_messages WHERE chat_id = ? AND ts >= ?",
+                        (int(chat_id), int(since_ts))).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def forget_messages(conn: sqlite3.Connection, chat_id: int, message_ids,
+                    *, commit: bool = True) -> None:
+    """Xoá các hàng tg_messages của đúng chat này có message_id trong message_ids."""
+    conn.executemany("DELETE FROM tg_messages WHERE chat_id = ? AND message_id = ?",
+                     [(int(chat_id), int(m)) for m in message_ids])
+    if commit:
+        conn.commit()
+
+
+def purge_messages(conn: sqlite3.Connection, older_than_ts: int, *, commit: bool = True) -> None:
+    """Xoá hàng tg_messages có ts < older_than_ts (Telegram không cho xoá tin đó nữa)."""
+    conn.execute("DELETE FROM tg_messages WHERE ts < ?", (int(older_than_ts),))
+    if commit:
+        conn.commit()

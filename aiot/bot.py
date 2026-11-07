@@ -31,6 +31,15 @@ Dịch vụ bot Telegram: long polling nhận lệnh, gửi tin trong outbox (g�
   của lệnh (crash giữa chừng không áp dụng lại lệnh), và luôn tăng kể cả khi xử lý một
   update bị lỗi, để một tin hỏng không làm bot lặp lại mãi.
 - Lỗi mạng khi long polling: chờ lâu dần nhưng tối đa POLL_BACKOFF_MAX_S (60 s).
+- /clear xoá ngay (không hỏi lại) mọi tin của chat đó trong 48 giờ qua mà bot xoá được, cả
+  tin của bot lẫn của người dùng. Telegram không có API liệt kê lịch sử, nên bot ghi
+  message_id vào bảng tg_messages: mọi tin nhận từ chat được phép, mọi tin bot gửi (trả
+  lời, outbox, ảnh). /clear xoá các id đã ghi trong 48 giờ, cộng vùng quét
+  [id lệnh - CLEAR_SWEEP, id lệnh] cho tin từ trước khi có bảng này (Telegram bỏ qua id
+  không có), mới trước cũ, rồi xoá hàng của chat đó. Hàng cũ hơn 48 giờ được purge
+  (luồng gửi outbox mỗi giờ, và khi /clear). /clear cũ hơn stale_command_s bị bỏ như
+  /report, để tồn đọng khi khởi động lại không xoá lịch sử. /clear không đụng outbox
+  hay trạng thái điều khiển.
 - Hai luồng trong cùng tiến trình, mỗi luồng một kết nối SQLite và một TelegramClient:
   long polling (trả lời lệnh) và gửi outbox (mỗi DELIVERY_INTERVAL_S giây; lỗi mạng thì
   giữ tin và chờ lâu dần; HTTP 429 thì chờ retry_after).
@@ -56,7 +65,8 @@ from aiot.aqi import classify
 from aiot.camera import capture_subprocess as capture_photo
 from aiot.control import ControlState, fan_on, override_active
 from aiot.collector import is_clock_trusted
-from aiot.db import connect, get_state, init_schema, log_event, set_state
+from aiot.db import (connect, forget_messages, get_state, init_schema, log_event,
+                     purge_messages, recent_message_ids, record_message, set_state)
 from aiot.forecast import MODEL_NAMES, latest_rows
 from aiot.notifier import collapse_stale_alerts, mark_sent, pending_messages, quiet_window
 from aiot.report import build_report
@@ -77,6 +87,11 @@ BACKOFF_MAX_S = 300
 POLL_BACKOFF_MAX_S = 60                # lệnh gửi ngay khi có mạng lại không bị chờ tới quá cũ
 REGISTER_ATTEMPTS = 3                  # số lần thử setMyCommands mỗi lần bot chạy
 PERMANENT_STATUSES = frozenset({400, 403})   # chat không tồn tại / chặn bot: bỏ chat đó
+DELETE_WINDOW_S = 48 * 3600            # Telegram chỉ cho xoá tin gửi chưa quá 48 giờ
+CLEAR_SWEEP = 300                      # /clear quét thêm 300 message_id trước lệnh
+PURGE_INTERVAL_S = 3600                # luồng outbox purge tg_messages mỗi giờ
+CLEAR_DONE = ("Đã xoá lịch sử chat trong 48 giờ qua. "
+              "Tin cũ hơn: dùng mục Xoá lịch sử của Telegram.")
 
 HELP = ("Các lệnh:\n"
         "/now - số liệu cảm biến mới nhất\n"
@@ -88,6 +103,7 @@ HELP = ("Các lệnh:\n"
         "/mode auto - về tự động theo PM2.5\n"
         "/mode manual - giữ quạt như hiện tại (có thời hạn)\n"
         "/quiet 22 6 - đặt giờ yên lặng từ 22h tới 6h\n"
+        "/clear - xoá tin của bot và của bạn trong 48 giờ qua\n"
         "/help - xem lại danh sách lệnh này\n"
         "\n"
         "Bot cũng tự gửi: cảnh báo đổi nhóm AQI, mức khẩn cấp, lỗi cảm biến, "
@@ -102,6 +118,7 @@ BOT_COMMANDS = [
     {"command": "fan", "description": "Bật/tắt quạt thủ công: /fan on hoặc /fan off"},
     {"command": "mode", "description": "Chế độ quạt: /mode auto hoặc /mode manual"},
     {"command": "quiet", "description": "Đặt giờ yên lặng, ví dụ /quiet 22 6"},
+    {"command": "clear", "description": "Xoá lịch sử chat trong 48 giờ qua"},
     {"command": "help", "description": "Danh sách lệnh"},
 ]
 USAGE_FAN = "Cách dùng: /fan on hoặc /fan off"
@@ -295,6 +312,27 @@ def cmd_help(conn, cfg, now, args):
     return HELP
 
 
+class ClearReply(NamedTuple):
+    """Kết quả /clear: poll_once xoá message_ids (mới trước cũ) rồi gửi text."""
+    message_ids: list
+    text: str
+
+
+def cmd_clear(conn, now, chat_id, message_id, *, commit=True):
+    """Gom message_id cần xoá của chat: đã ghi trong 48 giờ, vùng quét trước lệnh và chính
+    lệnh. Ghi sự kiện 'command' và purge hàng quá 48 giờ (cùng transaction với offset khi
+    commit False). Việc gọi Telegram và xoá hàng của chat do poll_once làm."""
+    ids = set(recent_message_ids(conn, chat_id, now - DELETE_WINDOW_S))
+    if isinstance(message_id, int) and not isinstance(message_id, bool) and message_id > 0:
+        ids.update(range(max(1, message_id - CLEAR_SWEEP), message_id + 1))
+    purge_messages(conn, now - DELETE_WINDOW_S, commit=False)
+    log_event(conn, now, "command", f"/clear chat={chat_id}", commit=False)
+    if commit:
+        conn.commit()
+    log.info("Lệnh /clear từ chat %s: %d message_id", chat_id, len(ids))
+    return ClearReply(sorted(ids, reverse=True), CLEAR_DONE)
+
+
 # ---------------- lệnh điều khiển ----------------
 def _apply_control(conn, now, ctx, writes):
     """Ghi các khoá state và sự kiện 'command' trong MỘT transaction.
@@ -366,7 +404,7 @@ def cmd_quiet(conn, cfg, now, args, ctx):
             f"khẩn cấp được gửi ngay, các tin khác chờ hết giờ yên lặng.")
 
 
-READ_ONLY = {
+READ_ONLY = {   # /clear xử lý riêng trong handle_update (cần chat và message_id)
     "/now": cmd_now,
     "/status": cmd_status,
     "/forecast": cmd_forecast,
@@ -375,7 +413,7 @@ READ_ONLY = {
     "/help": cmd_help,
     "/start": cmd_help,
 }
-STALE_READ_ONLY = frozenset({"/report", "/photo"})   # lệnh chỉ đọc "đắt": bỏ khi quá cũ
+STALE_READ_ONLY = frozenset({"/report", "/photo", "/clear"})   # bỏ khi quá cũ
 CONTROL = {
     "/fan": cmd_fan,
     "/mode": cmd_mode,
@@ -384,8 +422,9 @@ CONTROL = {
 
 
 def handle_update(update, conn, cfg, now, *, clock_synced=None, commit=True):
-    """Xử lý một update của Telegram. Trả về văn bản trả lời, PhotoReply (/photo), hoặc None
-    nếu không trả lời (chat không được phép, không phải tin chữ).
+    """Xử lý một update của Telegram. Trả về văn bản trả lời, PhotoReply (/photo),
+    ClearReply (/clear), hoặc None nếu không trả lời (chat không được phép, không phải tin
+    chữ). Tin từ chat được phép được ghi message_id vào tg_messages (cho /clear).
 
     clock_synced: hàm () -> bool, mặc định aiot.collector.is_clock_trusted. Pi không có
     RTC: khi đồng hồ chưa tin được thì không so được tuổi lệnh, nên lệnh điều khiển
@@ -399,6 +438,11 @@ def handle_update(update, conn, cfg, now, *, clock_synced=None, commit=True):
     if not isinstance(chat_id, int) or isinstance(chat_id, bool)             or chat_id not in cfg.secrets.allowed_chat_ids:
         log.debug("Bỏ qua update %s từ chat không được phép", update.get("update_id"))
         return None
+    message_id = message.get("message_id")
+    if isinstance(message_id, int) and not isinstance(message_id, bool):
+        date = message.get("date")
+        ts = date if isinstance(date, int) and not isinstance(date, bool) else now
+        record_message(conn, chat_id, message_id, ts, commit=commit)
     text = message.get("text")
     if not isinstance(text, str) or not text.strip():
         return None
@@ -444,6 +488,8 @@ def handle_update(update, conn, cfg, now, *, clock_synced=None, commit=True):
             log.info("Bỏ %s cũ từ chat %s (cách đây %s giây)", command, chat_id, now - date)
             return (f"Đã bỏ lệnh {command} gửi cách đây {_fmt_age(now - date)} (quá {stale_s} "
                     f"giây, có thể do bot dừng hoặc mất mạng). Gửi lại {command} nếu vẫn cần.")
+    if command == "/clear":
+        return cmd_clear(conn, now, chat_id, message_id, commit=commit)
     handler = READ_ONLY.get(command)
     if handler is not None:
         return handler(conn, cfg, now, args)
@@ -493,23 +539,54 @@ def poll_once(conn, client, cfg, now=None, *, clock_synced=None):
         if new_offset is not None:
             offset = new_offset
         if reply:
-            _send_reply(client, update["message"]["chat"]["id"], reply)
+            chat_id = update["message"]["chat"]["id"]
+            if isinstance(reply, ClearReply):
+                _clear_chat(conn, client, chat_id, reply.message_ids)
+                reply = reply.text
+            _send_reply(client, chat_id, reply, conn=conn, now=t)
 
 
-def _send_reply(client, chat_id, reply):
-    """Gửi trả lời (chữ hoặc PhotoReply). Lỗi chỉ ghi log."""
+def _clear_chat(conn, client, chat_id, message_ids):
+    """Xoá tin trên Telegram (lỗi không làm dừng bot) rồi xoá hàng tg_messages của chat."""
+    try:
+        done = client.delete_messages(chat_id, message_ids)
+        log.info("/clear chat %s: %s lần deleteMessages thành công", chat_id, done)
+    except Exception as e:
+        log.warning("/clear chat %s: xoá tin lỗi: %s", chat_id, e)
+    try:
+        forget_messages(conn, chat_id, message_ids)
+    except Exception:
+        log.exception("/clear chat %s: không xoá được hàng tg_messages", chat_id)
+        conn.rollback()
+
+
+def _track_sent(conn, chat_id, message_id, now):
+    """Ghi message_id của tin bot vừa gửi; lỗi DB chỉ ghi log (tin đã gửi rồi)."""
+    if conn is None or message_id is None:
+        return
+    try:
+        record_message(conn, chat_id, message_id, now)
+    except Exception:
+        log.exception("Không ghi được message_id %s của chat %s", message_id, chat_id)
+        conn.rollback()
+
+
+def _send_reply(client, chat_id, reply, *, conn=None, now=None):
+    """Gửi trả lời (chữ hoặc PhotoReply) và ghi message_id khi có conn. Lỗi chỉ ghi log."""
     try:
         if isinstance(reply, PhotoReply):
             try:
-                client.send_photo(chat_id, reply.path, reply.caption)
+                sent = client.send_photo(chat_id, reply.path, reply.caption)
             except OSError as e:
                 log.warning("Không mở được ảnh vừa chụp: %s", e)
-                client.send(chat_id, "Không gửi được ảnh vừa chụp (file ảnh bị mất). "
-                                     "Thử lại /photo.")
+                sent = client.send(chat_id, "Không gửi được ảnh vừa chụp (file ảnh bị mất). "
+                                            "Thử lại /photo.")
         else:
-            client.send(chat_id, reply)
+            sent = client.send(chat_id, reply)
     except TelegramError as e:
         log.warning("Không gửi được trả lời tới chat %s: %s", chat_id, e)
+        return
+    _track_sent(conn, chat_id, sent, int(time.time()) if now is None else now)
 
 
 def register_commands(client):
@@ -569,10 +646,15 @@ class OutboxSender:
         self.chat_ids = sorted(chat_ids)
         self._delivered = {}            # outbox id -> set(chat id đã nhận)
         self._backoff = 0
+        self._last_purge = None
 
     def deliver(self, conn, now):
-        """Gửi hết những gì gửi được. Trả về số giây nên chờ trước lần sau (0: đã gửi hết)."""
+        """Gửi hết những gì gửi được. Trả về số giây nên chờ trước lần sau (0: đã gửi hết).
+        Mỗi PURGE_INTERVAL_S giây purge hàng tg_messages quá 48 giờ."""
         now = int(now)
+        if self._last_purge is None or now - self._last_purge >= PURGE_INTERVAL_S:
+            purge_messages(conn, now - DELETE_WINDOW_S)
+            self._last_purge = now
         collapse_stale_alerts(conn, now)
         for row in pending_messages(conn):
             done = self._delivered.setdefault(row.id, set())
@@ -580,7 +662,7 @@ class OutboxSender:
                 if chat_id in done:
                     continue
                 try:
-                    self._send_row(chat_id, row)
+                    sent = self._send_row(chat_id, row)
                 except TelegramError as e:
                     if e.retry_after:
                         log.warning("Telegram yêu cầu chờ %s giây (HTTP 429)", e.retry_after)
@@ -594,6 +676,7 @@ class OutboxSender:
                                 row.id, row.kind, e, self._backoff)
                     return float(self._backoff)
                 done.add(chat_id)
+                _track_sent(conn, chat_id, sent, now)
             mark_sent(conn, row.id, now)
             self._delivered.pop(row.id, None)
             log.info("Đã gửi tin %s (%s)", row.id, row.kind)
@@ -601,14 +684,14 @@ class OutboxSender:
         return 0
 
     def _send_row(self, chat_id, row):
-        """Tin có ảnh còn trên đĩa: sendPhoto (chữ làm chú thích); không thì gửi chữ."""
+        """Tin có ảnh còn trên đĩa: sendPhoto (chữ làm chú thích); không thì gửi chữ.
+        Trả về message_id của tin đã gửi (None nếu không biết)."""
         if row.photo_path and os.path.isfile(row.photo_path):
             try:
-                self.client.send_photo(chat_id, row.photo_path, row.text)
-                return
+                return self.client.send_photo(chat_id, row.photo_path, row.text)
             except OSError as e:
                 log.warning("Không mở được ảnh của tin %s, gửi chữ: %s", row.id, e)
-        self.client.send(chat_id, row.text)
+        return self.client.send(chat_id, row.text)
 
 
 def run_delivery(conn, sender, stop, wall=time.time):

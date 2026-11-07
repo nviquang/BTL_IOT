@@ -1,6 +1,6 @@
 """
-Client tối thiểu cho Telegram Bot API (getUpdates, sendMessage, sendPhoto, setMyCommands)
-bằng requests.
+Client tối thiểu cho Telegram Bot API (getUpdates, sendMessage, sendPhoto, setMyCommands,
+deleteMessages) bằng requests.
 
 - Token nằm trong URL (https://api.telegram.org/bot<token>/...), nên mọi lỗi của requests
   đều có thể chứa token. TelegramError luôn được tạo từ thông báo đã che token
@@ -17,11 +17,14 @@ from urllib.parse import quote
 
 import requests
 
+log = logging.getLogger("aiot.telegram_api")
+
 API_URL = "https://api.telegram.org"
 MAX_TEXT = 4096                 # giới hạn độ dài một tin của Telegram
 MAX_CAPTION = 1024              # giới hạn chú thích ảnh
 HTTP_MARGIN_S = 15              # timeout HTTP = timeout long polling + khoảng này
 SEND_TIMEOUT_S = 20
+DELETE_BATCH = 100              # deleteMessages nhận 1–100 message_id mỗi lần
 PHOTO_TIMEOUT_S = 60            # tải ảnh lên chậm hơn khi mạng yếu
 
 
@@ -101,25 +104,45 @@ class TelegramClient:
         return result if isinstance(result, list) else []
 
     def send(self, chat_id, text):
-        """Gửi tin chữ thường (không parse_mode). Tin quá dài bị cắt còn MAX_TEXT ký tự."""
+        """Gửi tin chữ thường (không parse_mode). Tin quá dài bị cắt còn MAX_TEXT ký tự.
+        Trả về message_id của tin đã gửi (None nếu phản hồi không có)."""
         text = str(text)
         if len(text) > MAX_TEXT:
             text = text[:MAX_TEXT - 1] + "…"
-        self._call("sendMessage",
-                   {"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
-                   timeout=SEND_TIMEOUT_S)
+        return _message_id(self._call(
+            "sendMessage", {"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
+            timeout=SEND_TIMEOUT_S))
 
     def send_photo(self, chat_id, path, caption):
         """Gửi ảnh JPEG (multipart sendPhoto) kèm chú thích chữ thường (không parse_mode),
         cắt còn MAX_CAPTION ký tự. Lỗi Telegram/mạng: TelegramError như send(); không mở
-        được file: OSError (người gọi tự gửi chữ thay thế)."""
+        được file: OSError (người gọi tự gửi chữ thay thế). Trả về message_id như send()."""
         caption = str(caption)
         if len(caption) > MAX_CAPTION:
             caption = caption[:MAX_CAPTION - 1] + "…"
         with open(path, "rb") as f:
-            self._call("sendPhoto", {"chat_id": str(chat_id), "caption": caption},
-                       timeout=PHOTO_TIMEOUT_S,
-                       files={"photo": (os.path.basename(path), f, "image/jpeg")})
+            return _message_id(self._call(
+                "sendPhoto", {"chat_id": str(chat_id), "caption": caption},
+                timeout=PHOTO_TIMEOUT_S,
+                files={"photo": (os.path.basename(path), f, "image/jpeg")}))
+
+    def delete_messages(self, chat_id, message_ids):
+        """Xoá tin bằng deleteMessages, mỗi lần tối đa DELETE_BATCH id theo đúng thứ tự
+        truyền vào. Telegram bỏ qua id không tìm thấy; chỉ xoá được tin gửi < 48 giờ.
+        Một lần gọi lỗi (TelegramError, đã che token) chỉ ghi cảnh báo, lần sau vẫn chạy.
+        Trả về số lần gọi thành công."""
+        ids = [int(m) for m in message_ids]
+        done = 0
+        for i in range(0, len(ids), DELETE_BATCH):
+            chunk = ids[i:i + DELETE_BATCH]
+            try:
+                self._call("deleteMessages", {"chat_id": chat_id, "message_ids": chunk},
+                           timeout=SEND_TIMEOUT_S)
+                done += 1
+            except TelegramError as e:
+                log.warning("Không xoá được %d tin (id %s..%s): %s",
+                            len(chunk), chunk[0], chunk[-1], e)
+        return done
 
     def set_my_commands(self, commands):
         """Đặt menu lệnh của bot. commands: [{"command": "now", "description": "..."}]."""
@@ -127,6 +150,15 @@ class TelegramClient:
                    {"commands": [{"command": c["command"], "description": c["description"]}
                                  for c in commands]},
                    timeout=SEND_TIMEOUT_S)
+
+
+def _message_id(result):
+    """message_id trong kết quả sendMessage/sendPhoto, None nếu không có."""
+    if isinstance(result, dict):
+        mid = result.get("message_id")
+        if isinstance(mid, int) and not isinstance(mid, bool):
+            return mid
+    return None
 
 
 class RedactFilter(logging.Filter):

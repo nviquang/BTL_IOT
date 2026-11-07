@@ -37,9 +37,9 @@ def conn(tmp_path):
     c.close()
 
 
-def upd(text, chat=CHAT, date=NOW, uid=1000):
+def upd(text, chat=CHAT, date=NOW, uid=1000, mid=5):
     return {"update_id": uid,
-            "message": {"message_id": 5, "date": date, "text": text,
+            "message": {"message_id": mid, "date": date, "text": text,
                         "chat": {"id": chat, "type": "private"}}}
 
 
@@ -770,7 +770,7 @@ def test_set_my_commands_payload():
     assert call["url"].endswith("/setMyCommands")
     commands = call["json"]["commands"]
     assert [c["command"] for c in commands] == [
-        "now", "status", "forecast", "report", "photo", "fan", "mode", "quiet", "help"]
+        "now", "status", "forecast", "report", "photo", "fan", "mode", "quiet", "clear", "help"]
     for c in commands:
         assert set(c) == {"command", "description"}
         assert 1 <= len(c["description"]) <= 256 and not c["command"].startswith("/")
@@ -976,3 +976,193 @@ def test_help_lists_every_menu_command():
     for item in bot.BOT_COMMANDS:
         assert f"/{item['command']}" in bot.HELP, item["command"]
     assert "/help" in bot.HELP
+
+
+# ---------------- /clear: theo dõi message_id và xoá lịch sử 48 giờ ----------------
+H48 = 48 * 3600
+
+
+def tracked(conn, chat=None):
+    sql = "SELECT chat_id, message_id, ts FROM tg_messages"
+    args = ()
+    if chat is not None:
+        sql += " WHERE chat_id = ?"
+        args = (chat,)
+    return sorted(conn.execute(sql, args).fetchall())
+
+
+def track(conn, chat, mid, ts):
+    conn.execute("INSERT INTO tg_messages (chat_id, message_id, ts) VALUES (?, ?, ?)",
+                 (chat, mid, ts))
+    conn.commit()
+
+
+def test_tg_messages_table_created_idempotently(conn):
+    init_schema(conn)
+    init_schema(conn)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(tg_messages)")]
+    assert cols == ["chat_id", "message_id", "ts"]
+
+
+def test_client_send_and_send_photo_return_message_id(tmp_path):
+    session = FakeSession([FakeResponse(payload={"ok": True, "result": {"message_id": 77}})])
+    assert TelegramClient(TOKEN, session=session).send(CHAT, "x") == 77
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"JPEG")
+    session = MultipartSession([FakeResponse(payload={"ok": True, "result": {"message_id": 78}})])
+    assert TelegramClient(TOKEN, session=session).send_photo(CHAT, str(photo), "c") == 78
+    session = FakeSession([FakeResponse(payload={"ok": True, "result": True})])
+    assert TelegramClient(TOKEN, session=session).send(CHAT, "x") is None
+
+
+def test_delete_messages_chunks_of_100():
+    ok = {"ok": True, "result": True}
+    session = FakeSession([FakeResponse(payload=ok) for _ in range(3)])
+    ids = list(range(250, 0, -1))
+    assert TelegramClient(TOKEN, session=session).delete_messages(CHAT, ids) == 3
+    assert [c["url"].rsplit("/", 1)[1] for c in session.calls] == ["deleteMessages"] * 3
+    assert [len(c["json"]["message_ids"]) for c in session.calls] == [100, 100, 50]
+    assert [i for c in session.calls for i in c["json"]["message_ids"]] == ids
+    assert all(c["json"]["chat_id"] == CHAT for c in session.calls)
+
+
+def test_delete_messages_failing_chunk_does_not_stop_later_chunks(caplog):
+    err = requests.exceptions.ConnectionError(f"lỗi /bot{TOKEN}/deleteMessages")
+    session = FakeSession([
+        FakeResponse(400, {"ok": False, "error_code": 400,
+                           "description": "Bad Request: message can't be deleted"}),
+        err,
+        FakeResponse(payload={"ok": True, "result": True})])
+    with caplog.at_level(logging.WARNING):
+        done = TelegramClient(TOKEN, session=session).delete_messages(CHAT, list(range(1, 251)))
+    assert done == 1 and len(session.calls) == 3
+    assert "deleteMessages" in caplog.text and TOKEN not in caplog.text
+
+
+def test_delete_messages_empty_makes_no_call():
+    session = FakeSession([])
+    assert TelegramClient(TOKEN, session=session).delete_messages(CHAT, []) == 0
+    assert session.calls == []
+
+
+def test_incoming_message_tracked_for_allowed_chat_only(conn):
+    handle(conn, "/now", mid=41, date=NOW - 3)
+    handle(conn, "/now", chat=OTHER, mid=42)
+    assert tracked(conn) == [(CHAT, 41, NOW - 3)]
+
+
+class ClearClient(PhotoClient):
+    """Client giả: send/send_photo trả message_id tăng dần, ghi lại deleteMessages."""
+
+    def __init__(self, *a, delete_errors=False, **kw):
+        super().__init__(*a, **kw)
+        self.next_id = 5000
+        self.deleted = []
+        self.delete_errors = delete_errors
+
+    def send(self, chat_id, text):
+        super().send(chat_id, text)
+        self.next_id += 1
+        return self.next_id
+
+    def send_photo(self, chat_id, path, caption):
+        super().send_photo(chat_id, path, caption)
+        self.next_id += 1
+        return self.next_id
+
+    def delete_messages(self, chat_id, ids):
+        if self.delete_errors:
+            raise TelegramError("mạng lỗi")
+        self.deleted.append((chat_id, list(ids)))
+        return 1
+
+
+def test_poll_once_tracks_reply_message_id(conn):
+    client = ClearClient([[upd("/help", uid=1, mid=60)]])
+    bot.poll_once(conn, client, CFG, NOW)
+    assert tracked(conn) == [(CHAT, 60, NOW), (CHAT, 5001, NOW)]
+
+
+def test_outbox_tracks_sent_text_and_photo_ids(conn, tmp_path):
+    photo = tmp_path / "p.jpg"
+    photo.write_bytes(b"JPEG")
+    enqueue(conn, "report", "bản tin", NOW)
+    enqueue(conn, "weather", "nắng", NOW, photo_path=str(photo))
+    client = ClearClient()
+    assert bot.OutboxSender(client, [CHAT]).deliver(conn, NOW) == 0
+    assert tracked(conn) == [(CHAT, 5001, NOW), (CHAT, 5002, NOW)]
+
+
+def test_outbox_delivery_purges_rows_older_than_48h(conn):
+    track(conn, CHAT, 1, NOW - H48 - 1)
+    track(conn, CHAT, 2, NOW - H48 + 10)
+    bot.OutboxSender(ClearClient(), [CHAT]).deliver(conn, NOW)
+    assert tracked(conn) == [(CHAT, 2, NOW - H48 + 10)]
+
+
+def test_clear_deletes_tracked_and_swept_ids_newest_first(conn):
+    track(conn, CHAT, 50, NOW - 3600)            # ngoài vùng quét, còn trong 48 giờ
+    track(conn, CHAT, 40, NOW - H48 - 60)        # quá 48 giờ: không gửi xoá, bị purge
+    track(conn, CHAT, 990, NOW - 60)             # trong vùng quét (trùng: chỉ một lần)
+    track(conn, 222, 51, NOW - 60)               # chat khác: giữ nguyên
+    client = ClearClient([[upd("/clear", uid=7, mid=1000)]])
+    bot.poll_once(conn, client, CFG, NOW)
+
+    assert len(client.deleted) == 1
+    chat, ids = client.deleted[0]
+    assert chat == CHAT
+    assert ids == sorted(set(range(700, 1001)) | {50}, reverse=True)
+    assert 40 not in ids
+    assert client.sent == [(CHAT, "Đã xoá lịch sử chat trong 48 giờ qua. Tin cũ hơn: "
+                                  "dùng mục Xoá lịch sử của Telegram.")]
+    # chỉ còn hàng của chat khác và message_id của tin trả lời vừa gửi
+    assert tracked(conn) == [(CHAT, 5001, NOW), (222, 51, NOW - 60)]
+    assert command_events(conn) == [f"/clear chat={CHAT}"]
+    assert get_state(conn, "telegram_offset") == "8"
+
+
+def test_clear_sweep_does_not_go_below_message_id_1(conn):
+    client = ClearClient([[upd("/clear", uid=7, mid=3)]])
+    bot.poll_once(conn, client, CFG, NOW)
+    assert client.deleted == [(CHAT, [3, 2, 1])]
+
+
+def test_clear_delete_failure_still_replies(conn):
+    track(conn, CHAT, 50, NOW - 60)
+    client = ClearClient([[upd("/clear", uid=7, mid=100)]], delete_errors=True)
+    bot.poll_once(conn, client, CFG, NOW)        # không raise
+    assert len(client.sent) == 1
+    assert get_state(conn, "telegram_offset") == "8"
+
+
+def test_stale_clear_dropped_without_deleting(conn):
+    track(conn, CHAT, 50, NOW - 60)
+    old = NOW - CFG.telegram.stale_command_s - 1
+    client = ClearClient([[upd("/clear", uid=7, mid=100, date=old)]])
+    bot.poll_once(conn, client, CFG, NOW)
+    assert client.deleted == []
+    assert "Đã bỏ lệnh /clear" in client.sent[0][1]
+    assert (CHAT, 50, NOW - 60) in tracked(conn)
+
+
+def test_clear_from_unauthorized_chat_ignored(conn):
+    track(conn, OTHER, 50, NOW - 60)
+    client = ClearClient([[upd("/clear", chat=OTHER, uid=7, mid=100)]])
+    bot.poll_once(conn, client, CFG, NOW)
+    assert client.deleted == [] and client.sent == []
+    assert tracked(conn) == [(OTHER, 50, NOW - 60)]
+    assert command_events(conn) == []
+
+
+def test_clear_does_not_touch_outbox_or_control_state(conn):
+    enqueue(conn, "report", "bản tin", NOW)
+    set_state(conn, "quiet_hours", "22,6")
+    client = ClearClient([[upd("/clear", uid=7, mid=100)]])
+    bot.poll_once(conn, client, CFG, NOW)
+    assert len(pending_messages(conn)) == 1
+    assert get_state(conn, "quiet_hours") == "22,6"
+
+
+def test_help_lists_clear():
+    assert "/clear" in bot.HELP
+    assert any(c["command"] == "clear" for c in bot.BOT_COMMANDS)
