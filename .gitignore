@@ -7,3 +7,6 @@ venv/
 *.db-wal
 *.db-shm
 .pytest_cache/
+
+# Mô hình đã huấn luyện (training/train_lstm.py): chưa commit, nhóm quyết định sau
+models/

@@ -35,6 +35,12 @@ Dữ liệu công khai dùng để **huấn luyện sơ bộ (cold start)** khi 
 
 Dữ liệu Open-Meteo theo giấy phép **CC BY 4.0**. Khi dùng trong báo cáo phải ghi nguồn: "Weather and air quality data by Open-Meteo.com" (https://open-meteo.com/), kèm nguồn gốc CAMS cho dữ liệu chất lượng không khí (Copernicus Atmosphere Monitoring Service).
 
+Dòng ghi nguồn Copernicus (chép nguyên văn vào báo cáo, năm là khoảng dữ liệu đã dùng):
+
+- Chất lượng không khí (PM2.5, PM10): "Generated using Copernicus Atmosphere Monitoring Service information 2022–2026."
+- Thời tiết (ERA5): "Generated using Copernicus Climate Change Service information 2022–2026."
+- "Neither the European Commission nor ECMWF is responsible for any use that may be made of the Copernicus information or data it contains."
+
 ## Nguồn tuỳ chọn chưa dùng
 
 - **OpenAQ** (số đo trạm thật, ví dụ trạm Đại sứ quán Mỹ tại Hà Nội): cần API key (v3), nên chưa tải. Có thể bổ sung sau để đối chiếu với dữ liệu CAMS và với cảm biến của trạm.

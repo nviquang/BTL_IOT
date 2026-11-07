@@ -1,6 +1,7 @@
 """Test dự báo đối chứng PM2.5: chuỗi giờ, nội suy, persistence, seasonal naive, ghi DB."""
 import logging
 import math
+import time
 
 import numpy as np
 import pytest
@@ -180,8 +181,70 @@ def test_predictor_used_when_ok(conn):
 
     model, preds = run_forecast(conn, NOW, predictor=lstm)
     assert model == "lstm" and preds == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
-    assert seen[0].shape == (24,)
+    # chỉ có PM2.5 trong DB: dict không có temp/hum
+    assert sorted(seen[0]) == ["hour_cos", "hour_sin", "pm25"]
+    assert seen[0]["pm25"].shape == (24,)
     assert [r[3] for r in rows(conn)] == ["lstm"] * 6
+
+
+def add_weather_hour(conn, start, pm25, temp, hum, n=12):
+    for i in range(n):
+        conn.execute("INSERT INTO readings (ts, pm25, temp, hum, valid) VALUES (?, ?, ?, ?, 1)",
+                     (start + i * 300, pm25, temp, hum))
+    conn.commit()
+
+
+def test_predictor_gets_feature_dict(conn):
+    for t in range(LAST - 23 * H, LAST + 1, H):
+        i = (t - BASE) // H
+        add_weather_hour(conn, t, float(i), 20.0 + i % 5, 60.0 + i % 7)
+    seen = []
+    run_forecast(conn, NOW, predictor=lambda x: seen.append(x) or [1.0] * 6)
+    x = seen[0]
+    assert sorted(x) == ["hour_cos", "hour_sin", "hum", "pm25", "temp"]
+    hours = list(range(LAST - 23 * H, LAST + 1, H))
+    idx = [(t - BASE) // H for t in hours]
+    assert list(x["pm25"]) == [float(i) for i in idx]
+    assert list(x["temp"]) == [20.0 + i % 5 for i in idx]
+    assert list(x["hum"]) == [60.0 + i % 7 for i in idx]
+    # giờ trong ngày (giờ địa phương) của từng giờ đầu vào, như add_time_features khi huấn luyện
+    local_h = np.array([time.localtime(t).tm_hour for t in hours])
+    np.testing.assert_allclose(x["hour_sin"], np.sin(2 * np.pi * local_h / 24))
+    np.testing.assert_allclose(x["hour_cos"], np.cos(2 * np.pi * local_h / 24))
+    assert all(v.shape == (24,) for v in x.values())
+
+
+def test_weather_gap_too_long_omits_feature(conn):
+    for t in range(LAST - 23 * H, LAST + 1, H):
+        # temp/hum thiếu 3 giờ liên tiếp: không dựng được, chỉ truyền những gì có
+        missing = LAST - 12 * H <= t <= LAST - 10 * H
+        add_weather_hour(conn, t, 20.0, None if missing else 25.0, None if missing else 70.0)
+    seen = []
+    run_forecast(conn, NOW, predictor=lambda x: seen.append(x) or [1.0] * 6)
+    assert sorted(seen[0]) == ["hour_cos", "hour_sin", "pm25"]
+
+
+def test_leading_gap_interpolated_from_left_neighbour(conn):
+    # 48 giờ dữ liệu tăng đều, thiếu 2 giờ đầu của cửa sổ 24 giờ
+    first = LAST - 23 * H
+    fill(conn, LAST - 47 * H, LAST, lambda t: float((t - BASE) // H))
+    conn.execute("DELETE FROM readings WHERE ts >= ? AND ts < ?", (first, first + 2 * H))
+    conn.commit()
+    model, preds = run_forecast(conn, NOW)
+    assert model == "seasonal_naive"
+    # cùng giờ hôm qua đúng là target - 24 giờ (nội suy từ hàng xóm bên trái, không lấy biên)
+    f = float((first - BASE) // H)
+    assert preds == pytest.approx([f + k for k in range(6)])
+
+
+def test_prepare_input_uses_left_context_for_leading_gap():
+    values = [float(i) for i in range(30)]
+    values[6] = values[7] = None                   # 2 giờ đầu của cửa sổ 24 giờ cuối
+    x = prepare_input(series_of(values))
+    assert x[0] == pytest.approx(6.0) and x[1] == pytest.approx(7.0)
+    # không có hàng xóm bên trái thì vẫn lấy giá trị hợp lệ đầu tiên như trước
+    x = prepare_input(series_of(values[6:]))
+    assert x[0] == x[1] == 8.0
 
 
 def test_negative_predictions_clipped_to_zero(conn):

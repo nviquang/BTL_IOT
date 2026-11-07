@@ -307,9 +307,11 @@ Dừng/khởi động lại: `sudo systemctl stop aiot-collector` / `sudo system
 ### 2.4e. Dự báo PM2.5 mỗi giờ (`aiot/forecast.py`)
 
 Mỗi giờ (phút 02) timer chạy một lần dự báo PM2.5 trung bình giờ cho 6 giờ tới từ bảng
-`readings` và ghi vào bảng `forecasts`. Hiện dùng mô hình đối chứng: `seasonal_naive` (cùng
-giờ hôm qua) khi có đủ 24 giờ dữ liệu, ngược lại `persistence` (giữ nguyên giờ gần nhất);
-LSTM sẽ thay vào ở Task 12. Không có giờ hợp lệ nào trong 3 giờ gần đây thì không ghi dự báo
+`readings` và ghi vào bảng `forecasts`. Nếu có `models/pm25_lstm.tflite` + `models/scaler.json`
+(đường dẫn trong `config.yaml` mục `forecast`) và thư viện `ai-edge-litert` thì dùng LSTM
+(`model = 'lstm'`); thiếu file, file hỏng, thiếu thư viện hay LSTM lỗi thì dùng mô hình đối
+chứng: `seasonal_naive` (cùng giờ hôm qua) khi có đủ 24 giờ dữ liệu, ngược lại `persistence`
+(giữ nguyên giờ gần nhất). Hiện **chưa chép LSTM lên Pi** (xem 2.4g). Không có giờ hợp lệ nào trong 3 giờ gần đây thì không ghi dự báo
 (vẫn thoát 0). Đồng hồ Pi chưa đồng bộ NTP (vừa khởi động, chưa có mạng) thì bỏ lần chạy đó
 (log "chưa đồng bộ NTP", thoát 0), để lần chạy bù lúc khởi động không ghi dự báo với giờ sai. Controller dùng TB 3 giờ đầu cho luật "Chủ động" (> 100 µg/m³ thì bật quạt
 trước); dự báo cũ hơn `control.forecast_max_age_s` (5400 s) bị bỏ qua. Bot trả lời `/forecast`.
@@ -325,6 +327,37 @@ systemctl list-timers aiot-forecast.timer           # thấy lần chạy kế t
 journalctl -u aiot-forecast -n 20
 # Sau một giờ phải có dòng mới:
 sqlite3 ~/iot_data/aiot.db "select datetime(made_at,'unixepoch','localtime'), horizon_h, round(pm25_pred,1), model from forecasts order by made_at desc, horizon_h limit 6;"
+```
+
+### 2.4g. Huấn luyện LSTM và đưa lên Pi (`training/train_lstm.py`, `training/02_danh_gia.ipynb`)
+
+Huấn luyện trên laptop (TensorFlow CPU, chỉ cài trong `.venv`, không cài lên Pi):
+
+```bash
+.venv/Scripts/python -m pip install -r requirements-dev.txt -r training/requirements.txt
+.venv/Scripts/python -m training.train_lstm      # ~vài phút, ghi models/ (không commit)
+.venv/Scripts/jupyter nbconvert --to notebook --execute --inplace training/02_danh_gia.ipynb
+```
+
+`models/` gồm `pm25_lstm.tflite` (batch 1, chỉ op có sẵn của TFLite), `scaler.json` (đặc
+trưng, min/max MinMaxScaler fit trên train, dạng đích, n_in=24, n_out=6), `pm25_lstm.keras`
+và `train_summary.json`. Kết quả đánh giá và kết luận nằm trong notebook. Tóm tắt (07/11/2026,
+dữ liệu công khai CAMS): LSTM vượt persistence ở mọi horizon 1–6 giờ (MAE test giảm 21,7–31,1%),
+nhưng chỉ nhỉnh hơn hồi quy Ridge trên đặc trưng trễ rất ít.
+
+**Quy tắc:** mô hình chỉ được chép lên Pi khi **vượt persistence ở horizon ≥ 2 giờ trên dữ
+liệu của Pi** (không chỉ trên dữ liệu công khai CAMS). Hiện Pi mới có vài ngày dữ liệu, nên
+**chưa triển khai**; sản phẩm dùng mô hình đối chứng. Khi đạt, các bước là:
+
+```bash
+# Trên Pi: cài LiteRT vào venv (đã thử: ai-edge-litert 2.3.0 cài được trên Python 3.13)
+ssh admin@<IP_PI> "cd ~/BTL_IOT && mkdir -p models && venv/bin/pip install ai-edge-litert && venv/bin/python -c 'from ai_edge_litert.interpreter import Interpreter; print(\"ok\")'"
+# Trên laptop (Git Bash, thư mục repo): chép mô hình
+scp models/pm25_lstm.tflite models/scaler.json admin@<IP_PI>:~/BTL_IOT/models/
+# Trên Pi: chạy một lần, log phải có "Đã nạp mô hình học máy" và "suy luận trong ... ms"
+cd ~/BTL_IOT && venv/bin/python -m aiot.forecast
+sqlite3 ~/iot_data/aiot.db "select model, count(*) from forecasts group by model;"
+# kỳ vọng có dòng model = 'lstm'. Xoá file mô hình thì lần chạy sau về seasonal_naive/persistence.
 ```
 
 ### 2.4c. Bộ điều khiển quạt (`aiot/controller.py`)

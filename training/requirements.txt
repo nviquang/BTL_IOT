@@ -3,7 +3,7 @@
 # Phiên bản đã kiểm tra ngày 07/11/2026 ghi trong ngoặc.
 pandas          # 3.1.1
 numpy
-scikit-learn    # 1.9.1 - MinMaxScaler
+scikit-learn    # 1.9.1 - MinMaxScaler, Ridge (đối chứng)
 statsmodels     # 0.15.0 - ACF, ADF (adfuller result_object=)
 matplotlib      # 3.11.2
 requests        # 2.34.2 - training/fetch_public.py
@@ -11,3 +11,4 @@ tzdata          # múi giờ Asia/Ho_Chi_Minh trên Windows
 nbconvert       # chạy notebook: jupyter nbconvert --to notebook --execute --inplace
 nbformat
 ipykernel
+tensorflow-cpu  # 2.21.0 (keras 3.15.1) - training/train_lstm.py, chỉ trên laptop; Pi dùng ai-edge-litert
