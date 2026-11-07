@@ -11,6 +11,10 @@ và bật/tắt quạt qua relay GPIO23.
   thử lại; sự kiện 'relay_error' chỉ ghi một lần cho cả chuỗi lỗi.
 - Khởi động: khôi phục trạng thái cuối trong DB (thiếu: BÌNH THƯỜNG; hỏng: BÌNH THƯỜNG
   và ghi 'state_corrupt'; ghi đè hết hạn lúc Pi tắt thì xoá) rồi đưa quạt về đúng mức.
+- Cảnh báo (Task 7): Event của bước (danger, fan_on/off, sensor_fault...) và đổi nhóm
+  AQI theo PM2.5 TB exit_mean_s (15 phút) được ghi vào outbox trong CÙNG transaction với
+  trạng thái và sự kiện, đặt sau SAVEPOINT riêng: lỗi trong phần tin nhắn chỉ huỷ phần
+  tin nhắn, ghi log rồi tiếp tục; trạng thái, sự kiện và relay không bị ảnh hưởng.
 - SIGTERM/SIGINT: đưa GPIO23 về LOW, nhả chip, thoát 0.
 - Không phụ thuộc Internet hay Gemini.
 
@@ -25,8 +29,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from aiot.config import TelegramCfg
 from aiot.control import ControlState, Event, apply_override, decide, fan_on, inputs_from_series
 from aiot.db import connect, delete_state, get_state, init_schema, log_event, pm25_series, set_state
+from aiot.notifier import (FAULT_PENDING_KEY, check_aqi_change, event_message, resend_suppressed,
+                           send_alert)
 
 log = logging.getLogger("aiot.controller")
 
@@ -87,10 +94,37 @@ def _apply_pending(st: ControlState, text: str, cfg, now: int):
     return st, [Event("override", detail)]
 
 
-def _persist(conn, now: int, st: ControlState, events, pending_text=None) -> None:
-    """Ghi control_state, mọi Event và (nếu có) xoá đúng lệnh pending đã đọc trong MỘT
-    transaction, commit một lần. Lỗi thì rollback toàn bộ và raise: lệnh pending còn
-    nguyên cho vòng sau, không có sự kiện nào được ghi mà không áp dụng."""
+def _notify(conn, now: int, st: ControlState, inp, events, tcfg) -> None:
+    """Ghi tin cảnh báo của bước vào outbox (không commit: nằm trong transaction của _persist)."""
+    for ev in events:
+        msg = event_message(ev, st, inp, now)
+        if msg is None:
+            continue
+        if ev.kind == "sensor_recovered" and get_state(conn, FAULT_PENDING_KEY) is not None:
+            continue                    # lỗi chưa từng được báo thì không báo đã hết lỗi
+        text, urgent = msg
+        send_alert(conn, ev.kind, text, now, tcfg, urgent=urgent, commit=False)
+    resend_suppressed(conn, now, tcfg, st.fault_active, commit=False)
+    if inp is not None:
+        check_aqi_change(conn, inp.mean_exit, now, tcfg, commit=False)
+
+
+def _run_notifier(conn, notify) -> None:
+    """Chạy notify() sau SAVEPOINT: lỗi thì huỷ riêng phần tin nhắn, ghi log, không raise."""
+    conn.execute("SAVEPOINT notify")
+    try:
+        notify()
+    except Exception:
+        log.exception("Lỗi khi tạo tin cảnh báo, bỏ qua tin của vòng này")
+        conn.execute("ROLLBACK TO SAVEPOINT notify")
+    conn.execute("RELEASE SAVEPOINT notify")
+
+
+def _persist(conn, now: int, st: ControlState, events, pending_text=None, notify=None) -> None:
+    """Ghi control_state, mọi Event, (nếu có) xoá đúng lệnh pending đã đọc và tin cảnh báo
+    (notify) trong MỘT transaction, commit một lần. Lỗi ghi DB thì rollback toàn bộ và
+    raise: lệnh pending còn nguyên cho vòng sau, không có sự kiện nào được ghi mà không
+    áp dụng. Lỗi trong notify chỉ huỷ phần tin nhắn (_run_notifier)."""
     try:
         set_state(conn, STATE_KEY, st.to_json(), commit=False)
         for ev in events:
@@ -99,6 +133,8 @@ def _persist(conn, now: int, st: ControlState, events, pending_text=None) -> Non
         if pending_text is not None:
             # Chỉ xoá nếu bot chưa ghi lệnh mới kể từ lúc đọc
             delete_state(conn, PENDING_KEY, value=pending_text, commit=False)
+        if notify is not None:
+            _run_notifier(conn, notify)
         conn.commit()
     except BaseException:
         conn.rollback()
@@ -152,12 +188,14 @@ def restore(conn, relay, cfg, now: int) -> ControlState:
     return st
 
 
-def step(conn, relay, cfg, now: int) -> ControlState:
-    """Một vòng điều khiển. cfg là ControlCfg, now là giây epoch.
+def step(conn, relay, cfg, now: int, *, tcfg: TelegramCfg | None = None) -> ControlState:
+    """Một vòng điều khiển. cfg là ControlCfg, tcfg là TelegramCfg (giờ yên lặng, giới hạn
+    tin; mặc định TelegramCfg()), now là giây epoch.
 
-    Đọc hết rồi mới ghi: trạng thái mới, sự kiện và việc xoá pending_override cùng
-    một transaction (_persist), sau đó mới ghi relay."""
+    Đọc hết rồi mới ghi: trạng thái mới, sự kiện, việc xoá pending_override và tin cảnh
+    báo cùng một transaction (_persist), sau đó mới ghi relay."""
     now = int(now)
+    tcfg = tcfg if tcfg is not None else TelegramCfg()
     st, events = _load_state(conn)
     pending_text = get_state(conn, PENDING_KEY)
     if pending_text is not None:
@@ -167,23 +205,26 @@ def step(conn, relay, cfg, now: int) -> ControlState:
     lookback = max(cfg.enter_mean_s, cfg.exit_mean_s, cfg.danger_window_s) + 60
     series = pm25_series(conn, now - lookback)
     # Task 9 sẽ truyền thêm dự báo 3 giờ tới
-    st, decide_events = decide(st, inputs_from_series(series, now, cfg), cfg)
+    inp = inputs_from_series(series, now, cfg)
+    st, decide_events = decide(st, inp, cfg)
     events += decide_events
 
     # Lưu trạng thái logic trước khi ghi relay: relay lỗi không làm mất quyết định
-    _persist(conn, now, st, events, pending_text)
+    _persist(conn, now, st, events, pending_text,
+             notify=lambda: _notify(conn, now, st, inp, events, tcfg))
     _drive(conn, relay, fan_on(st, now), now)
     return st
 
 
 # ---------------- Vòng lặp dịch vụ ----------------
-def run(conn, relay, cfg, stop: threading.Event, *, wall=time.time, clock=time.monotonic) -> None:
+def run(conn, relay, cfg, stop: threading.Event, *, wall=time.time, clock=time.monotonic,
+        tcfg: TelegramCfg | None = None) -> None:
     """Gọi step mỗi cfg.loop_s giây tới khi stop được đặt. Lỗi một vòng không dừng dịch vụ;
     khi đó relay giữ nguyên mức cũ."""
     next_time = clock()
     while not stop.is_set():
         try:
-            step(conn, relay, cfg, int(wall()))
+            step(conn, relay, cfg, int(wall()), tcfg=tcfg)
         except Exception:
             log.exception("Lỗi trong vòng điều khiển, giữ nguyên quạt")
             try:
@@ -233,7 +274,7 @@ def main(argv=None) -> int:
     log.info("Controller bắt đầu: db=%s mode=%s quạt=%s demo=%s loop=%ss",
              cfg.db_path, st.mode, "bật" if level else "tắt", ctrl.demo, ctrl.loop_s)
     try:
-        run(conn, relay, ctrl, stop)
+        run(conn, relay, ctrl, stop, tcfg=cfg.telegram)
     finally:
         try:
             relay.close()               # GPIO23 về LOW, nhả chip

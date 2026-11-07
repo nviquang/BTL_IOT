@@ -275,7 +275,7 @@ def test_run_survives_step_error(conn, monkeypatch):
     stop = threading.Event()
     calls = []
 
-    def boom(*a):
+    def boom(*a, **kw):
         calls.append(a)
         if len(calls) >= 2:
             stop.set()
@@ -453,3 +453,141 @@ def test_write_failure_mid_transaction_persists_nothing(conn, monkeypatch):
     assert st.mode == "PROTECT" and st.override_fan is False
     assert kinds(conn) == ["override", "danger", "fan_on"]
     assert relay.calls == [False]
+
+
+# ---------- cảnh báo vào outbox (Task 7) ----------
+
+from aiot.config import TelegramCfg  # noqa: E402
+from aiot.notifier import pending_messages  # noqa: E402
+
+TCFG = TelegramCfg(quiet_start=0, quiet_end=0)      # không có giờ yên lặng: test không phụ thuộc múi giờ
+
+
+def outbox(conn):
+    return [(r.kind, r.text) for r in pending_messages(conn)]
+
+
+def test_danger_and_fan_on_create_outbox_rows(conn):
+    add_pm(conn, 900, 1000, 200.0)
+    step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG)
+    msgs = outbox(conn)
+    assert [k for k, _ in msgs] == ["danger", "fan_on"]
+    danger_text = msgs[0][1]
+    assert "khẩn cấp" in danger_text.lower() and "Nguy hại" not in danger_text
+    assert "200" in danger_text
+    assert "bật" in msgs[1][1]
+    assert all(r.created_at == 1000 for r in pending_messages(conn))
+
+
+def test_danger_urgent_with_quiet_hours_state(conn):
+    from datetime import datetime
+    add_pm(conn, 900, 1000, 200.0)
+    hour = datetime.fromtimestamp(1000).hour
+    set_state(conn, "quiet_hours", f"{hour},{(hour + 2) % 24}")   # 1000 nằm trong giờ yên lặng
+    step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG)
+    assert [k for k, _ in outbox(conn)] == ["danger"]             # fan_on bị chặn, danger thì không
+
+
+def test_fan_on_under_override_does_not_claim_relay_moved(conn):
+    add_pm(conn, 900, 1000, 200.0)
+    set_state(conn, PENDING_KEY, json.dumps({"fan": False, "ttl_s": 7200}))
+    relay = FakeRelay()
+    step(conn, relay, CFG, 1000, tcfg=TCFG)
+    assert relay.calls == [False]
+    msgs = dict(outbox(conn))
+    assert "ghi đè" in msgs["fan_on"]
+    assert "Đã bật" not in msgs["fan_on"]
+    assert "khẩn cấp" in msgs["danger"].lower()
+    assert "ghi đè" in msgs["danger"]                             # quạt không bật vì ghi đè
+
+
+def test_fan_off_message(conn):
+    set_state(conn, STATE_KEY, ControlState(mode="PROTECT", entered_at=0).to_json())
+    add_pm(conn, 0, 3000, 20.0)
+    for now in range(2000, 3001, 20):
+        step(conn, FakeRelay(), CFG, now, tcfg=TCFG)
+    msgs = [m for m in outbox(conn) if m[0] == "fan_off"]
+    assert len(msgs) == 1 and "tắt" in msgs[0][1]
+
+
+def test_sensor_fault_creates_outbox_row(conn):
+    add_pm(conn, 0, 500, 20.0)
+    step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG)
+    step(conn, FakeRelay(), CFG, 1020, tcfg=TCFG)
+    assert [k for k, _ in outbox(conn)] == ["sensor_fault"]
+
+
+def test_aqi_change_checked_each_loop(conn):
+    add_pm(conn, 0, 1000, 20.0)
+    step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG)       # lần đầu: ghi nhận im lặng
+    assert outbox(conn) == []
+    assert get_state(conn, "aqi_notified") == "1"
+    add_pm(conn, 1010, 2000, 45.0)                      # TB 15 phút lên nhóm Kém
+    step(conn, FakeRelay(), CFG, 2000, tcfg=TCFG)
+    assert [k for k, _ in outbox(conn)] == ["aqi_change"]
+    assert "Kém" in outbox(conn)[0][1]
+
+
+def test_notifier_failure_does_not_stop_control(conn, monkeypatch):
+    import aiot.controller as controller
+    add_pm(conn, 900, 1000, 200.0)
+
+    def boom(*a, **kw):
+        raise RuntimeError("notifier bug")
+
+    monkeypatch.setattr(controller, "send_alert", boom)
+    relay = FakeRelay()
+    st = step(conn, relay, CFG, 1000, tcfg=TCFG)
+    assert st.mode == "PROTECT" and saved(conn) == st
+    assert kinds(conn) == ["danger", "fan_on"]          # sự kiện vẫn ghi
+    assert relay.calls == [True]                        # quạt vẫn được điều khiển
+    assert outbox(conn) == []                           # phần tin nhắn dở dang bị huỷ
+
+
+def test_notifier_partial_failure_rolls_back_only_messages(conn, monkeypatch):
+    import aiot.controller as controller
+    add_pm(conn, 900, 1000, 200.0)
+    real = controller.send_alert
+    calls = []
+
+    def second_fails(*a, **kw):
+        calls.append(a)
+        if len(calls) == 2:
+            raise RuntimeError("notifier bug")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(controller, "send_alert", second_fails)
+    step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG)
+    assert outbox(conn) == []                           # không để lại nửa số tin
+    assert get_state(conn, "alert_last:danger") is None
+    assert kinds(conn) == ["danger", "fan_on"]
+
+
+def test_write_failure_rolls_back_outbox_too(conn, monkeypatch):
+    import sqlite3
+    import aiot.controller as controller
+    add_pm(conn, 900, 1100, 200.0)
+    real_set = controller.set_state
+
+    def fail_state(*a, **kw):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(controller, "set_state", fail_state)
+    with pytest.raises(sqlite3.OperationalError):
+        step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG)
+    assert outbox(conn) == [] and events(conn) == []
+    monkeypatch.setattr(controller, "set_state", real_set)
+    step(conn, FakeRelay(), CFG, 1020, tcfg=TCFG)
+    assert [k for k, _ in outbox(conn)] == ["danger", "fan_on"]
+
+
+def test_deferred_fault_resent_by_controller_after_quiet(conn):
+    from datetime import datetime
+    hour = datetime.fromtimestamp(1000).hour
+    set_state(conn, "quiet_hours", f"{hour},{(hour + 1) % 24}")
+    add_pm(conn, 0, 500, 20.0)
+    step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG)       # lỗi trong giờ yên lặng: chặn
+    assert outbox(conn) == []
+    later = 1000 + 3600 * 2                            # hết giờ yên lặng, vẫn mất dữ liệu
+    step(conn, FakeRelay(), CFG, later, tcfg=TCFG)
+    assert [k for k, _ in outbox(conn)] == ["sensor_fault"]
