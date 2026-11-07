@@ -197,3 +197,32 @@ def test_main_exit_codes(monkeypatch, tmp_path):
     assert calls == [(str(tmp_path / "a.jpg"), 1)]
     monkeypatch.setattr(camera, "capture_jpeg", lambda path, index=0: False)
     assert camera.main([str(tmp_path / "a.jpg")]) == 1
+
+
+
+def test_purge_photos_removes_old_tmp_files(tmp_path):
+    now = 1_800_000_000
+    old_tmp = tmp_path / "a.jpg.tmp"
+    new_tmp = tmp_path / "b.jpg.tmp"
+    for p in (old_tmp, new_tmp):
+        p.write_bytes(b"x")
+    os.utime(old_tmp, (now - 8 * 86400, now - 8 * 86400))
+    os.utime(new_tmp, (now - 86400, now - 86400))
+    assert camera.purge_photos(str(tmp_path), 7, now) == 1
+    assert [p.name for p in tmp_path.iterdir()] == ["b.jpg.tmp"]
+
+
+def test_default_runner_inherits_stderr(monkeypatch):
+    seen = {}
+
+    class FakePopen:
+        def __init__(self, cmd, **kw):
+            seen.update(kw)
+            self.pid = 1
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(camera.subprocess, "Popen", FakePopen)
+    assert camera._run_with_timeout(["x"], 5) == 0
+    assert seen.get("stderr") is None                 # cảnh báo của tiến trình con vào journald

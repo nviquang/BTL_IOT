@@ -150,7 +150,10 @@ def run_once(conn, now, cfg, *, capture=capture_subprocess):
         seen = _int_or_none(get_state(conn, _seen_key(kind)))
         if previous == "1" and (seen is None or now - seen > cfg.weather.cooldown_s):
             log.info("Trạng thái %s đã nhớ quá cũ (mất dữ liệu lâu), coi như chưa biết", kind)
-            previous = None
+            # Ghi xuống DB ngay (cùng transaction với seen): nếu lần này bị chặn (giờ yên
+            # lặng) thì lần chạy được phép sau vẫn thấy "0" và báo
+            set_state(conn, _state_key(kind), "0", commit=False)
+            previous = "0"
         set_state(conn, _seen_key(kind), now)
         if not obs.active:
             if previous != "0":

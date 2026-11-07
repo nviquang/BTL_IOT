@@ -85,14 +85,15 @@ def capture_jpeg(path, index=0, width=640, height=480, warmup_frames=5) -> bool:
 
 
 def purge_photos(dir, keep_days, now) -> int:
-    """Xoá file *.jpg trong dir (không đệ quy) sửa đổi trước now - keep_days ngày.
+    """Xoá file *.jpg và *.jpg.tmp (file tạm của tiến trình chụp bị kill) trong dir
+    (không đệ quy) sửa đổi trước now - keep_days ngày.
     Trả về số file đã xoá; thư mục không có thì trả về 0."""
     folder = Path(dir)
     if not folder.is_dir():
         return 0
     cutoff = float(now) - float(keep_days) * DAY_S
     removed = 0
-    for p in folder.glob("*.jpg"):
+    for p in [*folder.glob("*.jpg"), *folder.glob("*.jpg.tmp")]:
         try:
             if p.is_file() and p.stat().st_mtime < cutoff:
                 p.unlink()
@@ -109,7 +110,8 @@ def _run_with_timeout(cmd, timeout):
     tiến trình kẹt trong ioctl của driver (trạng thái D) có thể không chết ngay. Ở đây chỉ
     chờ thêm KILL_WAIT_S rồi bỏ mặc nó."""
     proc = subprocess.Popen(cmd, cwd=REPO_ROOT, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            stdout=subprocess.DEVNULL, stderr=None)
+    # stderr kế thừa: cảnh báo của tiến trình con (log của capture_jpeg) vào journald
     try:
         return proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:

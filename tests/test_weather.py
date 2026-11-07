@@ -321,3 +321,18 @@ def test_continuous_state_does_not_expire(conn, tmp_path):
         t = NOW + i * 300
         assert weather.run_once(conn, t, cfg, capture=cam) == []
     assert len(cam.calls) == 1
+
+
+def test_stale_on_state_expiry_persists_through_quiet_hours(conn, tmp_path):
+    """"Bật" cũ bị bỏ trong giờ yên lặng phải được ghi xuống DB, để lần chạy được phép sau
+    vẫn báo."""
+    cfg = cfg_with(tmp_path)
+    cam = FakeCamera()
+    set_state(conn, "weather_state:weather_sunny", "1")
+    set_state(conn, "weather_seen:weather_sunny", at(7))       # cũ hơn 3 giờ
+    set_state(conn, "quiet_hours", "11,13")
+    put_windows(conn, at(11, 55), SUNNY)
+    assert weather.run_once(conn, NOW, cfg, capture=cam) == []  # đang giờ yên lặng
+    assert get_state(conn, "weather_state:weather_sunny") != "1"
+    put_windows(conn, at(12, 55), SUNNY)
+    assert weather.run_once(conn, at(13, 1), cfg, capture=cam) == ["weather_sunny"]
