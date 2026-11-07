@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS outbox (            -- tin Telegram chờ gửi (gử
 """
 
 
+# Khoảng đo hợp lệ của PMS7003 (µg/m³, gồm hai đầu); aggregate.RANGES dùng chung giá trị này
+PM_RANGE = (0.0, 1000.0)
+
+
 @dataclass
 class RawSample:
     """Một lần đọc cảm biến; giá trị đo là None khi đọc lỗi."""
@@ -88,14 +92,16 @@ def insert_raw(conn: sqlite3.Connection, s: RawSample) -> None:
 
 
 def pm25_series(conn: sqlite3.Connection, since_ts: int) -> list[tuple[int, float]]:
-    """PM2.5 thô từ since_ts trở đi, bỏ NULL.
+    """PM2.5 thô từ since_ts trở đi, bỏ NULL và giá trị ngoài PM_RANGE (cùng quy tắc
+    với bước gộp 5 phút, để controller không quyết định theo giá trị lỗi).
 
     Giữ cả mẫu clock_synced=0: controller vẫn phải chạy khi Pi khởi động lại
     mà chưa có mạng để đồng bộ giờ.
     """
     rows = conn.execute(
-        "SELECT ts, pm25 FROM raw_readings WHERE ts >= ? AND pm25 IS NOT NULL ORDER BY ts",
-        (int(since_ts),),
+        "SELECT ts, pm25 FROM raw_readings WHERE ts >= ? AND pm25 IS NOT NULL "
+        "AND pm25 BETWEEN ? AND ? ORDER BY ts",
+        (int(since_ts), *PM_RANGE),
     ).fetchall()
     return [(int(ts), float(v)) for ts, v in rows]
 

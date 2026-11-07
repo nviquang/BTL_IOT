@@ -36,7 +36,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from aiot.collector import is_clock_synced
+from aiot.collector import is_clock_trusted
 
 log = logging.getLogger("aiot.forecast")
 
@@ -423,7 +423,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config, root / ".env")
-    if not is_clock_synced():
+    if not is_clock_trusted():
         # Pi không có RTC: trước khi có NTP, giờ có thể là lúc tắt máy lần trước, dự báo ghi
         # với made_at đó sẽ bị controller và /forecast coi là còn mới. Timer chạy lại giờ sau.
         log.warning("Đồng hồ Pi chưa đồng bộ NTP: bỏ lần dự báo này")

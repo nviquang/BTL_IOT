@@ -121,10 +121,16 @@ TOP_LEVEL_KEYS = ("db_path", "csv_path", "device_id")
 
 
 def read_env_file(path):
-    """Đọc file .env dạng KEY=VALUE. Không có file thì trả về dict rỗng."""
+    """Đọc file .env dạng KEY=VALUE. Không có file thì trả về dict rỗng.
+
+    - utf-8-sig: bỏ BOM đầu file khi .env được lưu bằng Notepad trên Windows.
+    - Giá trị trong ngoặc kép/đơn: lấy phần trong ngoặc, bỏ mọi thứ sau dấu đóng ngoặc.
+    - Giá trị không có ngoặc: bỏ chú thích cuối dòng dạng " # ..." (có khoảng trắng trước
+      '#'); 'abc#def' giữ nguyên.
+    """
     values = {}
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             lines = f.read().splitlines()
     except FileNotFoundError:
         return values
@@ -137,13 +143,16 @@ def read_env_file(path):
         if key.startswith("export "):
             key = key[len("export "):].strip()
         value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
+        if len(value) >= 2 and value[0] in "\"'" and value.find(value[0], 1) != -1:
+            value = value[1:value.find(value[0], 1)]
+        else:
+            value = _INLINE_COMMENT_RE.split(value, maxsplit=1)[0].strip()
         values[key] = value
     return values
 
 
 _CHAT_ID_RE = re.compile(r"-?[0-9]+", re.ASCII)
+_INLINE_COMMENT_RE = re.compile(r"\s+#")
 
 
 def parse_chat_ids(text):

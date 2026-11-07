@@ -5,7 +5,7 @@ from datetime import datetime
 
 import pytest
 
-from aiot.collector import CsvLog, Warmup, collect_once, is_clock_synced
+from aiot.collector import CsvLog, Warmup, collect_once, is_clock_trusted
 from aiot.db import connect, init_schema
 from aiot.payload import valid_sensor_row
 from aiot.pms7003 import PmsReading
@@ -186,7 +186,8 @@ def test_mq135_ignored_during_warmup(conn, csv_path):
     assert [r[7] for r in raw_rows(conn)] == [None, None, 0]
 
 
-def test_is_clock_synced(monkeypatch):
+def test_is_clock_trusted(monkeypatch, tmp_path):
+    no_flag = str(tmp_path / "khong_co")   # không có file cờ timesyncd: hỏi timedatectl
     import subprocess
 
     class Done:
@@ -194,15 +195,15 @@ def test_is_clock_synced(monkeypatch):
             self.stdout = out
 
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done("yes\n"))
-    assert is_clock_synced() is True
+    assert is_clock_trusted(flag_path=no_flag) is True
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done("no\n"))
-    assert is_clock_synced() is False
+    assert is_clock_trusted(flag_path=no_flag) is False
 
     def missing(*a, **k):
         raise FileNotFoundError("timedatectl")  # laptop Windows
 
     monkeypatch.setattr(subprocess, "run", missing)
-    assert is_clock_synced() is False
+    assert is_clock_trusted(flag_path=no_flag) is False
 
 
 # ---------------- PiSensors: lỗi mở/đọc cổng không làm chết vòng lặp ----------------
@@ -373,3 +374,62 @@ def test_failed_purge_rolls_back(conn, csv_path, monkeypatch):
     col.run(FakeSensors(), insert_conn, CsvLog(str(csv_path), "pi01"), RecordingPublisher(),
             FakeStop(t, max_loops=7), clock=lambda: t[0], synced=lambda: True)
     assert conn.in_transaction is False
+
+
+# ---------------- Final review fixes ----------------
+class _Done:
+    def __init__(self, out):
+        self.stdout = out
+
+
+def test_clock_trusted_once_synced_since_boot(monkeypatch, tmp_path):
+    """File cờ của systemd-timesyncd còn đó (đã đồng bộ ít nhất một lần từ lúc khởi động):
+    tin đồng hồ kể cả khi timedatectl báo NTPSynchronized=no sau nhiều giờ mất mạng."""
+    import subprocess
+
+    import aiot.collector as col
+
+    flag = tmp_path / "synchronized"
+    flag.write_text("")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Done("no\n"))
+    assert col.is_clock_trusted(flag_path=str(flag)) is True
+
+
+def test_clock_trusted_falls_back_to_timedatectl(monkeypatch, tmp_path):
+    import subprocess
+
+    import aiot.collector as col
+
+    missing = str(tmp_path / "khong_co")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Done("yes\n"))
+    assert col.is_clock_trusted(flag_path=missing) is True
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Done("no\n"))
+    assert col.is_clock_trusted(flag_path=missing) is False
+
+
+def test_clock_trusted_default_flag_path():
+    import aiot.collector as col
+
+    assert col.SYNC_FLAG_PATH == "/run/systemd/timesync/synchronized"
+
+
+def test_untrusted_clock_skips_csv_and_mqtt(conn, csv_path):
+    pub = RecordingPublisher()
+    run(FakeSensors(), conn, csv_path, publisher=pub, clock_synced=False)
+    assert len(raw_rows(conn)) == 1 and raw_rows(conn)[0][-1] == 0   # SQLite vẫn ghi
+    assert not csv_path.exists()
+    assert pub.payloads == []
+
+
+def test_untrusted_sample_colliding_with_existing_ts_warns(conn, csv_path, caplog):
+    import logging
+
+    run(FakeSensors(), conn, csv_path, now=datetime(2026, 11, 5, 8, 0, 30))
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="aiot.collector"):
+        run(FakeSensors(), conn, csv_path, now=datetime(2026, 11, 5, 8, 0, 10), clock_synced=False)
+    assert any("raw_readings" in r.getMessage() for r in caplog.records)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="aiot.collector"):
+        run(FakeSensors(), conn, csv_path, now=datetime(2026, 11, 5, 8, 1, 0), clock_synced=False)
+    assert not any("raw_readings" in r.getMessage() for r in caplog.records)

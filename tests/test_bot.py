@@ -26,7 +26,7 @@ CFG = dataclasses.replace(
 @pytest.fixture(autouse=True)
 def clock_synced(monkeypatch):
     """Mặc định đồng hồ Pi đã đồng bộ NTP (máy test không có timedatectl)."""
-    monkeypatch.setattr(bot, "is_clock_synced", lambda: True)
+    monkeypatch.setattr(bot, "is_clock_trusted", lambda: True)
 
 
 @pytest.fixture
@@ -81,7 +81,7 @@ def test_update_without_message_or_text_ignored(conn):
 # ---------------- lệnh điều khiển ----------------
 def test_fan_on_writes_pending_override_and_logs(conn):
     reply = handle(conn, "/fan on", uid=4242)
-    assert pending(conn) == {"fan": True, "ttl_s": CFG.control.override_ttl_s, "id": 4242}
+    assert pending(conn) == {"fan": True, "ttl_s": CFG.control.override_ttl_s, "id": 4242, "at": NOW}
     assert "bật" in reply
     events = command_events(conn)
     assert len(events) == 1 and "/fan on" in events[0] and str(CHAT) in events[0]
@@ -105,7 +105,7 @@ def _imported_modules(module):
 
 def test_fan_off_and_bot_suffix(conn):
     handle(conn, "/fan@TramKhongKhiBot OFF", uid=7)
-    assert pending(conn) == {"fan": False, "ttl_s": CFG.control.override_ttl_s, "id": 7}
+    assert pending(conn) == {"fan": False, "ttl_s": CFG.control.override_ttl_s, "id": 7, "at": NOW}
 
 
 def test_identical_consecutive_commands_are_distinct_texts(conn):
@@ -124,14 +124,14 @@ def test_fan_without_valid_argument_shows_usage(conn):
 
 def test_mode_auto_clears_override(conn):
     handle(conn, "/mode auto", uid=9)
-    assert pending(conn) == {"fan": None, "id": 9}
+    assert pending(conn) == {"fan": None, "id": 9, "at": NOW}
     assert any("/mode auto" in d for d in command_events(conn))
 
 
 def test_mode_manual_keeps_current_fan_state(conn):
     # chưa có trạng thái: BÌNH THƯỜNG -> quạt tắt
     handle(conn, "/mode manual", uid=1)
-    assert pending(conn) == {"fan": False, "ttl_s": CFG.control.override_ttl_s, "id": 1}
+    assert pending(conn) == {"fan": False, "ttl_s": CFG.control.override_ttl_s, "id": 1, "at": NOW}
     # đang BẢO VỆ -> giữ quạt bật
     set_state(conn, "control_state", ControlState(mode="PROTECT", entered_at=NOW - 60).to_json())
     handle(conn, "/mode manual", uid=2)
@@ -521,7 +521,7 @@ def test_future_dated_command_rejected(conn):
 
 
 def test_control_refused_while_clock_unsynced(conn, monkeypatch):
-    monkeypatch.setattr(bot, "is_clock_synced", lambda: False)
+    monkeypatch.setattr(bot, "is_clock_trusted", lambda: False)
     for text in ("/fan on", "/mode manual", "/quiet 22 6"):
         reply = handle(conn, text)
         assert "đồng bộ" in reply and "thử lại" in reply.lower()
@@ -675,3 +675,42 @@ def test_main_exits_nonzero_when_worker_thread_dies(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "run_delivery", lambda conn, sender, stop: stop.wait(5))
     monkeypatch.setattr(bot.signal, "signal", lambda *a: None)
     assert bot.main(["--config", str(cfg_path), "--env", str(env)]) == 1
+
+
+# ---------------- sửa lỗi review cuối nhánh ----------------
+def test_pending_override_carries_command_time(conn):
+    handle(conn, "/fan on", uid=1, now=NOW + 5)
+    assert pending(conn)["at"] == NOW + 5 and isinstance(pending(conn)["at"], int)
+    handle(conn, "/mode auto", uid=2, now=NOW + 6)
+    assert pending(conn) == {"fan": None, "id": 2, "at": NOW + 6}
+    handle(conn, "/mode manual", uid=3, now=NOW + 7)
+    assert pending(conn)["at"] == NOW + 7
+
+
+def test_status_warns_when_controller_heartbeat_missing_or_old(conn):
+    loop = CFG.control.loop_s
+    reply = handle(conn, "/status")
+    assert "aiot-controller" in reply                       # chưa từng thấy controller chạy
+    set_state(conn, "controller_heartbeat", NOW - 3 * loop - 1)
+    assert "aiot-controller" in handle(conn, "/status")
+    set_state(conn, "controller_heartbeat", NOW - 3 * loop)
+    assert "aiot-controller" not in handle(conn, "/status")
+
+
+def test_fan_and_mode_replies_warn_when_controller_stale(conn):
+    set_state(conn, "controller_heartbeat", NOW - 3600)
+    for text in ("/fan on", "/mode auto", "/mode manual"):
+        assert "aiot-controller" in handle(conn, text)
+    set_state(conn, "controller_heartbeat", NOW - 10)
+    for text in ("/fan off", "/mode auto"):
+        assert "aiot-controller" not in handle(conn, text)
+
+
+def test_old_report_request_dropped_without_building_report(conn, monkeypatch):
+    calls = []
+    monkeypatch.setattr(bot, "build_report", lambda *a, **k: calls.append(1) or "BÁO CÁO")
+    old = NOW - CFG.telegram.stale_command_s - 1
+    reply = handle(conn, "/report", date=old)
+    assert calls == [] and "bỏ" in reply.lower() and "/report" in reply
+    assert handle(conn, "/report", date=NOW - CFG.telegram.stale_command_s) == "BÁO CÁO"
+    assert calls == [1]

@@ -26,7 +26,7 @@ log = logging.getLogger("aiot.notifier")
 
 ALERT_KINDS = frozenset({
     "aqi_change", "danger", "sensor_fault", "sensor_recovered",
-    "fan_on", "fan_off", "override_expired", "alert_summary",
+    "fan_on", "fan_off", "override_expired", "relay_error", "alert_summary",
 })
 URGENT_KINDS = frozenset({"danger"})
 # Không bao giờ gộp: 'morning_report', 'reply' (và mọi loại không thuộc ALERT_KINDS)

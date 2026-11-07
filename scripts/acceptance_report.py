@@ -1,7 +1,8 @@
 """
 Tính các chỉ số nghiệm thu từ DB SQLite của trạm (xem docs/nghiem_thu.md).
 
-Chỉ đọc DB (init_schema chỉ tạo bảng còn thiếu, không đổi dữ liệu). Chạy được trên Pi:
+Chỉ đọc DB: mở chế độ read-only (mode=ro), không tạo bảng; file --db không tồn tại thì báo
+lỗi và thoát mã 2 (không tạo DB rỗng khi gõ sai đường dẫn). Chạy được trên Pi:
 chỉ dùng thư viện chuẩn, numpy và gói aiot.
 
 Định nghĩa:
@@ -38,6 +39,7 @@ training/export_hourly.py hoặc training/fetch_public.py ghi ra.
 import argparse
 import csv
 import math
+import sqlite3
 import sys
 import time
 from datetime import date, datetime, timedelta
@@ -45,8 +47,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-
-from aiot.db import connect, init_schema  # noqa: E402
 
 WINDOW_S = 300
 HOUR_S = 3600
@@ -263,9 +263,12 @@ def main(argv=None) -> int:
     if end <= start:
         parser.error("--end phải sau --start")
 
-    conn = connect(args.db or cfg.db_path)
+    db_path = Path(args.db or cfg.db_path)
+    if not db_path.is_file():
+        print(f"Lỗi: không có file DB {db_path}", file=sys.stderr)
+        return 2
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
     try:
-        init_schema(conn)
         fmt = "%Y-%m-%d %H:%M"
         print(f"Khoảng: {datetime.fromtimestamp(start).strftime(fmt)} -> "
               f"{datetime.fromtimestamp(end).strftime(fmt)}")

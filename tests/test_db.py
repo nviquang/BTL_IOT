@@ -162,3 +162,14 @@ def test_delete_state_only_if_value_matches(tmp_path):
     assert get_state(conn, "k") == "new"
     delete_state(conn, "k", value="new")
     assert get_state(conn, "k") is None
+
+
+def test_pm25_series_drops_out_of_range_values(tmp_path):
+    """Cùng khoảng hợp lệ 0–1000 với bước gộp 5 phút: controller không thấy giá trị lỗi."""
+    conn = open_db(tmp_path / "aiot.db")
+    insert_raw(conn, sample(1000, pm25=-1.0))
+    insert_raw(conn, sample(1010, pm25=0.0))
+    insert_raw(conn, sample(1020, pm25=1000.0))
+    insert_raw(conn, sample(1030, pm25=1000.5))
+    insert_raw(conn, sample(1040, pm25=65535.0))
+    assert pm25_series(conn, 0) == [(1010, 0.0), (1020, 1000.0)]

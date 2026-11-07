@@ -314,7 +314,7 @@ def test_latest_forecast_incomplete_returns_none(conn):
 # ---------- chạy một lần ----------
 
 def test_main_exits_zero_without_data(tmp_path, monkeypatch):
-    monkeypatch.setattr(forecast, "is_clock_synced", lambda: True)
+    monkeypatch.setattr(forecast, "is_clock_trusted", lambda: True)
     db = tmp_path / "aiot.db"
     cfg = tmp_path / "config.yaml"
     cfg.write_text(f"db_path: {db.as_posix()}\n", encoding="utf-8")
@@ -330,12 +330,12 @@ def test_main_skips_when_clock_not_synced(tmp_path, monkeypatch, caplog):
     cfg = tmp_path / "config.yaml"
     cfg.write_text(f"db_path: {db.as_posix()}\n", encoding="utf-8")
     called = []
-    monkeypatch.setattr(forecast, "is_clock_synced", lambda: False)
+    monkeypatch.setattr(forecast, "is_clock_trusted", lambda: False)
     monkeypatch.setattr(forecast, "run_forecast", lambda *a, **kw: called.append(a))
     with caplog.at_level(logging.INFO, logger="aiot.forecast"):
         assert forecast.main(["--config", str(cfg)]) == 0
     assert called == []
     assert "đồng bộ" in caplog.text
-    monkeypatch.setattr(forecast, "is_clock_synced", lambda: True)
+    monkeypatch.setattr(forecast, "is_clock_trusted", lambda: True)
     assert forecast.main(["--config", str(cfg)]) == 0
     assert len(called) == 1

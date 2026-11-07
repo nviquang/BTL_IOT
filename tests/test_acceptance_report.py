@@ -221,3 +221,29 @@ def test_main_prints_report(conn, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "50,0%" in out                 # 12/24 cửa sổ hợp lệ
     assert "Báo cáo sáng" in out
+
+
+def test_main_missing_db_exits_without_creating_file(tmp_path, capsys):
+    db = tmp_path / "go_sai.db"
+    assert ar.main(["--db", str(db)]) == 2
+    assert not db.exists()
+    assert "go_sai.db" in capsys.readouterr().err
+
+
+def test_main_opens_db_read_only(conn, tmp_path, monkeypatch):
+    db = tmp_path / "aiot.db"
+    seen = []
+    real_connect = ar.sqlite3.connect
+
+    def spy(target, *a, **kw):
+        seen.append((str(target), kw.get("uri")))
+        return real_connect(target, *a, **kw)
+
+    monkeypatch.setattr(ar.sqlite3, "connect", spy)
+    monkeypatch.setattr(ar, "init_schema", lambda c: pytest.fail("không được ghi schema"),
+                        raising=False)
+    end = datetime.fromtimestamp(T0 + H).strftime("%Y-%m-%d %H:%M")
+    start = datetime.fromtimestamp(T0).strftime("%Y-%m-%d %H:%M")
+    assert ar.main(["--db", str(db), "--start", start, "--end", end]) == 0
+    assert seen and seen[0][0].startswith("file:") and seen[0][0].endswith("?mode=ro")
+    assert seen[0][1] is True

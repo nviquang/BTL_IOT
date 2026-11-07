@@ -3,10 +3,11 @@ Dịch vụ collector: đọc mọi cảm biến mỗi 10 giây, ghi SQLite + CS
 
 - raw_readings (SQLite): mọi mẫu có ít nhất một giá trị đo, kể cả khi DHT11 lỗi
   hay đồng hồ chưa đồng bộ (clock_synced=0). ts là giây epoch kiểu số nguyên.
-- CSV: giữ đúng định dạng của pi_sensor_client.py, chỉ ghi khi có đủ DHT11 và lux.
+- CSV: giữ đúng định dạng của pi_sensor_client.py, chỉ ghi khi có đủ DHT11 và lux và
+  đồng hồ tin được (MQTT cũng vậy).
 - MQTT không bắt buộc: tắt trong config, thiếu mật khẩu hay mất broker thì vẫn thu thập.
 - MQ135 cần sấy: mq135_do = None trong 180 giây đầu sau khi dịch vụ chạy.
-- Gộp trung bình 5 phút mỗi phút (chỉ khi đồng hồ đã đồng bộ NTP);
+- Gộp trung bình 5 phút mỗi phút (chỉ khi đồng hồ tin được: is_clock_trusted);
   xoá raw_readings cũ hơn 7 ngày mỗi ngày một lần.
 
 Thay thế pi_sensor_client.py; không chạy cả hai cùng lúc vì dùng chung cảm biến.
@@ -119,8 +120,21 @@ class MqttPublisher:
         self._client.disconnect()
 
 
-def is_clock_synced() -> bool:
-    """Đồng hồ đã đồng bộ NTP chưa (timedatectl). Không có timedatectl thì coi như chưa."""
+SYNC_FLAG_PATH = "/run/systemd/timesync/synchronized"
+
+
+def is_clock_trusted(flag_path: str = SYNC_FLAG_PATH) -> bool:
+    """Đồng hồ Pi có tin được không: đã đồng bộ NTP ít nhất một lần từ lúc khởi động.
+
+    systemd-timesyncd tạo flag_path ở lần đồng bộ đầu tiên và file nằm tới khi khởi động
+    lại (/run là tmpfs). Không dùng "NTPSynchronized đang là yes": giá trị đó về "no"
+    khoảng 9 giờ sau khi mất Internet (maxerror của kernel > 16 s) dù đồng hồ vẫn chạy
+    đúng, làm dừng gộp 5 phút, dự báo và lệnh điều khiển (trái nguyên tắc local-first).
+    Chỉ khi không có file cờ mới hỏi timedatectl (ví dụ máy không dùng timesyncd).
+    Không có timedatectl thì coi như chưa tin được.
+    """
+    if os.path.exists(flag_path):
+        return True
     try:
         r = subprocess.run(
             ["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
@@ -149,6 +163,15 @@ def _safe_read(name: str, fn):
         return None
 
 
+def _warn_ts_collision(conn, ts: int) -> None:
+    """Chỉ để nhìn thấy: sau khi mất điện, đồng hồ có thể khôi phục về giờ cũ hơn mẫu đã
+    lưu, nên INSERT OR IGNORE bỏ mẫu mới trùng ts mà không báo gì."""
+    last = conn.execute("SELECT MAX(ts) FROM raw_readings").fetchone()[0]
+    if last is not None and ts <= last:
+        log.warning("Đồng hồ chưa tin được và ts=%s <= MAX(raw_readings.ts)=%s: mẫu trùng ts "
+                    "sẽ bị bỏ (INSERT OR IGNORE)", ts, last)
+
+
 # ---------------- Một lần thu thập ----------------
 def collect_once(sensors, conn, csv_writer, publisher, now: datetime, clock_synced: bool,
                  *, mq135_ready: bool = True) -> RawSample:
@@ -174,10 +197,18 @@ def collect_once(sensors, conn, csv_writer, publisher, now: datetime, clock_sync
         return sample
 
     try:
+        if not clock_synced:
+            _warn_ts_collision(conn, sample.ts)
         insert_raw(conn, sample)
     except sqlite3.Error as e:
         log.error("Lỗi ghi SQLite: %s", e)
         _rollback(conn)
+
+    if not clock_synced:
+        # Giờ chưa tin được: CSV và MQTT (định dạng cũ, không có cờ đồng hồ) sẽ nhận dòng
+        # sai giờ, nên chỉ ghi SQLite (clock_synced=0)
+        log.info("Bỏ qua CSV/MQTT (đồng hồ chưa tin được), PM2.5=%s", pm25)
+        return sample
 
     if temp is None or lux is None:
         # Không ghi dòng thiếu vào CSV: notebook time series không chịu được NaN
@@ -200,7 +231,7 @@ def collect_once(sensors, conn, csv_writer, publisher, now: datetime, clock_sync
 
 # ---------------- Vòng lặp dịch vụ ----------------
 def run(sensors, conn, csv_writer, publisher, stop: threading.Event,
-        *, clock=time.monotonic, synced=is_clock_synced) -> None:
+        *, clock=time.monotonic, synced=is_clock_trusted) -> None:
     """Thu thập mỗi INTERVAL giây tới khi stop được đặt (SIGTERM/SIGINT)."""
     warmup = Warmup(MQ135_WARMUP_S, clock=clock)
     next_time = clock()
@@ -208,7 +239,8 @@ def run(sensors, conn, csv_writer, publisher, stop: threading.Event,
     next_purge = clock() + AGGREGATE_EVERY_S       # xoá lần đầu sau khi chạy 1 phút
     clock_ok = synced()
     if not clock_ok:
-        log.warning("Đồng hồ chưa đồng bộ NTP: mẫu được đánh dấu clock_synced=0, chưa gộp")
+        log.warning("Đồng hồ chưa tin được (chưa đồng bộ NTP lần nào từ lúc khởi động): mẫu được "
+                    "đánh dấu clock_synced=0, chưa gộp, không ghi CSV/MQTT")
 
     while not stop.is_set():
         collect_once(sensors, conn, csv_writer, publisher, datetime.now(), clock_ok,

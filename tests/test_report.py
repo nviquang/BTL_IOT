@@ -306,7 +306,7 @@ def outbox_texts(db):
 
 def test_main_sends_report(tmp_path, monkeypatch):
     cfg, db = write_cfg(tmp_path)
-    monkeypatch.setattr(report, "is_clock_synced", lambda: True)
+    monkeypatch.setattr(report, "is_clock_trusted", lambda: True)
     assert report.main(["--config", str(cfg), "--env", str(tmp_path / ".env")]) == 0
     rows = outbox_texts(db)
     assert len(rows) == 1 and rows[0].kind == "morning_report"
@@ -315,7 +315,7 @@ def test_main_sends_report(tmp_path, monkeypatch):
 
 def test_main_sends_anyway_when_clock_never_syncs(tmp_path, monkeypatch):
     cfg, db = write_cfg(tmp_path)
-    monkeypatch.setattr(report, "is_clock_synced", lambda: False)
+    monkeypatch.setattr(report, "is_clock_trusted", lambda: False)
     clock = {"t": 0.0}
 
     def sleep(s):

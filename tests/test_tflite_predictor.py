@@ -240,7 +240,7 @@ def test_run_forecast_with_loaded_predictor(tmp_path, fake_litert, conn):
 
 
 def test_main_uses_configured_model(tmp_path, fake_litert, monkeypatch):
-    monkeypatch.setattr(forecast, "is_clock_synced", lambda: True)
+    monkeypatch.setattr(forecast, "is_clock_trusted", lambda: True)
     now = int(time.time())
     last = now // H * H - H
     db = tmp_path / "aiot.db"

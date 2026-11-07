@@ -163,3 +163,31 @@ def test_missing_telegram_token_does_not_raise(tmp_path):
 def test_missing_config_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_config(tmp_path / "khong_co.yaml", tmp_path / ".env")
+
+
+# ---------------- .env: BOM của Windows và chú thích cuối dòng ----------------
+def test_env_with_utf8_bom(tmp_path):
+    cfg_path, env_path = write(tmp_path)
+    env_path.write_bytes("TELEGRAM_TOKEN=abc\nALLOWED_CHAT_IDS=1\n".encode("utf-8-sig"))
+    cfg = load_config(cfg_path, env_path)
+    assert cfg.secrets.telegram_token == "abc"
+    assert cfg.secrets.allowed_chat_ids == frozenset({1})
+
+
+def test_env_inline_comment_stripped_from_unquoted_values(tmp_path):
+    from aiot.config import read_env_file
+
+    _, env_path = write(tmp_path, env_text=(
+        "A=value # chú thích\n"
+        "B=1,2\t# tab rồi chú thích\n"
+        "C=\"giữ # trong ngoặc\" # chú thích\n"
+        "D=abc#def\n"
+        "E='x y'\n"
+        "F=\n"))
+    values = read_env_file(env_path)
+    assert values["A"] == "value"
+    assert values["B"] == "1,2"
+    assert values["C"] == "giữ # trong ngoặc"
+    assert values["D"] == "abc#def"           # không có khoảng trắng trước '#': là một phần giá trị
+    assert values["E"] == "x y"
+    assert values["F"] == ""

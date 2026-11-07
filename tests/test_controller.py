@@ -174,7 +174,7 @@ def test_step_reads_enough_history(conn):
 def test_pending_override_applied_then_cleared(conn):
     add_pm(conn, 0, 1200, 20.0)
     relay = FakeRelay()
-    set_state(conn, PENDING_KEY, json.dumps({"fan": True, "ttl_s": 600}))
+    set_state(conn, PENDING_KEY, json.dumps({"fan": True, "ttl_s": 600, "at": 1000}))
     st = step(conn, relay, CFG, 1000)
     assert st.override_fan is True and st.override_until == 1600
     assert relay.calls == [True]
@@ -185,7 +185,7 @@ def test_pending_override_applied_then_cleared(conn):
     step(conn, relay, CFG, 1020)            # khoá đã xoá: không áp dụng lại
     assert len(events(conn, "override")) == 1
 
-    set_state(conn, PENDING_KEY, json.dumps({"fan": None}))
+    set_state(conn, PENDING_KEY, json.dumps({"fan": None, "at": 1040}))
     st = step(conn, relay, CFG, 1040)
     assert st.override_fan is None and st.override_until is None
     assert relay.calls == [True, True, False]
@@ -196,7 +196,7 @@ def test_pending_override_applied_then_cleared(conn):
 def test_pending_override_off_wins_over_protect(conn):
     add_pm(conn, 900, 1000, 200.0)
     relay = FakeRelay()
-    set_state(conn, PENDING_KEY, json.dumps({"fan": False, "ttl_s": 7200}))
+    set_state(conn, PENDING_KEY, json.dumps({"fan": False, "ttl_s": 7200, "at": 1000}))
     st = step(conn, relay, CFG, 1000)
     assert st.mode == "PROTECT"                 # máy trạng thái vẫn chạy bên dưới
     assert relay.calls == [False]
@@ -204,7 +204,7 @@ def test_pending_override_off_wins_over_protect(conn):
 
 def test_pending_override_without_ttl_uses_config_default(conn):
     add_pm(conn, 0, 1200, 20.0)
-    set_state(conn, PENDING_KEY, json.dumps({"fan": True}))
+    set_state(conn, PENDING_KEY, json.dumps({"fan": True, "at": 1000}))
     st = step(conn, FakeRelay(), CFG, 1000)
     assert st.override_until == 1000 + CFG.override_ttl_s
 
@@ -212,11 +212,11 @@ def test_pending_override_without_ttl_uses_config_default(conn):
 def test_pending_override_with_bot_id_key_accepted(conn):
     # Bot thêm "id" (update_id) để hai lệnh giống nhau liên tiếp là hai văn bản khác nhau
     add_pm(conn, 0, 1200, 20.0)
-    set_state(conn, PENDING_KEY, json.dumps({"fan": True, "ttl_s": 600, "id": 4242}))
+    set_state(conn, PENDING_KEY, json.dumps({"fan": True, "ttl_s": 600, "id": 4242, "at": 1000}))
     st = step(conn, FakeRelay(), CFG, 1000)
     assert st.override_fan is True and st.override_until == 1600
     assert kinds(conn) == ["override"]
-    set_state(conn, PENDING_KEY, json.dumps({"fan": None, "id": 4243}))
+    set_state(conn, PENDING_KEY, json.dumps({"fan": None, "id": 4243, "at": 1020}))
     st = step(conn, FakeRelay(), CFG, 1020)
     assert st.override_fan is None
     assert get_state(conn, PENDING_KEY) is None
@@ -388,8 +388,8 @@ def test_inject_constant_profiles(profile, value):
 def test_pending_changed_between_read_and_delete_survives(conn, tmp_path, monkeypatch):
     import aiot.controller as controller
     add_pm(conn, 0, 1200, 20.0)
-    first = json.dumps({"fan": True, "ttl_s": 600})
-    second = json.dumps({"fan": False, "ttl_s": 600})
+    first = json.dumps({"fan": True, "ttl_s": 600, "at": 1000})
+    second = json.dumps({"fan": False, "ttl_s": 600, "at": 1000})
     set_state(conn, PENDING_KEY, first)
     real_parse = controller._parse_pending
 
@@ -417,7 +417,7 @@ def test_step_failure_after_reading_override_keeps_it_pending(conn, monkeypatch)
     import sqlite3
     import aiot.controller as controller
     add_pm(conn, 0, 1200, 20.0)
-    text = json.dumps({"fan": True, "ttl_s": 600})
+    text = json.dumps({"fan": True, "ttl_s": 600, "at": 1000})
     set_state(conn, PENDING_KEY, text)
 
     def locked(*a):
@@ -442,7 +442,7 @@ def test_write_failure_mid_transaction_persists_nothing(conn, monkeypatch):
     import sqlite3
     import aiot.controller as controller
     add_pm(conn, 900, 1100, 200.0)                  # danger + fan_on
-    text = json.dumps({"fan": False, "ttl_s": 600})
+    text = json.dumps({"fan": False, "ttl_s": 600, "at": 1000})
     set_state(conn, PENDING_KEY, text)
     real_log = controller.log_event
     calls = []
@@ -504,7 +504,7 @@ def test_danger_urgent_with_quiet_hours_state(conn):
 
 def test_fan_on_under_override_does_not_claim_relay_moved(conn):
     add_pm(conn, 900, 1000, 200.0)
-    set_state(conn, PENDING_KEY, json.dumps({"fan": False, "ttl_s": 7200}))
+    set_state(conn, PENDING_KEY, json.dumps({"fan": False, "ttl_s": 7200, "at": 1000}))
     relay = FakeRelay()
     step(conn, relay, CFG, 1000, tcfg=TCFG)
     assert relay.calls == [False]
@@ -646,3 +646,136 @@ def test_forecast_read_failure_does_not_break_control(conn, monkeypatch, caplog)
         step(conn, relay, CFG, 1040)
     assert st.mode == "PROTECT" and relay.calls == [True, True, True]
     assert sum("forecasts hỏng" in r.getMessage() for r in caplog.records) == 1
+
+
+# ---------- sửa lỗi review cuối nhánh ----------
+
+def test_pending_override_without_time_dropped(conn):
+    add_pm(conn, 0, 1200, 20.0)
+    set_state(conn, PENDING_KEY, json.dumps({"fan": True, "ttl_s": 600, "id": 1}))
+    relay = FakeRelay()
+    st = step(conn, relay, CFG, 1000)
+    assert st.override_fan is None and relay.calls == [False]
+    assert get_state(conn, PENDING_KEY) is None
+    assert kinds(conn) == ["override_stale"]
+
+
+@pytest.mark.parametrize("at, applied", [
+    (1000 - 141, False),            # cũ hơn stale_command_s (120) + loop_s (20)
+    (1000 - 140, True),
+    (1000 + 140, True),
+    (1000 + 141, False),            # "ở tương lai" quá xa: đồng hồ lệch
+    ("1000", False),                # không phải số nguyên
+    (True, False),
+])
+def test_pending_override_age_checked(conn, at, applied):
+    add_pm(conn, 0, 1200, 20.0)
+    set_state(conn, PENDING_KEY, json.dumps({"fan": True, "ttl_s": 600, "id": 1, "at": at}))
+    relay = FakeRelay()
+    st = step(conn, relay, CFG, 1000)
+    assert (st.override_fan is True) is applied
+    assert relay.calls == [applied]
+    assert get_state(conn, PENDING_KEY) is None
+    assert kinds(conn) == (["override"] if applied else ["override_stale"])
+
+
+def test_stale_pending_delete_keeps_newer_command(conn, tmp_path, monkeypatch):
+    import aiot.controller as controller
+    add_pm(conn, 0, 1200, 20.0)
+    old = json.dumps({"fan": True, "ttl_s": 600, "at": 1})
+    fresh = json.dumps({"fan": False, "ttl_s": 600, "at": 1000})
+    set_state(conn, PENDING_KEY, old)
+    real_parse = controller._parse_pending
+
+    def parse_then_bot_writes(text, default_ttl_s):
+        bot = connect(tmp_path / "aiot.db")
+        set_state(bot, PENDING_KEY, fresh)
+        bot.close()
+        return real_parse(text, default_ttl_s)
+
+    monkeypatch.setattr(controller, "_parse_pending", parse_then_bot_writes)
+    st = step(conn, FakeRelay(), CFG, 1000)
+    assert st.override_fan is None
+    assert kinds(conn) == ["override_stale"]
+    assert get_state(conn, PENDING_KEY) == fresh            # lệnh mới không bị xoá mất
+
+
+def test_heartbeat_written_each_step(conn):
+    add_pm(conn, 0, 1200, 20.0)
+    step(conn, FakeRelay(), CFG, 1000)
+    assert get_state(conn, "controller_heartbeat") == "1000"
+    step(conn, FakeRelay(), CFG, 1020)
+    assert get_state(conn, "controller_heartbeat") == "1020"
+
+
+def test_restore_clears_condition_timers(conn):
+    set_state(conn, STATE_KEY, ControlState(mode="PROTECT", entered_at=0, exit_since=500).to_json())
+    st = restore(conn, FakeRelay(), CFG, 1000)
+    assert st.exit_since is None and st.enter_since is None
+    assert saved(conn).exit_since is None
+    assert st.mode == "PROTECT" and st.entered_at == 0
+    set_state(conn, STATE_KEY, ControlState(enter_since=700).to_json())
+    st = restore(conn, FakeRelay(), CFG, 1000)
+    assert st.enter_since is None
+
+
+def test_samples_before_boot_ignored(conn):
+    # Mẫu PM cao trước khi Pi khởi động lại (đồng hồ khôi phục gần giờ tắt máy) không được
+    # tính vào cửa sổ trung bình hay mức khẩn cấp sau khi khởi động
+    add_pm(conn, 0, 1040, 200.0)
+    relay = FakeRelay()
+    st = step(conn, relay, CFG, 1100, tcfg=TCFG, monotonic=lambda: 50)    # boot_wall = 1050
+    assert st.mode == "NORMAL" and relay.calls == [False]
+    assert "danger" not in kinds(conn) and "fan_on" not in kinds(conn)
+
+
+def test_samples_after_boot_used(conn):
+    add_pm(conn, 1050, 1100, 200.0)
+    st = step(conn, FakeRelay(), CFG, 1100, tcfg=TCFG, monotonic=lambda: 50)
+    assert st.mode == "PROTECT" and "danger" in kinds(conn)
+
+
+def test_no_false_sensor_fault_right_after_boot(conn):
+    relay = FakeRelay()
+    st = step(conn, relay, CFG, 1000, tcfg=TCFG, monotonic=lambda: 30)
+    assert st.fault_active is False
+    assert "sensor_fault" not in kinds(conn) and outbox(conn) == []
+    add_pm(conn, 1010, 1040, 20.0)                          # collector bắt đầu ghi
+    st = step(conn, relay, CFG, 1040, tcfg=TCFG, monotonic=lambda: 70)
+    assert kinds(conn) == [] and outbox(conn) == []         # không có "đã có dữ liệu trở lại"
+    assert get_state(conn, "alert_last:sensor_fault") is None
+
+
+def test_sensor_fault_after_boot_grace_if_still_missing(conn):
+    relay = FakeRelay()
+    step(conn, relay, CFG, 1000, tcfg=TCFG, monotonic=lambda: 30)
+    step(conn, relay, CFG, 1100, tcfg=TCFG, monotonic=lambda: 130)        # > stale_s
+    assert kinds(conn) == ["sensor_fault"]
+    assert [k for k, _ in outbox(conn)] == ["sensor_fault"]
+
+
+def test_aqi_change_not_checked_on_stale_step(conn):
+    # Mẫu cuối cũ hơn stale_s nhưng TB 15 phút vẫn tính được từ dữ liệu cũ: không báo đổi nhóm
+    set_state(conn, "aqi_notified", "1")
+    add_pm(conn, 1000 - 890, 1000 - 130, 45.0)
+    step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG)
+    assert "aqi_change" not in [k for k, _ in outbox(conn)]
+    assert get_state(conn, "aqi_notified") == "1"
+
+
+def test_relay_failure_enqueues_alert_once_and_corrects_fan_on(conn):
+    add_pm(conn, 900, 1100, 200.0)
+    relay = FakeRelay(fail=2)
+    step(conn, relay, CFG, 1000, tcfg=TCFG)
+    step(conn, relay, CFG, 1020, tcfg=TCFG)
+    msgs = outbox(conn)
+    assert [k for k, _ in msgs].count("relay_error") == 1
+    relay_text = dict(msgs)["relay_error"]
+    assert "relay" in relay_text and "không" in relay_text
+    fan_text = dict(msgs)["fan_on"]
+    assert "relay" in fan_text and "có thể" in fan_text      # không để tin "đã bật" đứng một mình
+
+
+def test_relay_failure_on_restore_enqueues_alert(conn):
+    restore(conn, FakeRelay(fail=1), CFG, 1000, tcfg=TCFG)
+    assert [k for k, _ in outbox(conn)] == ["relay_error"]

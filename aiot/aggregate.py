@@ -9,15 +9,15 @@ Gộp mẫu thô 10 giây thành trung bình theo cửa sổ (mặc định 5 ph
 """
 import sqlite3
 
-from aiot.db import RawSample
+from aiot.db import PM_RANGE, RawSample
 
 SAMPLE_PERIOD_S = 10
 
 # Khoảng giá trị chấp nhận được (bao gồm hai đầu)
 RANGES = {
-    "pm1": (0.0, 1000.0),
-    "pm25": (0.0, 1000.0),
-    "pm10": (0.0, 1000.0),
+    "pm1": PM_RANGE,
+    "pm25": PM_RANGE,           # db.pm25_series (controller) lọc cùng khoảng này
+    "pm10": PM_RANGE,
     "temp": (0.0, 50.0),       # dải đo của DHT11
     "hum": (0.0, 100.0),
     "lux": (0.0, 65535.0),     # BH1750

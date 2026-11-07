@@ -225,3 +225,8 @@ def test_collapse_nothing_stale_is_noop(conn):
     enqueue(conn, "fan_on", "bật", at(12))
     collapse_stale_alerts(conn, at(12, 30))
     assert kinds(conn) == ["fan_on"]
+
+
+def test_relay_error_is_an_alert_kind():
+    from aiot.notifier import ALERT_KINDS
+    assert "relay_error" in ALERT_KINDS

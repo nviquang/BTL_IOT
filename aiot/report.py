@@ -26,7 +26,7 @@ from pathlib import Path
 
 from aiot.advice import get_advice, template_advice
 from aiot.aqi import LABELS, classify
-from aiot.collector import is_clock_synced
+from aiot.collector import is_clock_trusted
 from aiot.control import ControlState, fan_on, override_active
 from aiot.db import get_state, set_state
 from aiot.forecast import MODEL_NAMES, latest_rows
@@ -344,10 +344,10 @@ def main(argv=None, *, sleep=time.sleep, monotonic=time.monotonic) -> int:
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config, args.env)
-    synced = is_clock_synced()
+    synced = is_clock_trusted()
     if not synced:
         log.warning("Đồng hồ Pi chưa đồng bộ NTP: chờ tối đa %d phút", CLOCK_WAIT_S // 60)
-        synced = wait_for_clock(lambda: is_clock_synced(), sleep=sleep, monotonic=monotonic)
+        synced = wait_for_clock(lambda: is_clock_trusted(), sleep=sleep, monotonic=monotonic)
         if not synced:
             log.warning("Vẫn chưa đồng bộ giờ: gửi báo cáo kèm ghi chú")
     conn = connect(cfg.db_path)

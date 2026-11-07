@@ -4,15 +4,20 @@ Dịch vụ bot Telegram: long polling nhận lệnh, gửi tin trong outbox (g�
 - Chỉ phản hồi chat trong ALLOWED_CHAT_IDS. Chat khác: không trả lời, không ghi DB
   (chỉ một dòng log debug, không có nội dung tin).
 - Bot không bao giờ chạm GPIO. Lệnh điều khiển chỉ ghi khoá state 'pending_override'
-  (JSON) cho controller: {"fan": true|false, "ttl_s": int, "id": update_id} đặt ghi đè,
-  {"fan": null, "id": update_id} xoá ghi đè. "id" làm hai lệnh giống nhau liên tiếp
-  thành hai văn bản khác nhau (controller xoá khoá theo đúng văn bản đã đọc).
+  (JSON) cho controller: {"fan": true|false, "ttl_s": int, "id": update_id, "at": now}
+  đặt ghi đè, {"fan": null, "id": update_id, "at": now} xoá ghi đè. "id" làm hai lệnh
+  giống nhau liên tiếp thành hai văn bản khác nhau (controller xoá khoá theo đúng văn bản
+  đã đọc); "at" (giây epoch) để controller bỏ lệnh đã chờ quá lâu (controller từng dừng).
+- /status và trả lời /fan, /mode cảnh báo khi khoá 'controller_heartbeat' (controller ghi
+  mỗi vòng) thiếu hoặc cũ hơn CONTROLLER_STALE_LOOPS vòng loop_s.
 - /quiet ghi khoá 'quiet_hours' ("start,end") mà notifier dùng.
 - Mọi lệnh điều khiển (/fan, /mode, /quiet) được ghi vào events (kind 'command',
   detail = văn bản lệnh + chat id), cùng transaction với lệnh ghi state.
 - Lệnh điều khiển lệch quá telegram.stale_command_s giây so với đồng hồ Pi (cũ hoặc "ở
-  tương lai") bị bỏ. Pi không có RTC, nên khi đồng hồ chưa đồng bộ NTP thì lệnh điều
-  khiển bị từ chối hẳn. Lệnh chỉ đọc luôn được trả lời.
+  tương lai") bị bỏ. Pi không có RTC, nên khi đồng hồ chưa tin được (chưa đồng bộ NTP lần
+  nào từ lúc khởi động, xem aiot.collector.is_clock_trusted) thì lệnh điều khiển bị từ chối
+  hẳn. Lệnh chỉ đọc luôn được trả lời, trừ /report cũ hơn stale_command_s (tồn đọng 24 giờ
+  khi bot chạy lần đầu hay sau khi mất mạng): bỏ để không gọi Gemini cho từng tin cũ.
 - Offset getUpdates lưu ở khoá 'telegram_offset', commit cùng transaction với thay đổi
   của lệnh (crash giữa chừng không áp dụng lại lệnh), và luôn tăng kể cả khi xử lý một
   update bị lỗi, để một tin hỏng không làm bot lặp lại mãi.
@@ -38,7 +43,7 @@ from pathlib import Path
 
 from aiot.aqi import classify
 from aiot.control import ControlState, fan_on, override_active
-from aiot.collector import is_clock_synced
+from aiot.collector import is_clock_trusted
 from aiot.db import connect, get_state, init_schema, log_event, set_state
 from aiot.forecast import MODEL_NAMES, latest_rows
 from aiot.notifier import collapse_stale_alerts, mark_sent, pending_messages, quiet_window
@@ -51,6 +56,8 @@ OFFSET_KEY = "telegram_offset"
 QUIET_KEY = "quiet_hours"
 PENDING_KEY = "pending_override"       # cùng khoá với aiot.controller (không import để
 STATE_KEY = "control_state"            # bot không kéo theo module điều khiển GPIO)
+HEARTBEAT_KEY = "controller_heartbeat"
+CONTROLLER_STALE_LOOPS = 3             # heartbeat cũ hơn 3 vòng loop_s: controller không chạy
 NOW_MAX_AGE_S = 300                    # /now: mẫu cũ hơn 5 phút coi như chưa có dữ liệu
 DELIVERY_INTERVAL_S = 5
 BACKOFF_MIN_S = 5
@@ -121,6 +128,26 @@ def _control_state(conn):
         return None, str(e)
 
 
+def _controller_warning(conn, cfg, now):
+    """Câu cảnh báo khi controller không chạy (heartbeat thiếu/cũ), ngược lại None."""
+    text = get_state(conn, HEARTBEAT_KEY)
+    try:
+        beat = int(text) if text is not None else None
+    except ValueError:
+        beat = None
+    if beat is not None and now - beat <= CONTROLLER_STALE_LOOPS * cfg.control.loop_s:
+        return None
+    since = (f"từ {_fmt_time(beat)} (cách đây {_fmt_age(now - beat)})" if beat is not None
+             else "(chưa thấy lần chạy nào)")
+    return (f"Cảnh báo: bộ điều khiển quạt (dịch vụ aiot-controller) không chạy {since}; "
+            f"lệnh quạt chưa được áp dụng cho tới khi dịch vụ chạy lại.")
+
+
+def _with_controller_warning(conn, cfg, now, reply):
+    warning = _controller_warning(conn, cfg, now)
+    return reply if warning is None else f"{reply}\n{warning}"
+
+
 # ---------------- lệnh chỉ đọc ----------------
 def cmd_now(conn, cfg, now, args):
     row = _latest_sample(conn)
@@ -180,7 +207,7 @@ def cmd_status(conn, cfg, now, args):
     start, end = quiet_window(conn, cfg)
     lines.append(f"- Giờ yên lặng: từ {start}h tới {end}h" if start != end
                  else "- Giờ yên lặng: không có")
-    return "\n".join(lines)
+    return _with_controller_warning(conn, cfg, now, "\n".join(lines))
 
 
 def cmd_forecast(conn, cfg, now, args):
@@ -237,11 +264,12 @@ def _apply_control(conn, now, ctx, writes):
         raise
 
 
-def _pending_json(fan, update_id, ttl_s=None):
+def _pending_json(fan, update_id, now, ttl_s=None):
     data = {"fan": fan}
     if fan is not None:
         data["ttl_s"] = int(ttl_s)
     data["id"] = update_id
+    data["at"] = int(now)
     return json.dumps(data, sort_keys=True)
 
 
@@ -251,10 +279,11 @@ def cmd_fan(conn, cfg, now, args, ctx):
     on = args[0] == "on"
     ttl = cfg.control.override_ttl_s
     _apply_control(conn, now, ctx,
-                   [(PENDING_KEY, _pending_json(on, ctx["update_id"], ttl))])
-    return (f"Đã gửi lệnh {_on_off(on)} quạt thủ công. Bộ điều khiển áp dụng trong khoảng "
-            f"{cfg.control.loop_s} giây; ghi đè có hiệu lực {_fmt_age(ttl)} "
-            f"(tới {_fmt_time(now + ttl)}). Gửi /mode auto để về tự động.")
+                   [(PENDING_KEY, _pending_json(on, ctx["update_id"], now, ttl))])
+    return _with_controller_warning(conn, cfg, now, (
+        f"Đã gửi lệnh {_on_off(on)} quạt thủ công. Bộ điều khiển áp dụng trong khoảng "
+        f"{cfg.control.loop_s} giây; ghi đè có hiệu lực {_fmt_age(ttl)} "
+        f"(tới {_fmt_time(now + ttl)}). Gửi /mode auto để về tự động."))
 
 
 def cmd_mode(conn, cfg, now, args, ctx):
@@ -262,16 +291,18 @@ def cmd_mode(conn, cfg, now, args, ctx):
         return USAGE_MODE
     if args[0] == "auto":
         _apply_control(conn, now, ctx,
-                       [(PENDING_KEY, _pending_json(None, ctx["update_id"]))])
-        return (f"Đã gửi lệnh về chế độ tự động: quạt theo luật PM2.5 trong khoảng "
-                f"{cfg.control.loop_s} giây.")
+                       [(PENDING_KEY, _pending_json(None, ctx["update_id"], now))])
+        return _with_controller_warning(conn, cfg, now, (
+            f"Đã gửi lệnh về chế độ tự động: quạt theo luật PM2.5 trong khoảng "
+            f"{cfg.control.loop_s} giây."))
     st, _ = _control_state(conn)
     on = fan_on(st, now) if st is not None else False
     ttl = cfg.control.override_ttl_s
     _apply_control(conn, now, ctx,
-                   [(PENDING_KEY, _pending_json(on, ctx["update_id"], ttl))])
-    return (f"Đã chuyển sang thủ công: giữ quạt đang {_on_off(on)} trong {_fmt_age(ttl)} "
-            f"(tới {_fmt_time(now + ttl)}). Gửi /fan on|off để đổi, /mode auto để về tự động.")
+                   [(PENDING_KEY, _pending_json(on, ctx["update_id"], now, ttl))])
+    return _with_controller_warning(conn, cfg, now, (
+        f"Đã chuyển sang thủ công: giữ quạt đang {_on_off(on)} trong {_fmt_age(ttl)} "
+        f"(tới {_fmt_time(now + ttl)}). Gửi /fan on|off để đổi, /mode auto để về tự động."))
 
 
 def cmd_quiet(conn, cfg, now, args, ctx):
@@ -306,8 +337,8 @@ def handle_update(update, conn, cfg, now, *, clock_synced=None, commit=True):
     """Xử lý một update của Telegram. Trả về văn bản trả lời, hoặc None nếu không trả lời
     (chat không được phép, không phải tin chữ).
 
-    clock_synced: hàm () -> bool, mặc định aiot.collector.is_clock_synced. Pi không có
-    RTC: khi đồng hồ chưa đồng bộ NTP thì không so được tuổi lệnh, nên lệnh điều khiển
+    clock_synced: hàm () -> bool, mặc định aiot.collector.is_clock_trusted. Pi không có
+    RTC: khi đồng hồ chưa tin được thì không so được tuổi lệnh, nên lệnh điều khiển
     bị từ chối. commit False: không commit (poll_once commit cùng offset)."""
     now = int(now)
     message = update.get("message") if isinstance(update, dict) else None
@@ -328,7 +359,7 @@ def handle_update(update, conn, cfg, now, *, clock_synced=None, commit=True):
 
     if command in CONTROL:
         detail = f"{text.strip()[:200]} chat={chat_id}"
-        synced = (clock_synced if clock_synced is not None else is_clock_synced)()
+        synced = (clock_synced if clock_synced is not None else is_clock_trusted)()
         if not synced:
             log.info("Bỏ lệnh %s từ chat %s: đồng hồ Pi chưa đồng bộ NTP", command, chat_id)
             log_event(conn, now, "command", f"{detail} dropped: clock not synced", commit=commit)
@@ -354,6 +385,14 @@ def handle_update(update, conn, cfg, now, *, clock_synced=None, commit=True):
         log.info("Lệnh %s từ chat %s", text.strip()[:100], chat_id)
         return CONTROL[command](conn, cfg, now, args, ctx)
 
+    if command == "/report":
+        date = message.get("date")
+        stale_s = cfg.telegram.stale_command_s
+        if isinstance(date, int) and not isinstance(date, bool) and now - date > stale_s:
+            # Tồn đọng sau khi bot dừng/mất mạng: mỗi /report cũ sẽ gọi Gemini một lần
+            log.info("Bỏ /report cũ từ chat %s (cách đây %s giây)", chat_id, now - date)
+            return (f"Đã bỏ lệnh /report gửi cách đây {_fmt_age(now - date)} (quá {stale_s} "
+                    f"giây, có thể do bot dừng hoặc mất mạng). Gửi lại /report nếu vẫn cần.")
     handler = READ_ONLY.get(command)
     if handler is not None:
         return handler(conn, cfg, now, args)
