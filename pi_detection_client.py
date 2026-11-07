@@ -5,7 +5,7 @@ CLIENT nhận diện người chạy trên Raspberry Pi 4
 
 Thay thế pi_camera_client.py (cùng dùng /dev/video0 nên không chạy song song được).
 
-Chạy: ~/mqtt-env/bin/python ~/pi_detection_client.py
+Chạy: cd ~/BTL_IOT && venv/bin/python pi_detection_client.py
 """
 import json
 import os
@@ -17,11 +17,18 @@ import cv2
 import paho.mqtt.client as mqtt
 from ultralytics import YOLO
 
+from aiot.config import load_config
+
 # ===================== CẦU HÌNH =====================
-BROKER = "10.208.20.254"        # IP laptop (chạy ipconfig để kiểm tra)
-PORT = 1883
-USER = "pi01"
-PASSWORD = "501005"
+# IP broker, user ở config.yaml (mục mqtt); mật khẩu là MQTT_PASSWORD trong .env
+HERE = os.path.dirname(os.path.abspath(__file__))
+CFG = load_config(os.path.join(HERE, "config.yaml"), os.path.join(HERE, ".env"))
+BROKER = CFG.mqtt.host          # IP laptop (chạy ipconfig để kiểm tra)
+PORT = CFG.mqtt.port
+USER = CFG.mqtt.user
+PASSWORD = CFG.secrets.mqtt_password
+if PASSWORD is None:
+    print("CẢNH BÁO: chưa có MQTT_PASSWORD trong .env, broker sẽ từ chối kết nối")
 
 DEVICE_ID = "pi01"
 TOPIC_IMAGE = "nha/pi01/image"           # ảnh JPEG đã vẽ khung -> dashboard hiện tại
@@ -31,7 +38,7 @@ TOPIC_STATUS = "nha/pi01/status"         # online/offline (retained)
 CAM_INDEX = 0                   # /dev/video0. Nếu không lên hình, thử 1, 2...
 WIDTH, HEIGHT = 640, 480
 
-MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model.pt")
+MODEL_PATH = os.path.join(HERE, "model.pt")
 IMGSZ = 320                     # 320 nhanh hơn ~2 lần so với 640 trên CPU Pi 4
 CONF = 0.25
 JPEG_QUALITY = 80               # 1-100, cao hơn = nét hơn nhưng nặng hơn

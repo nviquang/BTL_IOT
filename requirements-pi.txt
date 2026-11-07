@@ -1,5 +1,5 @@
-# Thư viện cài trên Raspberry Pi 4 (venv: ~/mqtt-env)
-#   ~/mqtt-env/bin/pip install -r requirements-pi.txt
+# Thư viện cài trên Raspberry Pi 4 (venv: ~/BTL_IOT/venv)
+#   ~/BTL_IOT/venv/bin/pip install -r requirements-pi.txt
 
 # MQTT client (đồng bộ với pi_camera_client.py)
 paho-mqtt
@@ -16,3 +16,11 @@ adafruit-blinka
 # Cảm biến
 adafruit-circuitpython-dht      # DHT11 - nhiệt độ + độ ẩm (chân 11 / GPIO17)
 adafruit-circuitpython-bh1750   # BH1750 - ánh sáng (I2C chân 3, 5)
+pyserial                        # PMS7003 - bụi PM1.0/PM2.5/PM10 (UART /dev/serial0)
+lgpio                           # MQ135 chân DO (GPIO26) và relay quạt (GPIO23)
+smbus2                          # test_all.py quét bus I2C
+
+# Dịch vụ aiot/
+PyYAML                          # đọc config.yaml
+requests                        # Telegram Bot API, Open-Meteo
+google-genai                    # Gemini viết lời khuyên

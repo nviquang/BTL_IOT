@@ -152,10 +152,11 @@ Tải bản Windows từ <https://mosquitto.org/downloads/>, cài vào
 ### 1B.3. Tạo tài khoản MQTT `pi01`
 
 Broker cấu hình `allow_anonymous false`, nên phải có user/password. Cả 3 client dùng
-chung tài khoản `pi01` / `501005`:
+chung tài khoản `pi01`. Mật khẩu tự chọn, ghi vào `MQTT_PASSWORD` trong file `.env`
+(chép từ `.env.example`, không commit) trên cả Pi và laptop:
 
 ```powershell
-& "C:\Program Files\Mosquitto\mosquitto_passwd.exe" -b -c "C:\Users\<TEN_BAN>\mosq\passwd" pi01 501005
+& "C:\Program Files\Mosquitto\mosquitto_passwd.exe" -b -c "C:\Users\<TEN_BAN>\mosq\passwd" pi01 <MAT_KHAU_MQTT>
 ```
 
 - `-c` = **tạo mới** file password (ghi đè). Bỏ `-c` nếu file đã có.
@@ -194,13 +195,15 @@ Ghi lại IP của card Wi-Fi, ví dụ `10.162.117.254`.
 
 ## 2.2. Trỏ client trên Pi về laptop
 
-Mở 3 file trên Pi, sửa dòng `BROKER`:
+Mở `config.yaml` trên Pi, sửa `host` trong mục `mqtt`:
 
-```python
-BROKER = "10.162.117.254"   # ← IP laptop ở bước 2.1
+```yaml
+mqtt:
+  host: 10.162.117.254      # ← IP laptop ở bước 2.1
 ```
 
-Áp dụng cho `pi_sensor_client.py`, `pi_detection_client.py`, `pi_camera_client.py`.
+`pi_sensor_client.py`, `pi_detection_client.py`, `pi_camera_client.py` đều đọc IP từ đây,
+và đọc mật khẩu MQTT từ `MQTT_PASSWORD` trong `.env` (cùng thư mục).
 
 Kiểm tra nhanh Pi có thông tới broker không:
 
@@ -227,7 +230,7 @@ mosquitto version 2.1.2 running
 Giữ terminal này mở suốt buổi demo. Kiểm tra từ máy khác (hoặc terminal khác):
 
 ```powershell
-& "C:\Program Files\Mosquitto\mosquitto_sub.exe" -h localhost -u pi01 -P 501005 -t "nha/#" -v
+& "C:\Program Files\Mosquitto\mosquitto_sub.exe" -h localhost -u pi01 -P <MAT_KHAU_MQTT> -t "nha/#" -v
 ```
 
 ## 2.4. Chạy cảm biến trên Pi (terminal 1)
@@ -298,10 +301,10 @@ Ba cách kiểm tra độc lập:
 
 ```powershell
 # 1) mọi topic
-& "C:\Program Files\Mosquitto\mosquitto_sub.exe" -h localhost -u pi01 -P 501005 -t "nha/#" -v
+& "C:\Program Files\Mosquitto\mosquitto_sub.exe" -h localhost -u pi01 -P <MAT_KHAU_MQTT> -t "nha/#" -v
 
 # 2) chỉ cảm biến (JSON)
-& "C:\Program Files\Mosquitto\mosquitto_sub.exe" -h localhost -u pi01 -P 501005 -t "nha/+/sensor" -v
+& "C:\Program Files\Mosquitto\mosquitto_sub.exe" -h localhost -u pi01 -P <MAT_KHAU_MQTT> -t "nha/+/sensor" -v
 
 # 3) file CSV trên laptop
 Get-Content C:\mqtt\data\sensors.csv -Tail 5
@@ -351,7 +354,7 @@ Hai file CSV, **cùng định dạng**, ghi độc lập:
 
 | Máy | Đường dẫn |
 |---|---|
-| Pi | `~/iot_data/sensors.csv` (mặc định `/home/pi/iot_data`) |
+| Pi | `/home/admin/iot_data/sensors.csv` (`csv_path` trong `config.yaml`) |
 | Laptop | `C:\mqtt\data\sensors.csv` |
 
 ```csv
@@ -450,9 +453,9 @@ icacls "C:\Users\<TEN_BAN>\mosq\passwd" /reset
 | DHT11 lỗi xuyên suốt | thiếu `libgpiod2`/`sysv-ipc` → đang bit-bang | `sudo apt install -y libgpiod2 sysv-ipc` rồi reboot |
 | `CẢNH BÁO: không có pulseio` | chưa cài 2 gói trên | cài rồi reboot |
 | `i2cdetect -y 1` không thấy `23` | sai dây, hoặc địa chỉ `0x5C` | kiểm tra dây; đổi `BH1750_ADDRESS = 0x5C` |
-| `Lỗi ghi CSV: [Errno 13] Permission denied` | `CSV_DIR` trỏ vào thư mục không ghi được | đổi `CSV_DIR` sang `~/iot_data` của user đang chạy (vd `/home/admin/iot_data`) |
-| Dashboard "Đang chờ ảnh" | Pi chưa chạy client, hoặc sai `BROKER` | kiểm tra `BROKER` = IP laptop, chạy `ping` / `create_connection` từ Pi |
-| Metric **Broker** = `Mất kết nối` | broker chưa chạy / sai tài khoản | bật broker (2.3); kiểm tra `pi01` / `501005` |
+| `Lỗi ghi CSV: [Errno 13] Permission denied` | `csv_path` trỏ vào thư mục không ghi được | đổi `csv_path` trong `config.yaml` sang thư mục của user đang chạy (vd `/home/admin/iot_data/sensors.csv`) |
+| Dashboard "Đang chờ ảnh" | Pi chưa chạy client, hoặc sai IP broker | kiểm tra `mqtt.host` trong `config.yaml` = IP laptop, chạy `ping` / `create_connection` từ Pi |
+| Metric **Broker** = `Mất kết nối` | broker chưa chạy / sai tài khoản | bật broker (2.3); kiểm tra `pi01` / `MQTT_PASSWORD` trong `.env` |
 | Metric **Pi** = `chưa rõ` | chưa có retained status | client chưa kết nối broker lần nào |
 | `Connection refused` từ Pi | broker chưa listen 1883 | bật broker; kiểm tra `Get-NetTCPConnection -LocalPort 1883` |
 | `timed out` từ Pi | firewall Windows chặn, hoặc khác mạng | cho phép `mosquitto.exe` qua Windows Firewall |

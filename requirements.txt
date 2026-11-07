@@ -26,3 +26,4 @@ scikit-learn
 # Server MQTT + dashboard (server_app.py)
 paho-mqtt
 streamlit
+PyYAML          # aiot/config.py đọc config.yaml

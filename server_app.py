@@ -19,11 +19,19 @@ import pandas as pd
 import paho.mqtt.client as mqtt
 import streamlit as st
 
+from aiot.config import load_config
+
 # ===================== CẤU HÌNH =====================
+# Mosquitto chạy cùng máy nên broker là localhost. User và cổng lấy từ config.yaml,
+# mật khẩu là MQTT_PASSWORD trong .env (cùng thư mục với file này)
+HERE = os.path.dirname(os.path.abspath(__file__))
+CFG = load_config(os.path.join(HERE, "config.yaml"), os.path.join(HERE, ".env"))
 BROKER = "localhost"
-PORT = 1883
-USER = "pi01"
-PASSWORD = "501005"
+PORT = CFG.mqtt.port
+USER = CFG.mqtt.user
+PASSWORD = CFG.secrets.mqtt_password
+if PASSWORD is None:
+    print("CẢNH BÁO: chưa có MQTT_PASSWORD trong .env, broker sẽ từ chối kết nối")
 
 TOPIC_IMAGE = "nha/+/image"
 TOPIC_STATUS = "nha/+/status"

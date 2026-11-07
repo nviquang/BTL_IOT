@@ -4,7 +4,7 @@ CLIENT cảm biến chạy trên Raspberry Pi 4
 - Đọc BH1750 (ánh sáng) qua I2C ở chân 3 (SDA/GPIO2) và chân 5 (SCL/GPIO3)
 - Mỗi INTERVAL giây ghi 1 dòng vào CSV trên thẻ nhớ + gửi JSON lên broker MQTT
 
-Chạy: ~/mqtt-env/bin/python ~/pi_sensor_client.py
+Chạy: cd ~/BTL_IOT && venv/bin/python pi_sensor_client.py
 """
 import csv
 import json
@@ -18,6 +18,8 @@ import board
 import busio
 import paho.mqtt.client as mqtt
 
+from aiot.config import load_config
+
 # Dò pulseio GIỐNG HỆT logic của adafruit_dht để HAS_PULSEIO khớp
 # với đường đọc mà thư viện thực sự sẽ dùng.
 try:
@@ -28,18 +30,23 @@ except (ImportError, NotImplementedError):
     HAS_PULSEIO = False
 
 # ===================== CẤU HÌNH =====================
-BROKER = "10.208.20.254"        # IP laptop (chạy ipconfig để kiểm tra)
-PORT = 1883
-USER = "pi01"
-PASSWORD = "501005"
+# IP broker, user ở config.yaml (mục mqtt); mật khẩu là MQTT_PASSWORD trong .env
+HERE = os.path.dirname(os.path.abspath(__file__))
+CFG = load_config(os.path.join(HERE, "config.yaml"), os.path.join(HERE, ".env"))
+BROKER = CFG.mqtt.host          # IP laptop (chạy ipconfig để kiểm tra)
+PORT = CFG.mqtt.port
+USER = CFG.mqtt.user
+PASSWORD = CFG.secrets.mqtt_password
+if PASSWORD is None:
+    print("CẢNH BÁO: chưa có MQTT_PASSWORD trong .env, broker sẽ từ chối kết nối")
 
-DEVICE_ID = "pi01"
+DEVICE_ID = CFG.device_id
 TOPIC_SENSOR = "nha/pi01/sensor"
 TOPIC_STATUS = "nha/pi01/sensor_status"   # riêng, tránh đụng status của camera
 
 INTERVAL = 10                   # giây giữa 2 lần đọc
-CSV_DIR = "/home/pi/iot_data"
-CSV_PATH = os.path.join(CSV_DIR, "sensors.csv")
+CSV_PATH = CFG.csv_path         # /home/admin/iot_data/sensors.csv
+CSV_DIR = os.path.dirname(CSV_PATH)
 CSV_HEADER = ["timestamp", "device_id", "temperature_c", "humidity_pct", "lux"]
 
 DHT_RETRIES = 3                 # số lần thử đọc lại DHT11

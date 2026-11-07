@@ -1,0 +1,7 @@
+# Công cụ phát triển trên laptop (venv trong repo: .venv)
+#   python -m venv .venv
+#   .venv/Scripts/python -m pip install -r requirements-dev.txt
+#   .venv/Scripts/python -m pytest
+
+pytest
+PyYAML        # aiot/config.py đọc config.yaml

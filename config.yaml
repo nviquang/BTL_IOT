@@ -1,0 +1,52 @@
+# Cấu hình trạm quan trắc không khí AIoT (aiot/config.py đọc file này).
+# Không đặt token, API key hay mật khẩu ở đây: bí mật nằm trong .env (xem .env.example).
+
+db_path: /home/admin/iot_data/aiot.db
+csv_path: /home/admin/iot_data/sensors.csv
+device_id: pi01
+
+mqtt:
+  host: 10.157.117.254      # IP laptop chạy Mosquitto trên Wi-Fi "abc"; đổi khi đổi mạng (ipconfig)
+  port: 1883
+  user: pi01
+  enabled: true
+
+# Luật bật/tắt quạt. Thời gian tính bằng giây, PM2.5 tính bằng µg/m³.
+control:
+  enter_pm25: 55.0          # vào BẢO VỆ: TB 10 phút > 55...
+  enter_mean_s: 600
+  enter_hold_s: 300         # ...liên tục >= 5 phút
+  exit_pm25: 35.0           # thoát BẢO VỆ: TB 15 phút < 35...
+  exit_mean_s: 900
+  exit_hold_s: 900          # ...liên tục >= 15 phút
+  min_state_s: 600          # và đã giữ trạng thái >= 10 phút
+  danger_pm25: 150.0        # mức khẩn cấp: vào ngay, kèm cảnh báo mạnh
+  danger_window_s: 60
+  proactive_pm25: 100.0     # dự báo TB 3 giờ tới > 100 thì bật quạt trước
+  forecast_max_age_s: 5400
+  stale_s: 120              # mất dữ liệu PM > 2 phút: giữ nguyên trạng thái, cảnh báo
+  override_ttl_s: 7200      # ghi đè thủ công hết hạn sau 2 giờ
+  loop_s: 20
+  demo: false               # true: mọi thời gian chờ và cửa sổ TB rút còn demo_wait_s
+  demo_wait_s: 20
+
+telegram:
+  quiet_start: 22           # giờ yên lặng 22h -> 6h
+  quiet_end: 6
+  alert_cooldown_s: 1800
+  stale_command_s: 120
+  poll_timeout_s: 50
+
+gemini:
+  model: ""                 # chốt sau khi kiểm tra model và hạn mức hiện hành
+  temperature: 0.2
+  max_calls_per_day: 3
+  timeout_s: 20
+
+forecast:
+  model_path: /home/admin/BTL_IOT/models/pm25_lstm.tflite
+  scaler_path: /home/admin/BTL_IOT/models/scaler.json
+  max_age_s: 5400
+
+report:
+  time: "06:30"

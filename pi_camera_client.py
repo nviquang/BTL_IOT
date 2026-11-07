@@ -3,17 +3,26 @@ CLIENT chạy trên Raspberry Pi 4
 - Mở webcam USB bằng OpenCV
 - Mỗi INTERVAL giây chụp 1 ảnh, nén JPEG, gửi về broker MQTT trên laptop
 
-Chạy: ~/mqtt-env/bin/python ~/pi_camera_client.py
+Chạy: cd ~/BTL_IOT && venv/bin/python pi_camera_client.py
 """
+import os
 import time
+
 import cv2
 import paho.mqtt.client as mqtt
 
+from aiot.config import load_config
+
 # ===================== CẤU HÌNH =====================
-BROKER = "10.208.20.254"        # IP laptop (chạy ipconfig để kiểm tra)
-PORT = 1883
-USER = "pi01"
-PASSWORD = "501005"
+# IP broker, user ở config.yaml (mục mqtt); mật khẩu là MQTT_PASSWORD trong .env
+HERE = os.path.dirname(os.path.abspath(__file__))
+CFG = load_config(os.path.join(HERE, "config.yaml"), os.path.join(HERE, ".env"))
+BROKER = CFG.mqtt.host          # IP laptop (chạy ipconfig để kiểm tra)
+PORT = CFG.mqtt.port
+USER = CFG.mqtt.user
+PASSWORD = CFG.secrets.mqtt_password
+if PASSWORD is None:
+    print("CẢNH BÁO: chưa có MQTT_PASSWORD trong .env, broker sẽ từ chối kết nối")
 
 TOPIC_IMAGE = "nha/pi01/image"
 TOPIC_STATUS = "nha/pi01/status"
