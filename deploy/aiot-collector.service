@@ -1,0 +1,22 @@
+# Dịch vụ collector của trạm quan trắc không khí AIoT.
+# Cài: sudo cp deploy/aiot-collector.service /etc/systemd/system/
+#      sudo systemctl daemon-reload && sudo systemctl enable --now aiot-collector
+# Không chạy cùng lúc với pi_sensor_client.py (dùng chung cảm biến).
+[Unit]
+Description=AIoT air station collector (DHT11, BH1750, PMS7003, MQ135 -> SQLite/CSV/MQTT)
+After=network-online.target time-sync.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/BTL_IOT
+ExecStart=/home/admin/BTL_IOT/venv/bin/python -m aiot.collector
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

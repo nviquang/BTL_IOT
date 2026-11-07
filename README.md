@@ -233,7 +233,62 @@ Giữ terminal này mở suốt buổi demo. Kiểm tra từ máy khác (hoặc 
 & "C:\Program Files\Mosquitto\mosquitto_sub.exe" -h localhost -u pi01 -P <MAT_KHAU_MQTT> -t "nha/#" -v
 ```
 
-## 2.4. Chạy cảm biến trên Pi (terminal 1)
+## 2.4. Chạy cảm biến trên Pi
+
+### 2.4a. Dịch vụ collector (thay cho `pi_sensor_client.py`)
+
+> **Trạng thái: có code, chưa triển khai lên Pi.** Các lệnh dưới đây là cách triển khai
+> dự kiến; chưa chạy thử trên mạch thật.
+
+`aiot/collector.py` đọc **cả 4 cảm biến** (DHT11, BH1750, PMS7003, MQ135 DO) mỗi 10 giây:
+
+- ghi mẫu thô vào SQLite `raw_readings` (`db_path` trong `config.yaml`), kể cả khi DHT11
+  lỗi; gộp trung bình 5 phút vào `readings` mỗi phút (chỉ khi đồng hồ đã đồng bộ NTP);
+  xoá mẫu thô cũ hơn 7 ngày mỗi ngày một lần;
+- ghi `sensors.csv` **đúng định dạng cũ** (chỉ khi có đủ DHT11 và lux);
+- gửi MQTT `nha/pi01/sensor` (payload cũ thêm `pm1`, `pm25`, `pm10`, `mq135_do`) nếu
+  `mqtt.enabled` và có `MQTT_PASSWORD`; mất broker thì vẫn thu thập;
+- `mq135_do` để trống trong 180 giây đầu vì MQ135 cần sấy.
+
+**Không bao giờ chạy collector và `pi_sensor_client.py` cùng lúc**: hai tiến trình
+tranh nhau DHT11, BH1750 và cổng UART. `pi_sensor_client.py` được giữ lại làm bản cũ.
+
+Triển khai (một lần):
+
+```bash
+# 1) Múi giờ (CSV ghi giờ địa phương)
+sudo timedatectl set-timezone Asia/Ho_Chi_Minh
+
+# 2) Quyền truy cập GPIO, I2C, UART cho user admin (đăng nhập lại sau khi thêm nhóm)
+sudo usermod -aG gpio,i2c,dialout admin
+
+# 3) Thư viện (đã có trong requirements-pi.txt)
+cd ~/BTL_IOT && source venv/bin/activate
+pip install pyserial lgpio PyYAML paho-mqtt adafruit-blinka     adafruit-circuitpython-dht adafruit-circuitpython-bh1750
+
+# 4) Dừng client cũ nếu đang chạy (terminal tay, nohup hoặc tmux)
+pkill -f pi_sensor_client.py; pgrep -af pi_sensor_client.py   # không còn dòng nào
+
+# 5) Cài dịch vụ systemd
+sudo cp deploy/aiot-collector.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now aiot-collector
+journalctl -u aiot-collector -f
+```
+
+Kiểm tra sau khoảng 1 giờ:
+
+```bash
+sqlite3 ~/iot_data/aiot.db "select count(*), sum(pm25 is null), max(ts) from raw_readings; select count(*), sum(valid) from readings;"
+# kỳ vọng: ~360 mẫu thô, ~12 dòng readings, phần lớn valid=1
+tail -3 ~/iot_data/sensors.csv
+```
+
+Dừng/khởi động lại: `sudo systemctl stop aiot-collector` / `sudo systemctl restart aiot-collector`.
+
+### 2.4b. Client cũ `pi_sensor_client.py` (chỉ DHT11 + BH1750)
+
+Chỉ dùng khi collector đã dừng (`sudo systemctl stop aiot-collector`).
 
 ```bash
 cd ~/BTL_IOT && source venv/bin/activate
@@ -329,6 +384,15 @@ Payload cảm biến:
 ```json
 {"timestamp": "2026-10-22T22:39:23", "device_id": "pi01",
  "temperature_c": 29.3, "humidity_pct": 76, "lux": 12.5}
+```
+
+Collector gửi thêm bụi và bit MQ135 (`null` khi đọc lỗi hoặc MQ135 đang sấy);
+`server_app.py` vẫn nhận vì chỉ kiểm tra 5 khoá cũ (`aiot/payload.py: valid_sensor_row`):
+
+```json
+{"timestamp": "2026-11-05T08:00:00", "device_id": "pi01",
+ "temperature_c": 28.5, "humidity_pct": 83.0, "lux": 170.8,
+ "pm1": 26.0, "pm25": 39.0, "pm10": 47.0, "mq135_do": 1}
 ```
 
 Payload nhận diện:
@@ -470,7 +534,10 @@ icacls "C:\Users\<TEN_BAN>\mosq\passwd" /reset
 
 | File | Nơi chạy | Vai trò |
 |---|---|---|
-| `pi_sensor_client.py` | Pi | đọc DHT11 + BH1750, ghi CSV, publish MQTT mỗi 10 s |
+| `aiot/collector.py` | Pi (systemd `aiot-collector`) | đọc DHT11, BH1750, PMS7003, MQ135 → SQLite + CSV + MQTT mỗi 10 s (có code, chưa triển khai) |
+| `aiot/sensors.py`, `aiot/payload.py` | Pi / cả hai | đọc phần cứng; định dạng CSV và payload MQTT dùng chung |
+| `deploy/aiot-collector.service` | Pi | unit systemd của collector |
+| `pi_sensor_client.py` | Pi | bản cũ: chỉ DHT11 + BH1750; không chạy cùng collector |
 | `pi_detection_client.py` | Pi | chụp ảnh → YOLOv8n → vẽ khung → publish ảnh + JSON mỗi 2 s |
 | `pi_camera_client.py` | Pi | chỉ chụp + publish ảnh (bản đơn giản, không YOLO) |
 | `server_app.py` | Laptop | nhận ảnh + cảm biến, lưu CSV, dashboard Streamlit |

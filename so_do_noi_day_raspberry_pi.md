@@ -153,5 +153,6 @@ Các giới hạn hiện tại:
 
 - MQ135 chỉ cho biết đã vượt ngưỡng hay chưa, không có giá trị nồng độ. `test_all.py` báo lỗi khi DO = 0, vì không phân biệt được vượt ngưỡng với hở dây.
 - `pi_sensor_client.py` chưa đọc MQ135 và PMS7003, chưa điều khiển quạt. CSV vẫn chỉ gồm nhiệt độ, độ ẩm và ánh sáng.
+- Dịch vụ `aiot/collector.py` (unit `deploy/aiot-collector.service`) đọc cả DHT11, BH1750, PMS7003 và MQ135 DO, ghi SQLite `raw_readings` + `sensors.csv` + MQTT. **Có code, chưa triển khai lên Pi**; cách triển khai ở README mục 2.4a. Collector và `pi_sensor_client.py` không được chạy cùng lúc vì dùng chung cảm biến. MQ135 được bỏ qua trong 180 giây đầu để sấy. Chưa điều khiển quạt.
 - `test.py` trên Pi vẫn yêu cầu ADS1115 nên sẽ báo lỗi; hãy dùng `test_all.py`.
 - Phần quạt và đèn nguồn MQ135 của `test_all.py` cần người đứng cạnh mạch trả lời trong terminal (`ssh -t`).

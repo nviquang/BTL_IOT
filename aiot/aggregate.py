@@ -61,32 +61,34 @@ def aggregate_pending(conn: sqlite3.Connection, now: int, window_s: int = 300) -
     các cửa sổ bị bỏ lỡ khi crash, và chạy lại không sinh dòng trùng.
     Cửa sổ không có mẫu thô nào thì không sinh dòng.
     """
-    last = conn.execute("SELECT MAX(ts) FROM readings").fetchone()[0]
-    after = last + window_s if last is not None else None
+    # Cả vòng là một transaction: lỗi giữa chừng thì rollback, không để khoá ghi
+    # WAL bị giữ trên kết nối dùng lâu dài của collector.
+    with conn:
+        last = conn.execute("SELECT MAX(ts) FROM readings").fetchone()[0]
+        after = last + window_s if last is not None else None
 
-    while True:
-        if after is None:
-            r = conn.execute("SELECT MIN(ts) FROM raw_readings").fetchone()
-        else:
-            r = conn.execute("SELECT MIN(ts) FROM raw_readings WHERE ts >= ?", (after,)).fetchone()
-        first = r[0]
-        if first is None:
-            break
-        start = first - first % window_s
-        end = start + window_s
-        if end > now:
-            break  # cửa sổ chưa kết thúc
-        rows = conn.execute(
-            "SELECT ts, pm1, pm25, pm10, temp, hum, lux, mq135_do, clock_synced "
-            "FROM raw_readings WHERE ts >= ? AND ts < ? ORDER BY ts",
-            (start, end),
-        ).fetchall()
-        agg = aggregate_window([_row_to_sample(x) for x in rows], start, window_s)
-        conn.execute(
-            "INSERT OR IGNORE INTO readings "
-            "(ts, pm1, pm25, pm10, temp, hum, lux, mq135_do, valid) "
-            "VALUES (:ts, :pm1, :pm25, :pm10, :temp, :hum, :lux, :mq135_do, :valid)",
-            agg,
-        )
-        after = end  # nhảy tới mẫu thô kế tiếp, bỏ qua các cửa sổ trống
-    conn.commit()
+        while True:
+            if after is None:
+                r = conn.execute("SELECT MIN(ts) FROM raw_readings").fetchone()
+            else:
+                r = conn.execute("SELECT MIN(ts) FROM raw_readings WHERE ts >= ?", (after,)).fetchone()
+            first = r[0]
+            if first is None:
+                break
+            start = first - first % window_s
+            end = start + window_s
+            if end > now:
+                break  # cửa sổ chưa kết thúc
+            rows = conn.execute(
+                "SELECT ts, pm1, pm25, pm10, temp, hum, lux, mq135_do, clock_synced "
+                "FROM raw_readings WHERE ts >= ? AND ts < ? ORDER BY ts",
+                (start, end),
+            ).fetchall()
+            agg = aggregate_window([_row_to_sample(x) for x in rows], start, window_s)
+            conn.execute(
+                "INSERT OR IGNORE INTO readings "
+                "(ts, pm1, pm25, pm10, temp, hum, lux, mq135_do, valid) "
+                "VALUES (:ts, :pm1, :pm25, :pm10, :temp, :hum, :lux, :mq135_do, :valid)",
+                agg,
+            )
+            after = end  # nhảy tới mẫu thô kế tiếp, bỏ qua các cửa sổ trống

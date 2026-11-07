@@ -20,6 +20,7 @@ import paho.mqtt.client as mqtt
 import streamlit as st
 
 from aiot.config import load_config
+from aiot.payload import valid_sensor_row  # dùng chung với collector trên Pi
 
 # ===================== CẤU HÌNH =====================
 # Mosquitto chạy cùng máy nên broker là localhost. User và cổng lấy từ config.yaml,
@@ -67,25 +68,6 @@ class Store:
         self.sensor_count = 0
         self.sensor_history = collections.deque(maxlen=SENSOR_HISTORY_SIZE)  # (time, dict)
         self.sensor_status = "chưa rõ"
-
-
-def valid_sensor_row(row):
-    """Kiểm tra mẫu cảm biến có đủ khoá và 3 giá trị đo là số hợp lệ.
-
-    Trả False nếu thiếu khoá -> bỏ qua mẫu, tránh ghi dòng rỗng (NaN) làm
-    hỏng MinMaxScaler/window_transform trong notebook.
-    """
-    if not isinstance(row, dict):
-        return False
-    for key in ("timestamp", "device_id"):
-        if key not in row:
-            return False
-    for key in ("temperature_c", "humidity_pct", "lux"):
-        try:
-            float(row[key])
-        except (KeyError, TypeError, ValueError):
-            return False
-    return True
 
 
 def append_sensor_csv(row):

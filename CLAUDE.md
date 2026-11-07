@@ -17,7 +17,7 @@ Không thuộc hệ thống (đã loại khỏi thiết kế):
 | Mạch: DHT11, PMS7003, BH1750, MQ135 DO, relay + quạt | Đạt `test_all.py` ngày 04/11/2026 |
 | Thu thập DHT11 + BH1750 → CSV + MQTT → dashboard Streamlit | Có code (`pi_sensor_client.py`, `server_app.py`) |
 | Camera + nhận diện người YOLOv8n qua MQTT | Có code (`pi_camera_client.py`, `pi_detection_client.py`) |
-| Thu thập PMS7003 và MQ135 trong client chính | Chưa có; hiện chỉ có trong `test_all.py` |
+| Collector `aiot/collector.py`: DHT11, BH1750, PMS7003, MQ135 → SQLite `raw_readings` + CSV + MQTT, gộp 5 phút | Có code và test, chưa triển khai lên Pi (README mục 2.4a, unit `deploy/aiot-collector.service`) |
 | Điều khiển quạt tự động | Chưa có |
 | SQLite, dự báo LSTM, Gemini, Telegram | Chưa có, mới là kế hoạch |
 
@@ -189,6 +189,7 @@ Thử khói chỉ dùng lượng nhỏ, nơi thoáng, có người trông. Quạ
 
 - SSH bằng key: `ssh admin@10.157.117.41` (hoặc `pi.local`), khi laptop cùng Wi-Fi `abc` với Pi. IP có thể đổi theo mạng.
 - Code trên Pi ở `~/BTL_IOT`, venv ở `~/BTL_IOT/venv`. User là `admin`, không có `/home/pi`.
+- Collector (`python -m aiot.collector`, dịch vụ `aiot-collector`) thay cho `pi_sensor_client.py`; không chạy cả hai cùng lúc vì dùng chung cảm biến.
 - `test_all.py` đã có trong repo. `test.py` trên Pi đã cũ, vẫn yêu cầu ADS1115. Thay đổi chưa commit của `pi_sensor_client.py` trên Pi (đường dẫn CSV) đã đưa vào repo; Pi cần cập nhật code từ repo và tạo `.env` có `MQTT_PASSWORD`.
 - Chạy kiểm tra: `ssh -t admin@10.157.117.41 "cd ~/BTL_IOT && source venv/bin/activate && python test_all.py"`. Phần quạt và đèn MQ135 cần người đứng cạnh mạch trả lời; không có TTY thì script bỏ qua, không đụng relay, và mã thoát là 1.
 - Tắt Pi và rút cáp nguồn trước khi đổi dây. Không nối hay tháo dây khi Pi đang có điện.

@@ -111,3 +111,33 @@ def test_pending_window_end_equal_now_is_closed(conn):
     assert readings_ts(conn) == []
     aggregate_pending(conn, now=300)
     assert readings_ts(conn) == [0]
+
+
+def test_error_mid_loop_rolls_back_and_releases_lock(tmp_path, monkeypatch):
+    """Lỗi giữa vòng gộp không được để transaction mở (giữ khoá ghi WAL của collector)."""
+    import aiot.aggregate as agg
+
+    conn = connect(tmp_path / "a.db")
+    init_schema(conn)
+    for s in full_window(0) + full_window(300):
+        insert_raw(conn, s)
+
+    real = agg.aggregate_window
+    calls = []
+
+    def flaky(samples, start, window_s=300):
+        calls.append(start)
+        if len(calls) == 2:
+            raise RuntimeError("lỗi giữa vòng")
+        return real(samples, start, window_s)
+
+    monkeypatch.setattr(agg, "aggregate_window", flaky)
+    with pytest.raises(RuntimeError):
+        aggregate_pending(conn, now=10_000)
+    assert conn.in_transaction is False
+    # Rollback cả cửa sổ đầu, lần chạy sau gộp lại từ đầu
+    assert conn.execute("SELECT COUNT(*) FROM readings").fetchone()[0] == 0
+    monkeypatch.setattr(agg, "aggregate_window", real)
+    aggregate_pending(conn, now=10_000)
+    assert conn.execute("SELECT COUNT(*) FROM readings").fetchone()[0] == 2
+    conn.close()
