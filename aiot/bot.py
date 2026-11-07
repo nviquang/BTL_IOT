@@ -489,6 +489,20 @@ def handle_update(update, conn, cfg, now, *, clock_synced=None, commit=True):
             return (f"Đã bỏ lệnh {command} gửi cách đây {_fmt_age(now - date)} (quá {stale_s} "
                     f"giây, có thể do bot dừng hoặc mất mạng). Gửi lại {command} nếu vẫn cần.")
     if command == "/clear":
+        # Xoá không hoàn tác được: chặn như lệnh điều khiển. Đồng hồ Pi chưa tin được
+        # (vừa khởi động, chưa có mạng) thì không biết lệnh có cũ không; lệnh "ở tương lai"
+        # (đồng hồ Pi chậm) cũng bị bỏ, để /clear tồn đọng không xoá lịch sử.
+        synced = (clock_synced if clock_synced is not None else is_clock_trusted)()
+        if not synced:
+            log.info("Bỏ /clear từ chat %s: đồng hồ Pi chưa đồng bộ NTP", chat_id)
+            return ("Chưa thực hiện lệnh /clear: đồng hồ của Pi chưa đồng bộ (vừa khởi động "
+                    "lại hoặc chưa có mạng). Thử lại sau vài phút.")
+        date = message.get("date")
+        stale_s = cfg.telegram.stale_command_s
+        if isinstance(date, int) and not isinstance(date, bool) and date - now > stale_s:
+            log.info("Bỏ /clear từ chat %s: giờ lệnh lệch %s giây so với Pi", chat_id, date - now)
+            return (f"Đã bỏ lệnh /clear: giờ lệnh lệch {_fmt_age(date - now)} so với đồng hồ "
+                    f"Pi. Gửi lại /clear nếu vẫn cần.")
         return cmd_clear(conn, now, chat_id, message_id, commit=commit)
     handler = READ_ONLY.get(command)
     if handler is not None:

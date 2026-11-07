@@ -1166,3 +1166,21 @@ def test_clear_does_not_touch_outbox_or_control_state(conn):
 def test_help_lists_clear():
     assert "/clear" in bot.HELP
     assert any(c["command"] == "clear" for c in bot.BOT_COMMANDS)
+
+
+def test_future_dated_clear_dropped_without_deleting(conn):
+    """Đồng hồ Pi chậm (lệnh 'ở tương lai'): /clear tồn đọng không được xoá lịch sử."""
+    track(conn, CHAT, 50, NOW - 60)
+    future = NOW + CFG.telegram.stale_command_s + 1
+    client = ClearClient([[upd("/clear", uid=7, mid=100, date=future)]])
+    bot.poll_once(conn, client, CFG, NOW)
+    assert client.deleted == []
+    assert "Đã bỏ lệnh /clear" in client.sent[0][1]
+
+
+def test_clear_refused_while_clock_untrusted(conn):
+    track(conn, CHAT, 50, NOW - 60)
+    client = ClearClient([[upd("/clear", uid=7, mid=100)]])
+    bot.poll_once(conn, client, CFG, NOW, clock_synced=lambda: False)
+    assert client.deleted == []
+    assert "đồng hồ của Pi chưa đồng bộ" in client.sent[0][1]
