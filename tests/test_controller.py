@@ -367,3 +367,89 @@ def test_inject_writes_profile(tmp_path):
 def test_inject_constant_profiles(profile, value):
     mod = load_inject()
     assert [mod.profile_value(profile, i, 30) for i in range(3)] == [value] * 3
+
+
+# ---------- ghi nguyên tử (fix round 1) ----------
+
+def test_pending_changed_between_read_and_delete_survives(conn, tmp_path, monkeypatch):
+    import aiot.controller as controller
+    add_pm(conn, 0, 1200, 20.0)
+    first = json.dumps({"fan": True, "ttl_s": 600})
+    second = json.dumps({"fan": False, "ttl_s": 600})
+    set_state(conn, PENDING_KEY, first)
+    real_parse = controller._parse_pending
+
+    def parse_then_bot_writes(text, default_ttl_s):
+        bot = connect(tmp_path / "aiot.db")         # bot ghi lệnh mới giữa lúc đọc và xoá
+        set_state(bot, PENDING_KEY, second)
+        bot.close()
+        return real_parse(text, default_ttl_s)
+
+    monkeypatch.setattr(controller, "_parse_pending", parse_then_bot_writes)
+    relay = FakeRelay()
+    st = step(conn, relay, CFG, 1000)
+    assert st.override_fan is True
+    assert get_state(conn, PENDING_KEY) == second   # lệnh mới không bị xoá mất
+
+    monkeypatch.setattr(controller, "_parse_pending", real_parse)
+    st = step(conn, relay, CFG, 1020)
+    assert st.override_fan is False
+    assert get_state(conn, PENDING_KEY) is None
+    assert relay.calls == [True, False]
+    assert len(events(conn, "override")) == 2
+
+
+def test_step_failure_after_reading_override_keeps_it_pending(conn, monkeypatch):
+    import sqlite3
+    import aiot.controller as controller
+    add_pm(conn, 0, 1200, 20.0)
+    text = json.dumps({"fan": True, "ttl_s": 600})
+    set_state(conn, PENDING_KEY, text)
+
+    def locked(*a):
+        raise sqlite3.OperationalError("database is locked")
+
+    real_series = controller.pm25_series
+    monkeypatch.setattr(controller, "pm25_series", locked)
+    with pytest.raises(sqlite3.OperationalError):
+        step(conn, FakeRelay(), CFG, 1000)
+    assert get_state(conn, PENDING_KEY) == text
+    assert events(conn) == []
+    assert get_state(conn, STATE_KEY) is None
+
+    monkeypatch.setattr(controller, "pm25_series", real_series)
+    st = step(conn, FakeRelay(), CFG, 1020)
+    assert st.override_fan is True and get_state(conn, PENDING_KEY) is None
+    assert len(events(conn, "override")) == 1
+
+
+def test_write_failure_mid_transaction_persists_nothing(conn, monkeypatch):
+    # Lỗi khi đang ghi sự kiện thứ hai: trạng thái, sự kiện đầu và việc xoá lệnh đều huỷ
+    import sqlite3
+    import aiot.controller as controller
+    add_pm(conn, 900, 1100, 200.0)                  # danger + fan_on
+    text = json.dumps({"fan": False, "ttl_s": 600})
+    set_state(conn, PENDING_KEY, text)
+    real_log = controller.log_event
+    calls = []
+
+    def flaky(*a, **kw):
+        calls.append(a)
+        if len(calls) == 2:
+            raise sqlite3.OperationalError("disk I/O error")
+        return real_log(*a, **kw)
+
+    monkeypatch.setattr(controller, "log_event", flaky)
+    relay = FakeRelay()
+    with pytest.raises(sqlite3.OperationalError):
+        step(conn, relay, CFG, 1000)
+    assert relay.calls == []                        # chưa lưu được thì chưa đổi quạt
+    assert get_state(conn, STATE_KEY) is None
+    assert get_state(conn, PENDING_KEY) == text
+    assert events(conn) == []
+
+    monkeypatch.setattr(controller, "log_event", real_log)
+    st = step(conn, relay, CFG, 1020)               # vòng sau quyết định lại, không mất sự kiện
+    assert st.mode == "PROTECT" and st.override_fan is False
+    assert kinds(conn) == ["override", "danger", "fan_on"]
+    assert relay.calls == [False]

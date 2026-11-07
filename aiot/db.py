@@ -4,6 +4,8 @@ Lớp lưu trữ SQLite dùng chung cho mọi dịch vụ của trạm.
 - Nhiều tiến trình (collector, controller, bot, forecast) mở cùng một file,
   nên bật WAL và busy_timeout để không bị 'database is locked'.
 - Mỗi hàm ghi commit ngay trước khi trả về, vì mỗi dịch vụ là một tiến trình riêng.
+  set_state/delete_state/log_event có commit=False để gộp nhiều lệnh ghi vào một
+  transaction; người gọi tự conn.commit() (hoặc conn.rollback() khi lỗi).
 - Chuỗi PM truyền giữa các module luôn là list[(ts giây epoch, µg/m³)], tăng dần theo ts.
 """
 import sqlite3
@@ -103,24 +105,36 @@ def get_state(conn: sqlite3.Connection, key: str, default: str | None = None) ->
     return row[0] if row else default
 
 
-def set_state(conn: sqlite3.Connection, key: str, value) -> None:
+def set_state(conn: sqlite3.Connection, key: str, value, *, commit: bool = True) -> None:
     conn.execute(
         "INSERT INTO state (key, value) VALUES (?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         (key, str(value)),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def delete_state(conn: sqlite3.Connection, key: str) -> None:
-    """Xoá một khoá trạng thái; không có khoá thì thôi."""
-    conn.execute("DELETE FROM state WHERE key = ?", (key,))
-    conn.commit()
+def delete_state(conn: sqlite3.Connection, key: str, value: str | None = None,
+                 *, commit: bool = True) -> None:
+    """Xoá một khoá trạng thái; không có khoá thì thôi.
+
+    value khác None: chỉ xoá khi giá trị hiện tại đúng bằng value (giá trị đã đọc),
+    để không xoá mất giá trị tiến trình khác vừa ghi đè.
+    """
+    if value is None:
+        conn.execute("DELETE FROM state WHERE key = ?", (key,))
+    else:
+        conn.execute("DELETE FROM state WHERE key = ? AND value = ?", (key, value))
+    if commit:
+        conn.commit()
 
 
-def log_event(conn: sqlite3.Connection, ts: int, kind: str, detail: str) -> None:
+def log_event(conn: sqlite3.Connection, ts: int, kind: str, detail: str,
+              *, commit: bool = True) -> None:
     conn.execute("INSERT INTO events (ts, kind, detail) VALUES (?, ?, ?)", (int(ts), kind, detail))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def purge_raw(conn: sqlite3.Connection, older_than_ts: int) -> None:

@@ -4,7 +4,8 @@ và bật/tắt quạt qua relay GPIO23.
 
 - Chỉ dịch vụ này chạm GPIO23. Bot ghi khoá state 'pending_override' dạng JSON:
   {"fan": true|false, "ttl_s": int} đặt ghi đè; {"fan": null} xoá ghi đè (/mode auto).
-  Controller đọc khoá ở đầu mỗi bước, áp dụng, ghi sự kiện 'override' rồi xoá khoá.
+  Controller đọc khoá ở đầu mỗi bước; trạng thái mới, sự kiện 'override' và lệnh xoá
+  khoá (chỉ khi giá trị chưa đổi) được ghi trong cùng một transaction.
 - Trạng thái logic (ControlState) lưu ở khoá 'control_state' sau mỗi bước, trước khi
   ghi relay. Relay được ghi lại mỗi vòng (idempotent), nên relay lỗi thì vòng sau tự
   thử lại; sự kiện 'relay_error' chỉ ghi một lần cho cả chuỗi lỗi.
@@ -24,7 +25,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from aiot.control import ControlState, apply_override, decide, fan_on, inputs_from_series
+from aiot.control import ControlState, Event, apply_override, decide, fan_on, inputs_from_series
 from aiot.db import connect, delete_state, get_state, init_schema, log_event, pm25_series, set_state
 
 log = logging.getLogger("aiot.controller")
@@ -39,17 +40,17 @@ def _fmt_ts(ts: int) -> str:
 
 
 # ---------------- Đọc/ghi trạng thái ----------------
-def _load_state(conn, now: int) -> ControlState:
-    """Trạng thái đã lưu; thiếu thì mặc định, hỏng thì mặc định và ghi 'state_corrupt'."""
+def _load_state(conn):
+    """(trạng thái đã lưu, danh sách Event). Thiếu thì mặc định; hỏng thì mặc định
+    kèm Event 'state_corrupt'. Không ghi gì: người gọi ghi cùng transaction của bước."""
     text = get_state(conn, STATE_KEY)
     if text is None:
-        return ControlState()
+        return ControlState(), []
     try:
-        return ControlState.from_json(text)
+        return ControlState.from_json(text), []
     except ValueError as e:
         log.error("Trạng thái điều khiển hỏng, về BÌNH THƯỜNG: %s", e)
-        log_event(conn, now, "state_corrupt", str(e))
-        return ControlState()
+        return ControlState(), [Event("state_corrupt", str(e))]
 
 
 def _parse_pending(text, default_ttl_s: int):
@@ -69,18 +70,13 @@ def _parse_pending(text, default_ttl_s: int):
     return fan, ttl_s
 
 
-def _take_pending_override(conn, st: ControlState, cfg, now: int) -> ControlState:
-    """Áp dụng rồi xoá lệnh ghi đè bot để lại (nếu có)."""
-    text = get_state(conn, PENDING_KEY)
-    if text is None:
-        return st
+def _apply_pending(st: ControlState, text: str, cfg, now: int):
+    """Áp dụng lệnh ghi đè bot để lại vào st (trong bộ nhớ). Trả về (st, [Event])."""
     try:
         fan, ttl_s = _parse_pending(text, cfg.override_ttl_s)
     except ValueError as e:
         log.warning("Bỏ qua pending_override sai định dạng: %s", e)
-        log_event(conn, now, "override_invalid", f"{e}: {text[:200]}")
-        delete_state(conn, PENDING_KEY)
-        return st
+        return st, [Event("override_invalid", f"{e}: {text[:200]}")]
     st = apply_override(st, fan, now, ttl_s)
     if fan is None:
         detail = "cleared (auto)"
@@ -88,9 +84,25 @@ def _take_pending_override(conn, st: ControlState, cfg, now: int) -> ControlStat
         detail = (f"set fan={'on' if fan else 'off'} until={st.override_until} "
                   f"({_fmt_ts(st.override_until)})")
     log.info("Ghi đè thủ công: %s", detail)
-    log_event(conn, now, "override", detail)
-    delete_state(conn, PENDING_KEY)
-    return st
+    return st, [Event("override", detail)]
+
+
+def _persist(conn, now: int, st: ControlState, events, pending_text=None) -> None:
+    """Ghi control_state, mọi Event và (nếu có) xoá đúng lệnh pending đã đọc trong MỘT
+    transaction, commit một lần. Lỗi thì rollback toàn bộ và raise: lệnh pending còn
+    nguyên cho vòng sau, không có sự kiện nào được ghi mà không áp dụng."""
+    try:
+        set_state(conn, STATE_KEY, st.to_json(), commit=False)
+        for ev in events:
+            log.info("Sự kiện %s %s", ev.kind, ev.detail)
+            log_event(conn, now, ev.kind, ev.detail, commit=False)
+        if pending_text is not None:
+            # Chỉ xoá nếu bot chưa ghi lệnh mới kể từ lúc đọc
+            delete_state(conn, PENDING_KEY, value=pending_text, commit=False)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def _drive(conn, relay, on: bool, now: int) -> bool:
@@ -100,13 +112,23 @@ def _drive(conn, relay, on: bool, now: int) -> bool:
     except Exception as e:
         log.error("Không ghi được relay (%s): %s", "bật" if on else "tắt", e)
         if get_state(conn, RELAY_FAULT_KEY) != "1":
-            log_event(conn, now, "relay_error", f"set {'on' if on else 'off'}: {e}")
-            set_state(conn, RELAY_FAULT_KEY, "1")
+            try:
+                log_event(conn, now, "relay_error", f"set {'on' if on else 'off'}: {e}", commit=False)
+                set_state(conn, RELAY_FAULT_KEY, "1", commit=False)
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
         return False
     if get_state(conn, RELAY_FAULT_KEY) == "1":
         log.info("Relay hoạt động lại")
-        log_event(conn, now, "relay_recovered", f"set {'on' if on else 'off'}")
-        delete_state(conn, RELAY_FAULT_KEY)
+        try:
+            log_event(conn, now, "relay_recovered", f"set {'on' if on else 'off'}", commit=False)
+            delete_state(conn, RELAY_FAULT_KEY, commit=False)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
     return True
 
 
@@ -114,12 +136,12 @@ def _drive(conn, relay, on: bool, now: int) -> bool:
 def restore_state(conn, now: int) -> ControlState:
     """Trạng thái sau khởi động lại (đã lưu lại DB), chưa chạm relay."""
     now = int(now)
-    st = _load_state(conn, now)
+    st, events = _load_state(conn)
     if st.override_fan is not None and (st.override_until is None or now >= st.override_until):
         log.info("Ghi đè đã hết hạn trong lúc dịch vụ dừng, về tự động")
         st = apply_override(st, None, now, 0)
-        log_event(conn, now, "override_expired", "during downtime")
-    set_state(conn, STATE_KEY, st.to_json())
+        events.append(Event("override_expired", "during downtime"))
+    _persist(conn, now, st, events)
     return st
 
 
@@ -131,22 +153,25 @@ def restore(conn, relay, cfg, now: int) -> ControlState:
 
 
 def step(conn, relay, cfg, now: int) -> ControlState:
-    """Một vòng điều khiển. cfg là ControlCfg, now là giây epoch."""
+    """Một vòng điều khiển. cfg là ControlCfg, now là giây epoch.
+
+    Đọc hết rồi mới ghi: trạng thái mới, sự kiện và việc xoá pending_override cùng
+    một transaction (_persist), sau đó mới ghi relay."""
     now = int(now)
-    st = _load_state(conn, now)
-    st = _take_pending_override(conn, st, cfg, now)
+    st, events = _load_state(conn)
+    pending_text = get_state(conn, PENDING_KEY)
+    if pending_text is not None:
+        st, pending_events = _apply_pending(st, pending_text, cfg, now)
+        events += pending_events
 
     lookback = max(cfg.enter_mean_s, cfg.exit_mean_s, cfg.danger_window_s) + 60
     series = pm25_series(conn, now - lookback)
     # Task 9 sẽ truyền thêm dự báo 3 giờ tới
-    st, events = decide(st, inputs_from_series(series, now, cfg), cfg)
+    st, decide_events = decide(st, inputs_from_series(series, now, cfg), cfg)
+    events += decide_events
 
     # Lưu trạng thái logic trước khi ghi relay: relay lỗi không làm mất quyết định
-    set_state(conn, STATE_KEY, st.to_json())
-    for ev in events:
-        log.info("Sự kiện %s %s", ev.kind, ev.detail)
-        log_event(conn, now, ev.kind, ev.detail)
-
+    _persist(conn, now, st, events, pending_text)
     _drive(conn, relay, fan_on(st, now), now)
     return st
 

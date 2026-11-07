@@ -142,3 +142,23 @@ def test_purge_keeps_recent(tmp_path):
     purge_raw(conn, 300)
     ts_left = [r[0] for r in conn.execute("SELECT ts FROM raw_readings ORDER BY ts")]
     assert ts_left == [300, 400]
+
+
+def test_writes_without_commit_roll_back_together(tmp_path):
+    conn = open_db(tmp_path / "aiot.db")
+    set_state(conn, "a", "1")
+    set_state(conn, "a", "2", commit=False)
+    log_event(conn, 10, "fan_on", "enter", commit=False)
+    delete_state(conn, "a", commit=False)
+    conn.rollback()
+    assert get_state(conn, "a") == "1"
+    assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+
+
+def test_delete_state_only_if_value_matches(tmp_path):
+    conn = open_db(tmp_path / "aiot.db")
+    set_state(conn, "k", "new")
+    delete_state(conn, "k", value="old")
+    assert get_state(conn, "k") == "new"
+    delete_state(conn, "k", value="new")
+    assert get_state(conn, "k") is None

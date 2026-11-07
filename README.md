@@ -258,7 +258,7 @@ Triển khai (một lần):
 ```bash
 # 0) Đưa code lên Pi. Nhánh feat/aiot-core chưa push lên GitHub, nên chép file
 #    từ laptop (Git Bash, ở thư mục repo) bằng scp:
-#      scp -r aiot deploy config.yaml requirements-pi.txt admin@<IP_PI>:~/BTL_IOT/
+#      scp -r aiot deploy scripts config.yaml requirements-pi.txt admin@<IP_PI>:~/BTL_IOT/
 #    Khi nhánh đã push thì dùng: cd ~/BTL_IOT && git pull
 #    .env (MQTT_PASSWORD) chép riêng và không commit; thiếu .env thì collector bỏ qua MQTT.
 
