@@ -1,728 +1,521 @@
-# BTL_IOT — Raspberry Pi 4 gửi camera + cảm biến về laptop qua MQTT
+# Trạm quan trắc không khí AIoT — hướng dẫn chạy toàn bộ
 
-Hai máy, một broker:
+Bài tập nhóm môn IoT, dựa trên Chương 12 *Hands-On Artificial Intelligence for IoT*.
+Raspberry Pi 4 đo không khí, lưu cục bộ, dự báo PM2.5, tự bật/tắt quạt lọc, báo qua Telegram
+(kèm lời khuyên Gemini và ảnh camera). Laptop dùng để xem dashboard và huấn luyện LSTM.
 
-```
-Raspberry Pi 4                          Laptop Windows
-┌─────────────────────┐                ┌──────────────────────────────┐
-│ USB webcam          │                │                              │
-│   ↓ YOLOv8n         │──ảnh JPEG─────▶│  Mosquitto broker :1883      │
-│   ↓ vẽ khung người  │──JSON detect──▶│        ▲                     │
-│ DHT11  (chân 11)    │                │        │                     │
-│ BH1750 (chân 3, 5)  │──JSON cảm biến▶│  server_app.py (Streamlit)   │
-└─────────────────────┘                │   ├─ ảnh live + 12 ảnh gần   │
-                                       │   ├─ 3 biểu đồ cảm biến      │
-                                       │   └─ C:\mqtt\data\sensors.csv│
-                                       └──────────────────────────────┘
-```
-
-- **Nhiệt độ / độ ẩm**: DHT11 — DATA nối **chân 11** (BCM GPIO17), cần điện trở 10 kΩ pull-up
-- **Ánh sáng**: BH1750 — SDA **chân 3** (GPIO2), SCL **chân 5** (GPIO3) → bus I2C1
-- **Chu kỳ cảm biến**: 10 giây/lần
-- **Nhận diện người**: YOLOv8n (`model.pt`, 1 class `person`) chạy trên CPU Pi, `imgsz=320`
-- **Chu kỳ ảnh**: 2 giây/lần
-
-Tài liệu chia làm **2 phase**:
-
-| Phase | Làm khi nào | Nội dung |
-|---|---|---|
-| **1. Khởi tạo** | một lần duy nhất cho mỗi máy | cài gói hệ thống, clone repo, tạo venv, cài thư viện, tạo tài khoản MQTT |
-| **2. Chạy** | mỗi buổi demo | bật broker, bật 2 client trên Pi, bật dashboard trên laptop |
+Tài liệu liên quan: cách nối dây ở [so_do_noi_day_raspberry_pi.md](so_do_noi_day_raspberry_pi.md),
+quy tắc dự án ở [CLAUDE.md](CLAUDE.md), bảng nghiệm thu ở [docs/nghiem_thu.md](docs/nghiem_thu.md).
 
 ---
 
-# Việc cần làm trên Pi
+## Mục lục
 
-Trạng thái ngày 07/11/2026: code đã chép lên `~/BTL_IOT`, collector đã chạy thử 75 s ở
-foreground (đọc đủ cảm biến, ghi CSV + SQLite, dừng sạch). **Chưa cài dịch vụ systemd nào**
-(cần mật khẩu sudo). Làm lần lượt, xong bước trước mới sang bước sau:
-
-- [ ] **Bí mật:** đổi mật khẩu MQTT của `pi01` trên laptop (1B.3), rồi tạo `.env` từ
-      `.env.example` trên cả laptop và Pi (`MQTT_PASSWORD`). Không commit `.env`.
-- [ ] **Collector:** cài và bật `aiot-collector` (2.4a, bước 6); kiểm tra `systemctl status`
-      và có dòng mới trong `readings`.
-- [ ] **Controller:** chạy demo bằng DB thử khi có người đứng cạnh mạch (2.4c, bước 1), rồi
-      mới bật `aiot-controller` (2.4c, bước 2).
-- [ ] **Telegram:** tạo bot bằng BotFather, thêm `TELEGRAM_TOKEN` và `ALLOWED_CHAT_IDS` vào
-      `.env` trên Pi, bật `aiot-bot` (2.4d).
-- [ ] **Gemini và dự báo:** thêm `GEMINI_API_KEY` vào `.env`, bật `aiot-morning.timer` (2.4f)
-      và `aiot-forecast.timer` (2.4e). Chép mô hình LSTM lên Pi nếu muốn dùng (2.4g).
-- [ ] **Nắng/mưa và ảnh:** bật `aiot-weather.timer`, khởi động lại `aiot-bot`, thử `/photo` (2.4h).
-- [ ] **Nghiệm thu:** thu dữ liệu ít nhất 7 ngày, rồi chạy
-      `venv/bin/python scripts/acceptance_report.py --start <ngày đầu> --end <ngày cuối>` và
-      ghi kết quả vào `docs/nghiem_thu.md`.
+0. [Tổng quan](#0-tổng-quan)
+1. [Chuẩn bị Raspberry Pi (một lần)](#1-chuẩn-bị-raspberry-pi-một-lần)
+2. [Chuẩn bị laptop (một lần)](#2-chuẩn-bị-laptop-một-lần)
+3. [Bí mật và cấu hình](#3-bí-mật-và-cấu-hình)
+4. [Kiểm tra phần cứng](#4-kiểm-tra-phần-cứng)
+5. [Cài và bật các dịch vụ trên Pi](#5-cài-và-bật-các-dịch-vụ-trên-pi)
+6. [Dùng hằng ngày](#6-dùng-hằng-ngày)
+7. [Dashboard và camera trên laptop (tuỳ chọn)](#7-dashboard-và-camera-trên-laptop-tuỳ-chọn)
+8. [Phần AI: phân tích, huấn luyện, đưa LSTM lên Pi](#8-phần-ai-phân-tích-huấn-luyện-đưa-lstm-lên-pi)
+9. [Nghiệm thu 7 ngày](#9-nghiệm-thu-7-ngày)
+10. [Xử lý sự cố](#10-xử-lý-sự-cố)
+- [Phụ lục](#phụ-lục)
 
 ---
 
-# PHASE 1 — Khởi tạo (một lần)
+## 0. Tổng quan
 
-## 1A. Trên Raspberry Pi 4
+### Luồng hoạt động
 
-### 1A.1. Gói hệ thống + bật I2C
+```
+                         RASPBERRY PI (chạy liên tục, không cần Internet)
+ DHT11, BH1750,  ──► aiot-collector (10 s) ──► SQLite ~/iot_data/aiot.db ◄── aiot-forecast (mỗi giờ :02)
+ PMS7003, MQ135        │                          │      ▲                  dự báo PM2.5 1–6 giờ
+                       ├─► sensors.csv            │      │
+                       └─► MQTT ──────────────────┼──────┼─────────► Laptop: Mosquitto + server_app.py
+                                                  ▼      │                 (dashboard, tuỳ chọn)
+                       aiot-controller (20 s) ────┘      │
+                       luật tất định ──► GPIO23 ──► relay ──► quạt
+                                                         │
+                       aiot-bot (Telegram) ◄─────────────┘ gửi tin chờ trong outbox, nhận lệnh
+                       aiot-morning (06:30) ──► Gemini (số liệu tổng hợp) ──► báo cáo sáng
+                       aiot-weather (5 phút) ──► camera USB ──► cảnh báo nắng / sắp mưa kèm ảnh
+```
+
+- **Local-first:** đo, lưu, dự báo và điều khiển chạy trên Pi. Mất mạng vẫn đo, vẫn điều khiển;
+  tin Telegram được gửi bù khi có mạng.
+- **An toàn AI:** Gemini chỉ viết lời khuyên. Bật/tắt quạt là luật cố định trong `aiot/control.py`.
+- Các dịch vụ chỉ nói chuyện với nhau qua một file SQLite. Chỉ `aiot-controller` được điều khiển GPIO23.
+
+### Các dịch vụ trên Pi
+
+| Dịch vụ (systemd) | Chạy | Việc |
+| ----------------- | ---- | ---- |
+| `aiot-collector` | liên tục | đọc cảm biến mỗi 10 s → SQLite + CSV + MQTT, gộp trung bình 5 phút |
+| `aiot-controller` | liên tục | luật quạt mỗi 20 s, lệnh `/fan`, `/mode` |
+| `aiot-bot` | liên tục | bot Telegram, gửi cảnh báo và báo cáo |
+| `aiot-forecast.timer` | mỗi giờ, phút 02 | dự báo PM2.5 6 giờ tới |
+| `aiot-morning.timer` | 06:30 hằng ngày | báo cáo sáng + lời khuyên Gemini |
+| `aiot-weather.timer` | mỗi 5 phút | luật nắng/mưa, chụp ảnh khi cảnh báo |
+
+### Phần cứng
+
+Raspberry Pi 4 Model B 4 GB. Số chân là số vật lý trên header 40 chân.
+
+| Thiết bị | Dữ liệu | Kết nối |
+| -------- | ------- | ------- |
+| DHT11 | nhiệt độ, độ ẩm | OUT → pin 11 (GPIO17) |
+| BH1750 | ánh sáng (lux) | I2C pin 3, 5; địa chỉ `0x23` |
+| PMS7003 | PM1.0, PM2.5, PM10 | UART pin 8, 10 (`/dev/serial0`); 5V |
+| MQ135 | 1 bit vượt ngưỡng (`0` = vượt) | DO qua cầu chia áp 10 kΩ/20 kΩ → pin 37 (GPIO26) |
+| Relay + quạt 5V | mô phỏng máy lọc | IN → pin 16 (GPIO23); HIGH = quạt quay |
+| Camera USB | ảnh | `/dev/video0` |
+
+**Tắt Pi và rút cáp nguồn trước khi đổi dây.** Chi tiết dây, rail breadboard và các lỗi hay
+gặp xem `so_do_noi_day_raspberry_pi.md`.
+
+---
+
+## 1. Chuẩn bị Raspberry Pi (một lần)
+
+Pi dùng user `admin`, code ở `~/BTL_IOT`, venv ở `~/BTL_IOT/venv`, dữ liệu ở `~/iot_data`.
+Trong tài liệu, `<IP_PI>` là IP của Pi (hiện `10.157.117.41`, hoặc `pi.local`); laptop và Pi
+phải cùng mạng Wi-Fi.
+
+### 1.1. Gói hệ thống, I2C, UART, múi giờ
 
 ```bash
 sudo apt update
-sudo apt install -y libgpiod2 sysv-ipc i2c-tools python3-venv
-sudo raspi-config nonint do_i2c 0
+sudo apt install -y libgpiod2 sysv-ipc i2c-tools python3-venv sqlite3
+sudo raspi-config nonint do_i2c 0            # bật I2C (BH1750)
+sudo raspi-config nonint do_serial_hw 0      # bật UART phần cứng (PMS7003)
+sudo raspi-config nonint do_serial_cons 1    # tắt serial console trên UART
+sudo timedatectl set-timezone Asia/Ho_Chi_Minh
+sudo usermod -aG gpio,i2c,dialout,video admin
 sudo reboot
 ```
 
-`libgpiod2` + `sysv-ipc` là **bắt buộc**: chỉ khi có 2 gói này `adafruit_dht` mới dùng được
-đường đọc `pulseio` (hardware capture). Thiếu chúng thư viện tự lùi về bit-bang → lỗi
-`Checksum did not validate` liên tục.
+- `libgpiod2` + `sysv-ipc` bắt buộc cho DHT11; thiếu thì lỗi `Checksum did not validate` liên tục.
+- Múi giờ phải là `Asia/Ho_Chi_Minh`: CSV, báo cáo 06:30, giờ yên lặng và khung giờ của cảnh báo
+  mưa đều dùng giờ địa phương.
 
-### 1A.2. Clone repo
+### 1.2. Đưa code lên Pi
+
+Khi nhánh đã có trên GitHub:
 
 ```bash
-git clone <URL_GITHUB_CUA_BAN> ~/BTL_IOT
-cd ~/BTL_IOT
-ls
+git clone <URL_GITHUB> ~/BTL_IOT          # lần đầu
+cd ~/BTL_IOT && git pull                  # các lần sau
 ```
 
-Phải thấy: `model.pt  pi_sensor_client.py  pi_detection_client.py  pi_camera_client.py
-requirements-pi.txt  server_app.py  README.md`
+Khi nhánh chưa push (đang làm trên laptop), chép từ laptop bằng Git Bash ở thư mục repo:
 
-`model.pt` đã nằm trong repo nên không cần copy tay.
+```bash
+git archive HEAD aiot deploy scripts config.yaml requirements-pi.txt test_all.py README.md | ssh admin@<IP_PI> "cd ~/BTL_IOT && tar -xf -"
+```
 
-### 1A.3. Tạo venv
+`git archive` lấy đúng bản đã commit và giữ kiểu xuống dòng LF (file `.service` có CRLF sẽ
+làm systemd đọc sai). File `.env` không nằm trong git, chép riêng ở mục 3.
+
+### 1.3. venv và thư viện
 
 ```bash
 cd ~/BTL_IOT
 python3 -m venv venv
-source venv/bin/activate
-python -m pip install --upgrade pip
+venv/bin/python -m pip install --upgrade pip
+venv/bin/pip install -r requirements-pi.txt
 ```
 
-Mỗi terminal mới đều phải `cd ~/BTL_IOT && source venv/bin/activate`. Thư mục `venv/`
-đã nằm trong `.gitignore`.
+- Nếu cài `lgpio` lỗi (`swig failed`, `cannot find -llgpio`, hoặc cài xong mà `import lgpio`
+  vẫn lỗi) xem [Phụ lục C](#phụ-lục-c--bẫy-lgpio-python-313).
+- `requirements-pi.txt` có `ultralytics` cho client nhận diện người (tuỳ chọn). Nếu dùng, cài
+  torch CPU **trước** để không kéo bản CUDA ~2 GB:
+  `venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision`.
 
-### 1A.4. Cài torch CPU-only **trước**, rồi mới cài requirements
+Kiểm tra nhanh:
 
 ```bash
-source venv/bin/activate
-pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
-pip install -r requirements-pi.txt
+venv/bin/python -c "import aiot.collector, aiot.controller, aiot.bot, aiot.forecast, aiot.report, aiot.weather; print('ok')"
 ```
-
-Thứ tự này quan trọng: nếu để `ultralytics` tự kéo torch, pip sẽ lấy bản CUDA (~2 GB)
-trong khi Pi 4 không có GPU.
-
-Kiểm tra:
-
-```bash
-python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-# kỳ vọng: 2.x.x+cpu False
-```
-
-> **Bẫy `lgpio`** — nếu `pip install -r requirements-pi.txt` dừng ở bước build `lgpio`
-> (`swig failed`, `cannot find -llgpio`, hoặc cài xong mà `import lgpio` vẫn lỗi), xem
-> mục **Phụ lục C**.
-
-### 1A.5. Kiểm tra phần cứng
-
-```bash
-i2cdetect -y 1          # phải thấy 23 (0x23)
-```
-
-Nếu trống → kiểm tra dây SDA/SCL; nếu địa chỉ là `0x5C` (chân ADDR kéo cao) thì sửa
-`BH1750_ADDRESS` trong `pi_sensor_client.py`.
-
-Test nhanh 2 cảm biến, chạy 5–10 lần liên tiếp để biết tỉ lệ lỗi thật:
-
-```bash
-cd ~/BTL_IOT && source venv/bin/activate
-python -c "
-import board, busio, adafruit_dht, adafruit_bh1750
-d = adafruit_dht.DHT11(board.D17)
-try:
-    print('DHT11:', d.temperature, 'C /', d.humidity, '%')
-except RuntimeError as e:
-    print('DHT11 LOI:', e)
-print('Lux :', adafruit_bh1750.BH1750(busio.I2C(board.SCL, board.SDA)).lux)
-"
-```
-
-Kỳ vọng: 20–35 °C, 30–90 %, lux > 0. Thỉnh thoảng một lần lỗi checksum là bình thường —
-client sẽ bỏ qua mẫu đó và thử lại vòng sau.
-
-Test model:
-
-```bash
-cd ~/BTL_IOT && source venv/bin/activate
-python -c "from ultralytics import YOLO; m = YOLO('model.pt'); print(m.names, m.task)"
-# kỳ vọng: {0: 'person'} detect
-```
-
-## 1B. Trên laptop Windows
-
-### 1B.1. Thư viện Python
-
-```bash
-git clone <URL_GITHUB_CUA_BAN> ~/BTL_IOT
-cd ~/BTL_IOT
-pip install -r requirements.txt
-```
-
-`requirements.txt` gồm `paho-mqtt`, `streamlit`, `pandas`, `matplotlib` và thư viện cho
-các notebook. Nếu dùng venv riêng cho laptop thì tạo trước rồi mới `pip install`
-(`python -m venv venv` → `.\venv\Scripts\Activate.ps1`).
-
-### 1B.2. Cài Mosquitto (broker)
-
-Tải bản Windows từ <https://mosquitto.org/downloads/>, cài vào
-`C:\Program Files\Mosquitto` (mặc định).
-
-### 1B.3. Tạo tài khoản MQTT `pi01`
-
-Broker cấu hình `allow_anonymous false`, nên phải có user/password. Cả 3 client dùng
-chung tài khoản `pi01`. Mật khẩu tự chọn, ghi vào `MQTT_PASSWORD` trong file `.env`
-(chép từ `.env.example`, không commit) trên cả Pi và laptop:
-
-```powershell
-& "C:\Program Files\Mosquitto\mosquitto_passwd.exe" -b -c "C:\Users\<TEN_BAN>\mosq\passwd" pi01 <MAT_KHAU_MQTT>
-```
-
-- `-c` = **tạo mới** file password (ghi đè). Bỏ `-c` nếu file đã có.
-- Đặt file trong thư mục người dùng, **không đặt trong `C:\Program Files`** — xem Phụ lục D.
-
-### 1B.4. Tạo file cấu hình broker
-
-Tạo `C:\Users\<TEN_BAN>\mosq\mosquitto.conf`:
-
-```conf
-listener 1883
-allow_anonymous false
-password_file C:\Users\<TEN_BAN>\mosq\passwd
-```
-
-Ba dòng này là đủ. Không cần sửa file trong `C:\Program Files\Mosquitto`.
 
 ---
 
-# PHASE 2 — Chạy hệ thống
+## 2. Chuẩn bị laptop (một lần)
 
-Thứ tự dưới đây quan trọng: broker phải sống trước khi client kết nối.
+Laptop Windows chỉ cần cho: dashboard MQTT (tuỳ chọn), chạy test, và huấn luyện LSTM.
 
-## 2.1. Lấy IP LAN của laptop
-
-Trên laptop:
+### 2.1. Python
 
 ```powershell
-Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -like '192.168.*' -or $_.IPAddress -like '10.*' } | Select-Object IPAddress, InterfaceAlias
+cd C:\Users\nviquang\Documents\University\FourthYear\IoT\BTL\Chapter12
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements-dev.txt     # test
+.venv\Scripts\python -m pip install -r requirements.txt         # dashboard (streamlit, paho-mqtt)
+.venv\Scripts\python -m pytest                                   # phải toàn bộ PASS
 ```
 
-Ghi lại IP của card Wi-Fi, ví dụ `10.162.117.254`.
+### 2.2. Broker MQTT (Mosquitto)
 
-> ⚠️ **IP này đổi mỗi lần đổi mạng.** Sửa trên Pi rồi **đừng commit** thay đổi đó —
-> tránh đẩy IP máy bạn lên GitHub cho cả nhóm.
+1. Cài Mosquitto từ <https://mosquitto.org/download/> (mặc định vào `C:\Program Files\Mosquitto`).
+2. Tạo user `pi01` (lệnh hỏi mật khẩu hai lần; thêm `-c` chỉ khi tạo file lần đầu):
+   ```powershell
+   mkdir C:\Users\<TEN_BAN>\mosq -Force
+   & "C:\Program Files\Mosquitto\mosquitto_passwd.exe" -c "C:\Users\<TEN_BAN>\mosq\passwd" pi01
+   ```
+   Đổi mật khẩu sau này: chạy lại **không có `-c`** (không cần mật khẩu cũ).
+3. Tạo `C:\Users\<TEN_BAN>\mosq\mosquitto.conf`:
+   ```conf
+   listener 1883
+   allow_anonymous false
+   password_file C:\Users\<TEN_BAN>\mosq\passwd
+   ```
+4. Cho phép `mosquitto.exe` qua Windows Firewall (mạng Private).
 
-## 2.2. Trỏ client trên Pi về laptop
+Đặt `passwd` và `mosquitto.conf` trong thư mục người dùng, không trong `C:\Program Files`
+(xem [Phụ lục D](#phụ-lục-d--broker-không-đọc-được-file-passwd)).
 
-Mở `config.yaml` trên Pi, sửa `host` trong mục `mqtt`:
+---
 
-```yaml
-mqtt:
-  host: 10.162.117.254      # ← IP laptop ở bước 2.1
-```
+## 3. Bí mật và cấu hình
 
-`pi_sensor_client.py`, `pi_detection_client.py`, `pi_camera_client.py` đều đọc IP từ đây,
-và đọc mật khẩu MQTT từ `MQTT_PASSWORD` trong `.env` (cùng thư mục).
+### 3.1. File `.env` (không commit)
 
-Kiểm tra nhanh Pi có thông tới broker không:
+Chép `.env.example` thành `.env` ở thư mục repo, điền:
+
+| Khoá | Lấy ở đâu |
+| ---- | --------- |
+| `TELEGRAM_TOKEN` | Telegram: nhắn `@BotFather` → `/newbot` → nhận token dạng `123456789:AA...` |
+| `ALLOWED_CHAT_IDS` | mã chat được phép điều khiển bot (cách nhau dấu phẩy), xem dưới |
+| `GEMINI_API_KEY` | Google AI Studio → API key |
+| `MQTT_PASSWORD` | mật khẩu user `pi01` đặt ở 2.2 |
+
+**Lấy chat id:** gửi `/start` cho bot (muốn cả nhóm dùng thì thêm bot vào nhóm và nhắn một
+tin), rồi mở trên máy của bạn `https://api.telegram.org/bot<TOKEN>/getUpdates` và đọc
+`message.chat.id` (chat nhóm có id âm). Không dán link có token vào đâu cả.
+
+Chép `.env` lên Pi và khoá quyền đọc:
 
 ```bash
-python3 -c "import socket; s=socket.create_connection(('10.162.117.254',1883),5); print('OK'); s.close()"
+scp .env admin@<IP_PI>:~/BTL_IOT/.env
+ssh admin@<IP_PI> "chmod 600 ~/BTL_IOT/.env"
 ```
 
-Nếu lỗi `Connection refused` → broker chưa chạy (2.3).
-Nếu `timed out` → firewall Windows chặn, hoặc hai máy khác mạng.
+Lộ token thì `/revoke` trong BotFather; lộ key Gemini thì xoá key trong AI Studio.
+Thiếu `MQTT_PASSWORD` thì collector bỏ qua MQTT nhưng vẫn thu dữ liệu. Thiếu token hoặc
+`ALLOWED_CHAT_IDS` thì bot không chạy (thoát mã 2).
 
-## 2.3. Bật broker trên laptop
+### 3.2. `config.yaml`
 
-```powershell
-& "C:\Program Files\Mosquitto\mosquitto.exe" -c "C:\Users\<TEN_BAN>\mosq\mosquitto.conf" -v
-```
+Mọi tham số nằm ở `config.yaml` (đọc bằng `aiot.config.load_config()`):
 
-Log đúng phải có 2 dòng cuối:
+| Mục | Hay sửa |
+| --- | ------- |
+| `mqtt.host` | IP laptop chạy Mosquitto (đổi khi đổi mạng; xem `ipconfig`) |
+| `control` | ngưỡng quạt: vào BẢO VỆ > 55 µg/m³, thoát < 35, khẩn cấp ≥ 150; `demo: true` rút thời gian chờ còn 20 s |
+| `telegram` | giờ yên lặng mặc định 22–6, cooldown cảnh báo 30 phút |
+| `gemini` | tên model (`gemini-3.5-flash-lite`), tối đa 3 lần gọi/ngày |
+| `weather` | ngưỡng nắng (> 30000 lux và ≥ 33 °C), mưa (≥ 85% và < 5000 lux, 8h–16h) |
 
-```
-Opening ipv4 listen socket on port 1883.
-mosquitto version 2.1.2 running
-```
+Sửa `config.yaml` xong thì khởi động lại dịch vụ liên quan (`sudo systemctl restart aiot-...`).
 
-Giữ terminal này mở suốt buổi demo. Kiểm tra từ máy khác (hoặc terminal khác):
+---
 
-```powershell
-& "C:\Program Files\Mosquitto\mosquitto_sub.exe" -h localhost -u pi01 -P <MAT_KHAU_MQTT> -t "nha/#" -v
-```
+## 4. Kiểm tra phần cứng
 
-## 2.4. Chạy cảm biến trên Pi
-
-### 2.4a. Dịch vụ collector (thay cho `pi_sensor_client.py`)
-
-> **Trạng thái: có code, đã chạy thử 75 s ở foreground trên Pi ngày 07/11/2026 (bước 5),
-> chưa cài dịch vụ systemd (bước 6).**
-
-`aiot/collector.py` đọc **cả 4 cảm biến** (DHT11, BH1750, PMS7003, MQ135 DO) mỗi 10 giây:
-
-- ghi mẫu thô vào SQLite `raw_readings` (`db_path` trong `config.yaml`), kể cả khi DHT11
-  lỗi; gộp trung bình 5 phút vào `readings` mỗi phút (chỉ khi đồng hồ tin được, xem dưới);
-  xoá mẫu thô cũ hơn 7 ngày mỗi ngày một lần;
-- ghi `sensors.csv` **đúng định dạng cũ** (chỉ khi có đủ DHT11 và lux, và đồng hồ tin được;
-  MQTT cũng vậy, để CSV/dashboard không nhận dòng sai giờ);
-- gửi MQTT `nha/pi01/sensor` (payload cũ thêm `pm1`, `pm25`, `pm10`, `mq135_do`) nếu
-  `mqtt.enabled` và có `MQTT_PASSWORD`; mất broker thì vẫn thu thập;
-- `mq135_do` để trống trong 180 giây đầu vì MQ135 cần sấy.
-
-**Đồng hồ "tin được"** (`aiot.collector.is_clock_trusted`, dùng chung cho collector, controller
-qua bot, forecast và báo cáo sáng): đã đồng bộ NTP **ít nhất một lần từ lúc khởi động**, tức là
-có file `/run/systemd/timesync/synchronized` (systemd-timesyncd tạo ở lần đồng bộ đầu, mất khi
-khởi động lại). Không dùng `NTPSynchronized=yes` vì giá trị này về `no` khoảng 9 giờ sau khi mất
-Internet dù đồng hồ vẫn đúng, làm dừng gộp dữ liệu, dự báo và lệnh điều khiển. Chỉ khi không có
-file đó (ví dụ máy dùng chrony thay timesyncd) mới hỏi `timedatectl`. Trong lúc chưa tin được,
-mẫu vẫn vào `raw_readings` với `clock_synced=0` nhưng không ghi CSV/MQTT. **Chưa kiểm chứng trên
-Pi sau một lần mất mạng dài** (cần thử: rút Wi-Fi > 9 giờ, kiểm tra `readings` vẫn được gộp).
-Sau mất điện, đồng hồ có thể khôi phục về giờ cũ hơn mẫu đã lưu: collector ghi cảnh báo
-"ts=... <= MAX(raw_readings.ts)" khi mẫu mới trùng ts bị bỏ.
-
-**Không bao giờ chạy collector và `pi_sensor_client.py` cùng lúc**: hai tiến trình
-tranh nhau DHT11, BH1750 và cổng UART. `pi_sensor_client.py` được giữ lại làm bản cũ.
-
-Triển khai (một lần):
+Chạy trên Pi, có người đứng cạnh mạch (phần quạt và đèn MQ135 hỏi người trả lời):
 
 ```bash
-# 0) Đưa code lên Pi. Nhánh feat/aiot-core chưa push lên GitHub, nên chép file
-#    từ laptop (Git Bash, ở thư mục repo) bằng scp:
-#      scp -r aiot deploy scripts config.yaml requirements-pi.txt admin@<IP_PI>:~/BTL_IOT/
-#    Khi nhánh đã push thì dùng: cd ~/BTL_IOT && git pull
-#    .env (MQTT_PASSWORD) chép riêng và không commit; thiếu .env thì collector bỏ qua MQTT.
+ssh -t admin@<IP_PI> "cd ~/BTL_IOT && venv/bin/python test_all.py"
+i2cdetect -y 1                                  # phải thấy 23 (BH1750)
+venv/bin/python -m aiot.camera /tmp/thu.jpg && echo "camera ok"
+```
 
-# 1) Múi giờ (CSV ghi giờ địa phương) và kiểm tra đồng bộ NTP
-sudo timedatectl set-timezone Asia/Ho_Chi_Minh
-ls /run/systemd/timesync/synchronized          # có file: đã đồng bộ NTP ít nhất một lần từ lúc khởi động
-timedatectl show -p NTPSynchronized --value     # dự phòng khi không có file trên
+`test_all.py` kiểm tra DHT11, PMS7003, BH1750, MQ135 DO và relay + quạt. Không có TTY thì
+script bỏ qua phần quạt, không đụng relay, mã thoát 1. Không chạy `test_all.py` cùng lúc với
+`aiot-collector` hoặc `aiot-controller` (dùng chung cảm biến và GPIO23).
 
-# 2) Quyền truy cập GPIO, I2C, UART cho user admin (đăng nhập lại sau khi thêm nhóm)
-sudo usermod -aG gpio,i2c,dialout admin
-ls -l /dev/serial0                              # UART bật, serial console tắt (test_all.py đã đọc PMS7003 ở đây)
+---
 
-# 3) Thư viện (đã có trong requirements-pi.txt; lỗi lgpio xem Phụ lục C)
-cd ~/BTL_IOT && source venv/bin/activate
-pip install pyserial lgpio PyYAML paho-mqtt adafruit-blinka \
-    adafruit-circuitpython-dht adafruit-circuitpython-bh1750
+## 5. Cài và bật các dịch vụ trên Pi
 
-# 4) Tìm và dừng client cũ, dù nó chạy kiểu nào
-pgrep -af pi_sensor_client.py                   # tiến trình đang chạy (terminal tay, nohup, tmux, screen)
-systemctl list-units --all | grep -i sensor     # nếu là dịch vụ systemd: sudo systemctl disable --now <tên>
-crontab -l | grep -i pi_sensor_client           # nếu có dòng @reboot: crontab -e và xoá dòng đó
-tmux ls 2>/dev/null                             # nếu có phiên tmux chạy client: tmux kill-session -t <tên>
-pkill -f pi_sensor_client.py
-pgrep -af pi_sensor_client.py                   # không còn dòng nào
+Làm theo thứ tự. Mỗi bước có lệnh kiểm tra; đạt rồi mới sang bước sau. Các lệnh `sudo` hỏi
+mật khẩu của user `admin`.
 
-# 5) Chạy thử ở foreground: phải thấy log T=... H=... Lux=... PM2.5=... mỗi 10 giây.
-#    Ctrl+C để dừng (dừng sạch, gửi offline lên MQTT).
-python -m aiot.collector
+### 5.1. Thu thập dữ liệu: `aiot-collector`
 
-# 6) Cài dịch vụ systemd
+```bash
+cd ~/BTL_IOT
+timedatectl show -p NTPSynchronized --value     # nên là yes
+pkill -f pi_sensor_client.py; pgrep -af pi_sensor_client.py   # client cũ phải tắt (dùng chung cảm biến)
+venv/bin/python -m aiot.collector               # chạy thử: thấy "T=... H=... Lux=... PM2.5=..." mỗi 10 s, Ctrl+C để dừng
 sudo cp deploy/aiot-collector.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now aiot-collector
 journalctl -u aiot-collector -f
 ```
 
-Kiểm tra sau khoảng 1 giờ (thiếu lệnh `sqlite3` thì `sudo apt install -y sqlite3`):
+- MQ135 hiện `None` trong 3 phút đầu sau mỗi lần collector khởi động (cảm biến cần sấy), rồi
+  mới đọc `0` (vượt ngưỡng, đèn DO sáng) hoặc `1`.
+- Cửa sổ 5 phút đầu tiên thường `valid=0` vì collector bắt đầu giữa chừng.
+- Sau 1 giờ kiểm tra:
+  `sqlite3 ~/iot_data/aiot.db "select count(*), sum(valid) from readings;"` (khoảng 12 dòng, phần lớn hợp lệ).
+
+### 5.2. Dự báo: `aiot-forecast.timer`
 
 ```bash
-sqlite3 ~/iot_data/aiot.db "select count(*), sum(pm25 is null), max(ts) from raw_readings; select count(*), sum(valid) from readings;"
-# kỳ vọng: ~360 mẫu thô, ~12 dòng readings, phần lớn valid=1
-tail -3 ~/iot_data/sensors.csv
-```
-
-Dừng/khởi động lại: `sudo systemctl stop aiot-collector` / `sudo systemctl restart aiot-collector`.
-
-### 2.4b. Client cũ `pi_sensor_client.py` (chỉ DHT11 + BH1750)
-
-Chỉ dùng khi collector đã dừng (`sudo systemctl stop aiot-collector`).
-
-```bash
-cd ~/BTL_IOT && source venv/bin/activate
-python pi_sensor_client.py
-```
-
-Mỗi 10 giây in một dòng khi gửi thành công:
-
-```
-[2026-10-22T22:39:23] T=29.3C  H=76.0%  Lux=12.5
-```
-
-Nếu DHT11 lỗi, mẫu đó bị **bỏ qua** (không ghi dòng rỗng) và in `Bỏ qua mẫu (...)`.
-
-### 2.4c. Bộ điều khiển quạt (`aiot/controller.py`)
-
-> **Trạng thái: có code và unit test, CHƯA KIỂM TRA TRÊN MẠCH.** Hai bước dưới (demo có
-> người đứng cạnh, rồi bật dịch vụ thật) do người vận hành tự làm.
-
-Controller đọc PM2.5 thô trong SQLite mỗi `loop_s` giây (20 s), chạy luật trong
-`aiot/control.py` và bật/tắt quạt qua relay GPIO23 (HIGH = quay). Chỉ controller được giữ
-GPIO23: không chạy cùng `test_all.py`, và không chạy bản demo cùng dịch vụ thật.
-Khởi động lại thì khôi phục trạng thái cuối trong DB (đang BẢO VỆ thì quạt quay lại ngay);
-dừng dịch vụ (SIGTERM/Ctrl+C) thì quạt tắt. Mọi chuyển trạng thái, ghi đè, lỗi relay
-nằm trong bảng `events`.
-
-**Bước 1 — Demo trên mạch với DB thử** (có người đứng cạnh quạt; code đã chép lên Pi như 2.4a):
-
-```bash
-cd ~/BTL_IOT && source venv/bin/activate
-sudo systemctl stop aiot-controller 2>/dev/null   # nếu đã cài dịch vụ thật
-
-# Config demo: DB thử + demo: true (mọi thời gian chờ còn 20 s). Không dùng DB thật.
-sed -e 's#^db_path:.*#db_path: /home/admin/iot_data/demo.db#' -e 's#^  demo: false#  demo: true#' config.yaml > /tmp/demo.yaml
-grep -E '^db_path|^  demo:' /tmp/demo.yaml       # phải thấy demo.db và demo: true
-
-# Terminal 1: controller dùng config demo (Ctrl+C để dừng, quạt sẽ tắt)
-python -m aiot.controller --config /tmp/demo.yaml
-
-# Terminal 2: bơm PM2.5 giả mỗi 10 s
-python scripts/inject_pm.py --db ~/iot_data/demo.db --profile high     # 80: quạt quay trong ~1 phút
-python scripts/inject_pm.py --db ~/iot_data/demo.db --profile low      # 20: quạt dừng sau ~1 phút
-python scripts/inject_pm.py --db ~/iot_data/demo.db --profile danger   # 200: quạt quay ngay (~30 s)
-python scripts/inject_pm.py --db ~/iot_data/demo.db --profile step --phase 12   # 2 phút 20, 2 phút 80, 2 phút 20
-
-# Kiểm tra trong lúc quạt chạy
-vcgencmd get_throttled                           # phải là throttled=0x0
-sqlite3 ~/iot_data/demo.db "select datetime(ts,'unixepoch','localtime'), kind, detail from events order by rowid desc limit 10;"
-```
-
-Thử khởi động lại khi đang BẢO VỆ: để quạt quay (profile `high`), rút nguồn Pi, cắm lại,
-chạy lại Terminal 1 và 2 → quạt quay lại ngay sau khi controller khởi động.
-Tắt Pi và rút nguồn trước khi đổi dây.
-
-**Bước 2 — Bật dịch vụ thật** (sau khi demo đạt; `demo: false` trong `config.yaml`):
-
-```bash
-cd ~/BTL_IOT
-grep -E '^  demo:' config.yaml                   # phải là demo: false
-sudo cp deploy/aiot-controller.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now aiot-controller
-journalctl -u aiot-controller -f                 # thấy "Controller bắt đầu: ... mode=NORMAL"
-```
-
-Dừng: `sudo systemctl stop aiot-controller` (quạt tắt). Ghi đè thủ công sẽ đến từ bot
-Telegram (khoá state `pending_override`); trước khi có bot, có thể thử bằng tay:
-`sqlite3 ~/iot_data/aiot.db "insert or replace into state values('pending_override', json_object('fan', json('true'), 'ttl_s', 600, 'at', unixepoch()));"`
-(lệnh thiếu `at` hoặc lệch quá `telegram.stale_command_s + control.loop_s` giây bị bỏ với sự kiện
-`override_stale`, để lệnh cũ không chạy khi controller khởi động lại sau nhiều giờ).
-
-Sau khi Pi khởi động lại, controller chỉ dùng mẫu PM ghi từ lúc khởi động (bỏ mẫu trước khi tắt
-máy), xoá mốc "điều kiện đúng liên tục" đã lưu, và trong `stale_s` giây đầu không báo lỗi cảm
-biến khi collector chưa kịp ghi mẫu đầu. Relay lỗi thì có cảnh báo `relay_error` qua Telegram.
-Mỗi vòng controller ghi khoá `controller_heartbeat`; `/status`, `/fan`, `/mode` cảnh báo khi
-khoá này cũ hơn 3 vòng `loop_s` (dịch vụ không chạy).
-
-### 2.4d. Bot Telegram (`aiot/bot.py`)
-
-> **Trạng thái: có code và unit test, CHƯA THỬ VỚI BOT THẬT.** Các bước dưới do nhóm tự làm;
-> không ghi token vào tài liệu, chat nhóm hay commit.
-
-Bot dùng long polling (không cần mở port), chỉ trả lời chat trong `ALLOWED_CHAT_IDS`, và
-gửi mọi tin trong bảng `outbox` (cảnh báo của controller, gửi bù khi có mạng lại). Bot không
-chạm GPIO: `/fan`, `/mode` chỉ ghi khoá `pending_override` để controller áp dụng trong
-vòng `loop_s` giây. Lệnh: `/now`, `/status`, `/fan on|off`, `/mode auto|manual`,
-`/quiet 22 6`, `/forecast` (6 giờ tới, nhãn AQI, tên mô hình; xem 2.4e), `/photo` (xem 2.4h), `/help`, `/report`
-(báo cáo 24 giờ qua, trả lời ngay, có thể gọi Gemini; xem 2.4f). Lệnh điều khiển lệch quá 120 s so với đồng hồ Pi (ví dụ gửi lúc mất mạng)
-bị bỏ; khi đồng hồ Pi chưa tin được (chưa đồng bộ NTP lần nào từ lúc khởi động; Pi không có
-RTC) thì lệnh điều khiển bị từ chối, lệnh chỉ đọc vẫn trả lời. `/report` cũ hơn 120 s (tồn đọng
-khi bot chạy lần đầu hoặc sau khi mất mạng) cũng bị bỏ, để không gọi Gemini cho từng tin cũ.
-
-**Bước 1 — Tạo bot:** trong Telegram nhắn `@BotFather` → `/newbot` → đặt tên → nhận token
-dạng `123456789:AA...`. Giữ token như mật khẩu; lộ thì `/revoke` trong BotFather để đổi.
-
-**Bước 2 — Tìm chat id:** mỗi thành viên nhắn một tin bất kỳ cho bot (hoặc thêm bot vào
-nhóm rồi nhắn trong nhóm), sau đó mở trên máy của mình (không dán link này vào đâu cả):
-`https://api.telegram.org/bot<TOKEN>/getUpdates` và đọc `message.chat.id` (nhóm có id âm).
-Nếu thấy lỗi 409 "webhook" thì gọi `.../bot<TOKEN>/deleteWebhook` một lần.
-
-**Bước 3 — Điền `.env` trên Pi** (`~/BTL_IOT/.env`, đã nằm trong `.gitignore`):
-
-```bash
-cd ~/BTL_IOT
-nano .env          # thêm 2 dòng, nhiều chat cách nhau bằng dấu phẩy
-#   TELEGRAM_TOKEN=<token từ BotFather>
-#   ALLOWED_CHAT_IDS=<id1>,<id2>
-chmod 600 .env
-```
-
-ID sai định dạng bị bỏ kèm cảnh báo trong log (các dịch vụ khác vẫn chạy). Thiếu token hoặc
-không còn id hợp lệ nào thì bot ghi lỗi và thoát mã 2, systemd không tự khởi động lại.
-
-**Bước 4 — Cài dịch vụ:**
-
-```bash
-cd ~/BTL_IOT && source venv/bin/activate && pip install -r requirements-pi.txt   # có requests
-sudo cp deploy/aiot-bot.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now aiot-bot
-journalctl -u aiot-bot -f                        # thấy "Bot bắt đầu: ... chat được phép"
-```
-
-**Bước 5 — Kiểm tra thật** (controller và collector đang chạy):
-
-1. Gửi lần lượt `/help`, `/now`, `/status`, `/quiet 22 6`, `/mode manual`, `/mode auto`: mỗi lệnh có trả lời.
-2. `/fan on`: quạt quay trong khoảng `loop_s` (20 s); `/status` thấy ghi đè và giờ hết hạn;
-   `/mode auto` thì quạt về theo luật.
-3. Từ một tài khoản không có trong `ALLOWED_CHAT_IDS`: gửi `/now` → không có trả lời.
-4. Tắt Wi-Fi 10 phút (`sudo nmcli radio wifi off`, có người đứng cạnh, bật lại bằng
-   `sudo nmcli radio wifi on` hoặc qua bàn phím/màn hình): quạt và thu dữ liệu vẫn chạy;
-   có mạng lại thì tin trong outbox được gửi bù (cảnh báo cũ hơn 1 giờ được gộp thành một tin).
-5. Token không lọt vào log: `journalctl -u aiot-bot | grep -c "<phần đầu token, ví dụ 9 chữ số trước dấu :>"` phải ra `0`.
-6. Nhật ký lệnh: `sqlite3 ~/iot_data/aiot.db "select datetime(ts,'unixepoch','localtime'), detail from events where kind='command' order by rowid desc limit 10;"`
-
-### 2.4e. Dự báo PM2.5 mỗi giờ (`aiot/forecast.py`)
-
-Mỗi giờ (phút 02) timer chạy một lần dự báo PM2.5 trung bình giờ cho 6 giờ tới từ bảng
-`readings` và ghi vào bảng `forecasts`. Nếu có `models/pm25_lstm.tflite` + `models/scaler.json`
-(đường dẫn trong `config.yaml` mục `forecast`) và thư viện `ai-edge-litert` thì dùng LSTM
-(`model = 'lstm'`); thiếu file, file hỏng, thiếu thư viện hay LSTM lỗi thì dùng mô hình đối
-chứng: `seasonal_naive` (cùng giờ hôm qua) khi có đủ 24 giờ dữ liệu, ngược lại `persistence`
-(giữ nguyên giờ gần nhất). Hiện **chưa chép LSTM lên Pi** (xem 2.4g). Không có giờ hợp lệ nào trong 3 giờ gần đây thì không ghi dự báo
-(vẫn thoát 0). Đồng hồ Pi chưa đồng bộ NTP (vừa khởi động, chưa có mạng) thì bỏ lần chạy đó
-(log "chưa đồng bộ NTP", thoát 0), để lần chạy bù lúc khởi động không ghi dự báo với giờ sai. Controller dùng TB 3 giờ đầu cho luật "Chủ động" (> 100 µg/m³ thì bật quạt
-trước); dự báo cũ hơn `control.forecast_max_age_s` (5400 s) bị bỏ qua. Bot trả lời `/forecast`.
-
-```bash
-cd ~/BTL_IOT && source venv/bin/activate
-python -c "import numpy; print(numpy.__version__)"   # cần numpy (đã có trong requirements-pi.txt)
-python -m aiot.forecast                              # chạy thử một lần, xem log "Dự báo made_at=..."
+venv/bin/python -m aiot.forecast                # chạy thử; chưa đủ dữ liệu thì log "không dự báo" (bình thường)
 sudo cp deploy/aiot-forecast.service deploy/aiot-forecast.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now aiot-forecast.timer
-systemctl list-timers aiot-forecast.timer           # thấy lần chạy kế tiếp ở phút 02
-journalctl -u aiot-forecast -n 20
-# Sau một giờ phải có dòng mới:
-sqlite3 ~/iot_data/aiot.db "select datetime(made_at,'unixepoch','localtime'), horizon_h, round(pm25_pred,1), model from forecasts order by made_at desc, horizon_h limit 6;"
+systemctl list-timers aiot-forecast.timer
 ```
 
-### 2.4f. Báo cáo sáng và lời khuyên Gemini (`aiot/report.py`, `aiot/advice.py`)
+Dùng `persistence` khi chưa đủ 24 giờ dữ liệu, `seasonal_naive` khi đủ, `lstm` khi đã chép
+mô hình lên Pi (mục 8).
 
-> **Trạng thái: có code và unit test (client Gemini giả), CHƯA THỬ VỚI API KEY THẬT.**
-> Không ghi API key vào tài liệu, chat nhóm hay commit.
+### 5.3. Điều khiển quạt: `aiot-controller`
 
-Mỗi ngày 06:30 (`OnCalendar` trong `deploy/aiot-morning.timer`) timer lập báo cáo 24 giờ qua (PM2.5 TB/thấp/cao kèm nhãn AQI, số giờ theo
-nhóm, nhiệt độ, độ ẩm, độ phủ dữ liệu, dự báo 6 giờ kèm tên mô hình, trạng thái quạt, MQ135
-nếu có vượt ngưỡng) và ghi vào outbox; bot gửi (gửi bù khi có mạng lại). Mỗi ngày chỉ một
-bản (khoá `morning_report_date`); `Persistent=true` chạy bù nếu Pi tắt lúc 06:30. Đồng hồ
-chưa đồng bộ NTP thì chờ tối đa 15 phút rồi vẫn gửi, kèm ghi chú giờ có thể sai.
-
-Gemini chỉ viết lời khuyên (`{headline, advice}`, temperature 0.2), chỉ nhận số liệu tổng hợp
-(không có device id, chat id, mẫu thô), không điều khiển quạt. Tối đa
-`gemini.max_calls_per_day` (3) lần/ngày, `/report` cũng tính. Không có model/API key/thư viện,
-lỗi mạng, hết hạn mức, quá `timeout_s`, JSON sai hoặc quá 800 ký tự: dùng lời khuyên mẫu theo
-nhóm AQI (ghi "(lời khuyên mẫu)"), bản tin vẫn gửi. Model đặt ở `gemini.model` trong
-`config.yaml`; kiểm tra lại tên model và hạn mức hiện hành trước khi triển khai.
+**Bước 1 — demo với DB thử** (có người đứng cạnh quạt, không dùng DB thật):
 
 ```bash
-cd ~/BTL_IOT && source venv/bin/activate && pip install -r requirements-pi.txt   # có google-genai
-nano .env          # thêm: GEMINI_API_KEY=<key từ Google AI Studio>; giữ chmod 600 .env
-python -m aiot.report                                # chạy thử: thêm 1 tin morning_report vào outbox
+cd ~/BTL_IOT
+sed -e 's#^db_path:.*#db_path: /home/admin/iot_data/demo.db#' -e 's#^  demo: false#  demo: true#' config.yaml > /tmp/demo.yaml
+# Terminal 1 (Ctrl+C để dừng, quạt tắt):
+venv/bin/python -m aiot.controller --config /tmp/demo.yaml
+# Terminal 2: bơm PM2.5 giả mỗi 10 s
+venv/bin/python scripts/inject_pm.py --db ~/iot_data/demo.db --profile high     # 80: quạt quay trong ~1 phút
+venv/bin/python scripts/inject_pm.py --db ~/iot_data/demo.db --profile low      # 20: quạt dừng sau ~1 phút
+venv/bin/python scripts/inject_pm.py --db ~/iot_data/demo.db --profile danger   # 200: quạt quay ngay
+vcgencmd get_throttled                          # khi quạt chạy phải là throttled=0x0
+```
+
+**Bước 2 — bật dịch vụ thật** (`demo: false` trong `config.yaml`):
+
+```bash
+sudo cp deploy/aiot-controller.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now aiot-controller
+journalctl -u aiot-controller -f                # thấy "Controller bắt đầu: ... mode=NORMAL"
+```
+
+Luật: vào BẢO VỆ (quạt bật) khi PM2.5 TB 10 phút > 55 liên tục ≥ 5 phút; thoát khi TB 15
+phút < 35 liên tục ≥ 15 phút và đã bật ≥ 10 phút; trung vị 1 phút ≥ 150 thì bật ngay; dự báo
+TB 3 giờ tới > 100 thì bật trước. Mất dữ liệu PM > 2 phút thì giữ nguyên trạng thái và cảnh
+báo. Dừng dịch vụ thì quạt tắt; khởi động lại thì khôi phục trạng thái cuối.
+
+### 5.4. Bot Telegram: `aiot-bot`
+
+Cần `.env` có `TELEGRAM_TOKEN` và `ALLOWED_CHAT_IDS` (mục 3).
+
+```bash
+sudo cp deploy/aiot-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now aiot-bot
+journalctl -u aiot-bot -f                       # thấy "Bot bắt đầu: ... chat được phép" và "Đã đặt menu lệnh"
+```
+
+Gửi `/help` cho bot để thử. Từ tài khoản không có trong `ALLOWED_CHAT_IDS`, bot im lặng.
+
+### 5.5. Báo cáo sáng: `aiot-morning.timer`
+
+Cần `GEMINI_API_KEY` trong `.env` (thiếu thì vẫn gửi, dùng lời khuyên mẫu).
+
+```bash
 sudo cp deploy/aiot-morning.service deploy/aiot-morning.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now aiot-morning.timer
-systemctl list-timers aiot-morning.timer            # lần chạy kế tiếp lúc 06:30
-journalctl -u aiot-morning -n 20
-sqlite3 ~/iot_data/aiot.db "select key, value from state where key like 'gemini_calls:%' or key = 'morning_report_date';"
+systemctl list-timers aiot-morning.timer        # lần chạy kế tiếp 06:30
 ```
 
-**Đổi giờ báo cáo:** `report.time` trong `config.yaml` **không** điều khiển timer; giờ chạy
-thật nằm ở `OnCalendar=*-*-* 06:30:00` trong `deploy/aiot-morning.timer`. Muốn đổi giờ phải sửa
-cả hai (timer rồi `sudo systemctl daemon-reload`), vì `scripts/acceptance_report.py` dùng
-`report.time` để chấm báo cáo đúng giờ.
+Không chạy thử `python -m aiot.report` trong ngày nếu không cần: nó đánh dấu đã gửi báo cáo
+hôm nay nên 06:30 sẽ không gửi lại. Đổi giờ báo cáo: sửa `OnCalendar` trong
+`deploy/aiot-morning.timer` **và** `report.time` trong `config.yaml`.
 
-Lưu ý: `python -m aiot.report` chạy thử trong ngày sẽ ghi `morning_report_date`, nên timer
-06:30 cùng ngày không gửi lại; muốn thử lại thì xoá khoá đó bằng sqlite3.
+### 5.6. Cảnh báo nắng/mưa kèm ảnh: `aiot-weather.timer`
 
-**Kiểm tra thật (nhóm tự làm, cần API key thật):**
-
-1. Có `GEMINI_API_KEY` đúng và bot đang chạy: gửi `/report` → lời khuyên không có chữ
-   "(lời khuyên mẫu)"; `journalctl -u aiot-bot` không có cảnh báo "Gọi Gemini lỗi".
-2. Đặt key sai trong `.env` (`sudo systemctl restart aiot-bot`), gửi `/report` → vẫn có báo
-   cáo, có "(lời khuyên mẫu)", log có "Gọi Gemini lỗi" và không in key. Đặt lại key đúng.
-3. Gửi `/report` quá 3 lần trong ngày → các lần sau dùng lời khuyên mẫu.
-
-### 2.4g. Huấn luyện LSTM và đưa lên Pi (`training/train_lstm.py`, `training/02_danh_gia.ipynb`)
-
-Huấn luyện trên laptop (TensorFlow CPU, chỉ cài trong `.venv`, không cài lên Pi):
+DHT11, BH1750 và camera đặt ngoài ban công.
 
 ```bash
-.venv/Scripts/python -m pip install -r requirements-dev.txt -r training/requirements.txt
-.venv/Scripts/python -m training.train_lstm      # ~vài phút, ghi models/ (không commit)
-.venv/Scripts/jupyter nbconvert --to notebook --execute --inplace training/02_danh_gia.ipynb
-```
-
-`models/` gồm `pm25_lstm.tflite` (batch 1, chỉ op có sẵn của TFLite), `scaler.json` (đặc
-trưng, min/max MinMaxScaler fit trên train, dạng đích, n_in=24, n_out=6), `pm25_lstm.keras`
-và `train_summary.json`. Kết quả đánh giá và kết luận nằm trong notebook. Tóm tắt (07/11/2026,
-dữ liệu công khai CAMS): LSTM vượt persistence ở mọi horizon 1–6 giờ (MAE test giảm 21,7–31,1%),
-nhưng chỉ nhỉnh hơn hồi quy Ridge trên đặc trưng trễ rất ít.
-
-**Quy tắc:** mô hình chỉ được chép lên Pi khi **vượt persistence ở horizon ≥ 2 giờ trên dữ
-liệu của Pi** (không chỉ trên dữ liệu công khai CAMS). Hiện Pi mới có vài ngày dữ liệu, nên
-**chưa triển khai**; sản phẩm dùng mô hình đối chứng. Khi đạt, các bước là:
-
-```bash
-# Trên Pi: cài LiteRT vào venv (đã thử: ai-edge-litert 2.3.0 cài được trên Python 3.13)
-ssh admin@<IP_PI> "cd ~/BTL_IOT && mkdir -p models && venv/bin/pip install ai-edge-litert && venv/bin/python -c 'from ai_edge_litert.interpreter import Interpreter; print(\"ok\")'"
-# Trên laptop (Git Bash, thư mục repo): chép mô hình
-scp models/pm25_lstm.tflite models/scaler.json admin@<IP_PI>:~/BTL_IOT/models/
-# Trên Pi: chạy một lần, log phải có "Đã nạp mô hình học máy" và "suy luận trong ... ms"
-cd ~/BTL_IOT && venv/bin/python -m aiot.forecast
-sqlite3 ~/iot_data/aiot.db "select model, count(*) from forecasts group by model;"
-# kỳ vọng có dòng model = 'lstm'. Xoá file mô hình thì lần chạy sau về seasonal_naive/persistence.
-```
-
-### 2.4h. Cảnh báo nắng/mưa và ảnh (`aiot/weather.py`, `aiot/camera.py`)
-
-> **Trạng thái: có code và unit test, CHƯA THỬ THẬT** (chưa thử với nắng/mưa thật, camera
-> thật và bot thật).
-
-DHT11, BH1750 và camera USB (`/dev/video0`) đặt ngoài ban công. Mỗi 5 phút
-`aiot-weather.timer` chạy `python -m aiot.weather` một lần, xét bảng `readings` (trung bình
-5 phút, không cần `valid=1`):
-
-| Cảnh báo | Điều kiện (mục `weather` trong `config.yaml`) |
-| -------- | --------------------------------------------- |
-| Nắng gắt | lux > 30000 **và** nhiệt độ ≥ 33 °C |
-| Có thể sắp mưa | độ ẩm ≥ 85% **và** lux < 5000, chỉ từ 8h tới 16h |
-
-Điều kiện phải đúng ở 3 cửa sổ 5 phút liền nhau, cửa sổ mới nhất không cũ quá 10 phút
-(thiếu dữ liệu thì không kết luận). Chỉ báo khi **chuyển sang** trạng thái đó, tối đa 1 tin
-mỗi loại mỗi 3 giờ, theo giờ yên lặng chung (`/quiet`). Tin bị chặn (chưa hết 3 giờ hoặc
-đang giờ yên lặng) được gửi ở lần chạy đầu tiên được phép nếu điều kiện vẫn đúng. Mất dữ
-liệu lâu hơn 3 giờ thì trạng thái đã nhớ bị bỏ, điều kiện quay lại sẽ được báo lại. Khi
-báo, job chụp một ảnh trong tiến trình con có timeout 20 s (lưu ở
-`/home/admin/iot_data/photos`, xoá sau 7 ngày) và ghi tin kèm ảnh vào `outbox`; chụp lỗi thì
-gửi chữ kèm "(không chụp được ảnh)". Tin chờ quá 1 giờ (mất mạng) bị gộp vào tin tóm tắt,
-không gửi ảnh. Đây là **ước lượng từ cảm biến, không phải dự báo thời tiết**; đồng hồ Pi
-chưa đồng bộ NTP thì job bỏ qua lần chạy đó.
-
-Lệnh `/photo` của bot chụp và gửi ảnh ngay (lệnh cũ hơn 120 s bị bỏ, giống `/report`).
-Camera không trả ảnh trong 20 s thì bot trả lời "Camera không phản hồi, thử lại sau." và
-vẫn nhận lệnh khác. Khi chạy, bot đặt menu lệnh của Telegram (gõ `/` để thấy danh sách);
-lỗi thì thử lại sau lần nhận tin thành công kế tiếp.
-
-```bash
-cd ~/BTL_IOT && git pull
-timedatectl | grep "Time zone"             # phải là Asia/Ho_Chi_Minh (giờ ngày, giờ yên lặng)
-venv/bin/python -m aiot.camera /tmp/thu.jpg && echo "chụp được"   # thử camera
-venv/bin/python -m aiot.weather            # chạy thử một lần, xem log
-sudo cp deploy/aiot-weather.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now aiot-weather.timer
-sudo systemctl restart aiot-bot            # nạp code mới: gửi ảnh, /photo, menu lệnh
+venv/bin/python -m aiot.weather                 # chạy thử một lần, xem log
+sudo cp deploy/aiot-weather.service deploy/aiot-weather.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now aiot-weather.timer
+sudo systemctl restart aiot-bot                 # để bot gửi được ảnh và có /photo
 systemctl list-timers aiot-weather.timer
 ```
 
-Lưu ý:
-- **Múi giờ:** `timedatectl` phải hiện `Asia/Ho_Chi_Minh`; sai múi giờ thì khung 8h–16h và
-  giờ yên lặng lệch (`sudo timedatectl set-timezone Asia/Ho_Chi_Minh`).
-- **Báo nhầm lúc bình minh/hoàng hôn:** trời mờ + ẩm cao giống "sắp mưa". Khung mặc định đã
-  thu về 8h–16h (Hà Nội tháng 11: mặt trời mọc ~06:10, lặn ~17:15); **kiểm tra trong đợt
-  chạy 7 ngày** xem còn báo nhầm không, rồi chỉnh `day_start_h`/`day_end_h`/`rain_lux`.
-- **Camera dùng chung:** mỗi lần chụp mở rồi đóng `/dev/video0`. Nếu `pi_camera_client.py`
-  (hoặc `pi_detection_client.py` qua nó) đang chạy thì camera bận: cảnh báo được gửi chữ,
-  `/photo` trả lời "Không chụp được ảnh". Muốn có ảnh thì không chạy client camera cũ cùng lúc.
-- **DHT11 phải được che nắng trực tiếp** (hộp thông gió, không kín): phơi nắng sẽ đọc nhiệt
-  độ cao hơn không khí nhiều và báo nắng gắt sai.
-- **Mạch không chống nước:** Pi, breadboard, cảm biến và camera phải có mái che mưa hắt.
-- **BH1750 bão hoà khoảng 65000 lux:** nắng trưa trực tiếp có thể đọc kịch trần, vẫn đủ để
-  vượt ngưỡng 30000.
+- Nắng gắt: lux > 30000 và nhiệt độ ≥ 33 °C. Có thể sắp mưa: độ ẩm ≥ 85% và lux < 5000, chỉ 8h–16h.
+- Điều kiện phải đúng 15 phút liền; mỗi loại tối đa 1 tin / 3 giờ; theo giờ yên lặng.
+- Ảnh lưu ở `~/iot_data/photos/`, tự xoá sau 7 ngày. Đây là ước lượng từ cảm biến, không phải dự báo thời tiết.
+- Che bóng cho DHT11 (phơi nắng sẽ đọc cao hơn thật); mạch không chống nước.
 
-## 2.5. Chạy nhận diện trên Pi (terminal 2)
+### 5.7. Cài tất cả trong một lần (khi đã hiểu các bước trên)
 
 ```bash
-cd ~/BTL_IOT && source venv/bin/activate
-python pi_detection_client.py
+ssh -t admin@<IP_PI> "cd ~/BTL_IOT && sudo cp deploy/aiot-*.service deploy/aiot-*.timer /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now aiot-collector aiot-controller aiot-bot aiot-forecast.timer aiot-morning.timer aiot-weather.timer && systemctl --no-pager is-active aiot-collector aiot-controller aiot-bot aiot-forecast.timer aiot-morning.timer aiot-weather.timer"
 ```
 
-Log:
-
-```
-Đang nạp model: /home/admin/BTL_IOT/model.pt
-Đã kết nối broker
-Đã mở camera
-[2026-10-22T22:40:48] 0 người | 282 ms | 1.0 FPS | ảnh 64.2 KB
-```
-
-- `pi_detection_client.py` và `pi_camera_client.py` **cùng mở `/dev/video0`** → chỉ chạy
-  một trong hai.
-- Cảm biến và nhận diện chạy **song song** được: khác `client_id` (`pi01_sensor` /
-  `pi01_detection`) và khác topic trạng thái.
-
-## 2.6. Chạy dashboard trên laptop (terminal 3)
-
-```powershell
-cd C:\Users\nviquang\Documents\University\FourthYear\IoT\BTL\Chapter12
-python -m streamlit run server_app.py
-```
-
-Mở <http://localhost:8501>. Giao diện tự làm mới mỗi giây.
-
-> **Phải mở tab trình duyệt thì dashboard mới thật sự chạy.** Streamlit chỉ thực thi
-> `server_app.py` khi có phiên kết nối; để tiến trình chạy mà không mở tab thì nó chưa
-> `subscribe` MQTT, và `C:\mqtt\data\sensors.csv` **chưa được ghi**. Đóng tab = dừng
-> nhận dữ liệu cho tới khi mở lại.
-
-## 2.7. Nghiệm thu
-
-Mục này kiểm tra nhanh luồng MQTT + dashboard. Nghiệm thu 7 ngày của trạm AIoT (ổn định, điều
-khiển, Telegram, Gemini, an toàn) xem `docs/nghiem_thu.md` và `scripts/acceptance_report.py`.
-
-Dashboard phải hiện:
-
-| Vị trí | Giá trị đúng |
-|---|---|
-| metric **Broker** | `Đã kết nối` |
-| metric **Pi** | `online` |
-| metric **Số ảnh đã nhận** | tăng đều ~2 giây/lần |
-| metric **Ảnh cuối cách đây** | 0–3 giây |
-| metric **Cảm biến** | `online` |
-| Nhiệt độ / Độ ẩm / Ánh sáng | số thực, cập nhật 10 giây/lần |
-| 3 biểu đồ | có điểm mới sau ~1 phút |
-
-Ba cách kiểm tra độc lập:
-
-```powershell
-# 1) mọi topic
-& "C:\Program Files\Mosquitto\mosquitto_sub.exe" -h localhost -u pi01 -P <MAT_KHAU_MQTT> -t "nha/#" -v
-
-# 2) chỉ cảm biến (JSON)
-& "C:\Program Files\Mosquitto\mosquitto_sub.exe" -h localhost -u pi01 -P <MAT_KHAU_MQTT> -t "nha/+/sensor" -v
-
-# 3) file CSV trên laptop
-Get-Content C:\mqtt\data\sensors.csv -Tail 5
-```
-
-CSV phải có header đúng một lần và các dòng cùng timestamp với log trên Pi.
+Chỉ bật `aiot-controller` khi đã làm demo ở 5.3.
 
 ---
 
-# Phụ lục A — Topic MQTT
+## 6. Dùng hằng ngày
 
-| Topic | Chiều | Nội dung |
-|---|---|---|
-| `nha/pi01/image` | Pi → broker | ảnh JPEG đã vẽ khung người |
-| `nha/pi01/detection` | Pi → broker | JSON kết quả nhận diện |
-| `nha/pi01/sensor` | Pi → broker | JSON cảm biến, mỗi 10 s |
-| `nha/pi01/status` | Pi → broker | `online` / `offline` (camera, retained) |
-| `nha/pi01/sensor_status` | Pi → broker | `online` / `offline` (cảm biến, retained) |
+### 6.1. Lệnh bot Telegram
 
-Payload cảm biến:
+Gõ `/` trong Telegram để thấy menu lệnh.
 
-```json
-{"timestamp": "2026-10-22T22:39:23", "device_id": "pi01",
- "temperature_c": 29.3, "humidity_pct": 76, "lux": 12.5}
+| Lệnh | Việc |
+| ---- | ---- |
+| `/now` | số liệu cảm biến mới nhất (PM, nhiệt độ, độ ẩm, ánh sáng, MQ135) |
+| `/status` | chế độ, quạt, ghi đè, lỗi cảm biến, tuổi dữ liệu, giờ yên lặng |
+| `/forecast` | dự báo PM2.5 6 giờ tới kèm nhãn AQI |
+| `/report` | báo cáo 24 giờ qua (tính vào 3 lượt Gemini/ngày) |
+| `/photo` | chụp ảnh ban công ngay |
+| `/fan on` / `/fan off` | bật/tắt quạt thủ công trong 2 giờ |
+| `/mode auto` | quạt về tự động theo PM2.5 |
+| `/mode manual` | giữ quạt như hiện tại trong 2 giờ |
+| `/quiet 22 6` | đặt giờ yên lặng 22h → 6h (chỉ cảnh báo khẩn cấp được gửi) |
+| `/help` | danh sách lệnh |
+
+Lệnh điều khiển cũ hơn 2 phút (gửi lúc mất mạng hoặc lúc controller tắt) bị bỏ để quạt không
+bật bất ngờ: gửi lại là được. Bot tự gửi: cảnh báo đổi nhóm AQI, mức khẩn cấp, lỗi cảm biến,
+báo cáo 06:30, cảnh báo nắng/sắp mưa kèm ảnh.
+
+### 6.2. Xem trạng thái và log
+
+```bash
+systemctl --no-pager is-active aiot-collector aiot-controller aiot-bot aiot-forecast.timer aiot-morning.timer aiot-weather.timer
+journalctl -u aiot-collector -n 20              # đổi tên dịch vụ để xem log khác
+sqlite3 ~/iot_data/aiot.db "select datetime(ts,'unixepoch','localtime'), round(pm25,1), temp, hum, round(lux), mq135_do from raw_readings order by ts desc limit 5;"
+sqlite3 ~/iot_data/aiot.db "select datetime(ts,'unixepoch','localtime'), kind, detail from events order by ts desc limit 10;"
 ```
 
-Collector gửi thêm bụi và bit MQ135 (`null` khi đọc lỗi hoặc MQ135 đang sấy);
-`server_app.py` vẫn nhận vì chỉ kiểm tra 5 khoá cũ (`aiot/payload.py: valid_sensor_row`):
+### 6.3. Cập nhật code
+
+```bash
+# lấy code mới (git pull hoặc git archive như 1.2), rồi:
+sudo systemctl restart aiot-collector aiot-controller aiot-bot
+```
+
+Timer (`forecast`, `morning`, `weather`) tự dùng code mới ở lần chạy kế tiếp.
+
+### 6.4. Dừng
+
+```bash
+sudo systemctl stop aiot-controller             # quạt tắt
+sudo systemctl disable --now aiot-weather.timer # tắt cảnh báo nắng/mưa
+```
+
+---
+
+## 7. Dashboard và camera trên laptop (tuỳ chọn)
+
+Dashboard Streamlit nhận dữ liệu qua MQTT, lưu thêm một bản CSV ở `C:\mqtt\data\sensors.csv`.
+
+1. Bật broker (giữ cửa sổ này mở):
+   ```powershell
+   & "C:\Program Files\Mosquitto\mosquitto.exe" -c "C:\Users\<TEN_BAN>\mosq\mosquitto.conf" -v
+   ```
+2. Trên Pi, `mqtt.host` trong `config.yaml` phải là IP laptop (`ipconfig`), `.env` có
+   `MQTT_PASSWORD`; khởi động lại collector sau khi sửa.
+3. Bật dashboard rồi mở <http://localhost:8501> (phải mở tab thì dashboard mới nhận dữ liệu):
+   ```powershell
+   .venv\Scripts\python -m streamlit run server_app.py
+   ```
+
+Client camera cũ (gửi ảnh qua MQTT): `venv/bin/python pi_camera_client.py` hoặc
+`pi_detection_client.py` (nhận diện người YOLOv8n). Chúng **chiếm `/dev/video0`**: khi chạy,
+`/photo` và cảnh báo nắng/mưa không chụp được ảnh. Chỉ chạy một client camera, và chỉ khi cần.
+
+---
+
+## 8. Phần AI: phân tích, huấn luyện, đưa LSTM lên Pi
+
+Chạy trên laptop:
+
+```powershell
+.venv\Scripts\python -m pip install -r requirements-dev.txt -r training\requirements.txt
+.venv\Scripts\python -m training.fetch_public          # tải dữ liệu Open-Meteo Hà Nội (đã có sẵn trong training\data)
+.venv\Scripts\jupyter nbconvert --to notebook --execute --inplace training\01_phan_tich_chuoi.ipynb   # trend, ACF, ADF
+.venv\Scripts\python -m training.train_lstm            # huấn luyện, ghi models\ (không commit)
+.venv\Scripts\jupyter nbconvert --to notebook --execute --inplace training\02_danh_gia.ipynb         # so với đối chứng
+```
+
+- Dữ liệu hiện tại là PM2.5 mô hình CAMS + thời tiết ERA5 của Hà Nội (nguồn trong
+  `training/data/SOURCE.md`), không phải số đo tại trạm.
+- Kết quả (07/11/2026): LSTM có MAE thấp hơn persistence 22–31% ở mọi horizon, nhỉnh hơn hồi quy
+  Ridge một chút.
+- Huấn luyện bằng dữ liệu của Pi: xuất bằng
+  `python training/export_hourly.py --db <bản sao aiot.db> --out hourly.csv` (sao DB trên Pi bằng
+  `sqlite3 ~/iot_data/aiot.db ".backup /tmp/aiot_copy.db"` rồi `scp`), sau đó
+  `python -m training.train_lstm --data hourly.csv`.
+
+**Quy tắc:** chỉ chép mô hình lên Pi khi nó vượt persistence ở horizon ≥ 2 giờ **trên dữ liệu
+của Pi**. Khi đạt:
+
+```bash
+ssh admin@<IP_PI> "cd ~/BTL_IOT && mkdir -p models && venv/bin/pip install ai-edge-litert"
+scp models/pm25_lstm.tflite models/scaler.json admin@<IP_PI>:~/BTL_IOT/models/
+ssh admin@<IP_PI> "cd ~/BTL_IOT && venv/bin/python -m aiot.forecast"   # log có "Đã nạp mô hình học máy"
+```
+
+Xoá file mô hình thì dự báo tự quay về mô hình đối chứng.
+
+---
+
+## 9. Nghiệm thu 7 ngày
+
+Sau ít nhất 7 ngày chạy liên tục:
+
+```bash
+cd ~/BTL_IOT
+venv/bin/python scripts/acceptance_report.py --start <YYYY-MM-DD> --end <YYYY-MM-DD>
+```
+
+Script in tỉ lệ dữ liệu hợp lệ, thời gian phản ứng của quạt, số lần vi phạm luật giữ trạng
+thái, báo cáo sáng đúng giờ, hiệu quả lọc (thêm `--public-csv` để tính tương quan với trạm công
+khai). Ghi kết quả và cách đo vào `docs/nghiem_thu.md`. Thử khói chỉ dùng lượng nhỏ, nơi thoáng,
+có người trông; quạt mini là mô phỏng (proof of concept).
+
+---
+
+## 10. Xử lý sự cố
+
+| Triệu chứng | Nguyên nhân | Cách sửa |
+| ----------- | ----------- | -------- |
+| `/fan on` mà quạt không quay | `aiot-controller` chưa cài hoặc đã dừng (`/status` cảnh báo controller không chạy) | cài/bật ở 5.3; gửi lại `/fan on` vì lệnh cũ hơn 2 phút bị bỏ |
+| `/fan on` bị trả lời "đồng hồ chưa đồng bộ" | Pi vừa khởi động, chưa có mạng (không có RTC) | chờ có mạng; `timedatectl` |
+| MQ135 hiện "chưa có" | 3 phút sấy sau khi collector khởi động | chờ 3 phút |
+| MQ135 luôn `0` | đèn DO sáng: ngưỡng biến trở quá thấp | vặn biến trở tới khi đèn vừa tắt trong không khí sạch |
+| MQ135 luôn `1` dù đèn DO sáng | mất GND của module | kiểm tra dây GND, đèn nguồn |
+| `/photo` "Camera không phản hồi" | camera bận (client camera cũ đang chạy) hoặc rút cáp | tắt `pi_camera_client.py`/`pi_detection_client.py`; `ls /dev/video0` |
+| Bot không trả lời | `aiot-bot` dừng, thiếu token/chat id, hoặc chat không có trong `ALLOWED_CHAT_IDS` | `journalctl -u aiot-bot -n 30` |
+| Báo cáo luôn ghi "(lời khuyên mẫu)" | thiếu `GEMINI_API_KEY`, sai key, hết lượt, thiếu `google-genai` | kiểm tra `.env`, `venv/bin/pip install google-genai` |
+| `Checksum did not validate` liên tục | thiếu `libgpiod2`/`sysv-ipc`, dây DHT11 lỏng | cài gói ở 1.1, cắm lại dây |
+| `i2cdetect -y 1` không thấy `23` | dây SDA/SCL, rail breadboard bị ngắt | dây nguồn BH1750 cùng đoạn rail với DHT11 |
+| Không có PM2.5 | UART chưa bật hoặc serial console còn chiếm | `ls -l /dev/serial0`; làm lại 1.1 |
+| Dashboard "Mất kết nối" | broker chưa chạy, sai mật khẩu, sai `mqtt.host` | mục 7; `Get-NetTCPConnection -LocalPort 1883` |
+| `timed out` từ Pi tới broker | Windows Firewall chặn hoặc khác mạng | cho phép `mosquitto.exe`, cùng Wi-Fi |
+| Sụt áp khi quạt chạy (`throttled` khác `0x0`) | quạt lấy 5V từ Pi | dùng nguồn 5V riêng, nối chung GND |
+| `ModuleNotFoundError` | chạy ngoài venv | dùng `venv/bin/python` |
+
+---
+
+## Phụ lục
+
+### Phụ lục A — Topic MQTT
+
+| Topic | Nội dung |
+| ----- | -------- |
+| `nha/pi01/sensor` | JSON cảm biến mỗi 10 s |
+| `nha/pi01/sensor_status` | `online` / `offline` (collector, retained) |
+| `nha/pi01/image` | ảnh JPEG (client camera cũ) |
+| `nha/pi01/detection` | JSON nhận diện người |
+| `nha/pi01/status` | `online` / `offline` (client camera, retained) |
 
 ```json
 {"timestamp": "2026-11-05T08:00:00", "device_id": "pi01",
@@ -730,166 +523,57 @@ Collector gửi thêm bụi và bit MQ135 (`null` khi đọc lỗi hoặc MQ135 
  "pm1": 26.0, "pm25": 39.0, "pm10": 47.0, "mq135_do": 1}
 ```
 
-Payload nhận diện:
+### Phụ lục B — Dữ liệu sinh ra
 
-```json
-{"timestamp": "2026-10-22T22:40:46", "device_id": "pi01", "count": 0,
- "boxes": [], "inference_ms": 282.0, "fps": 1.0, "imgsz": 320, "model": "yolov8n"}
-```
+| Dữ liệu | Vị trí |
+| ------- | ------ |
+| SQLite (nguồn chính) | Pi: `/home/admin/iot_data/aiot.db` — bảng `raw_readings`, `readings`, `forecasts`, `events`, `state`, `outbox` (lược đồ trong `CLAUDE.md`) |
+| CSV 5 cột (định dạng cũ) | Pi: `/home/admin/iot_data/sensors.csv`; laptop: `C:\mqtt\data\sensors.csv` |
+| Ảnh | Pi: `/home/admin/iot_data/photos/` (xoá sau 7 ngày) |
+| Mô hình | laptop: `models/` (không commit); Pi: `~/BTL_IOT/models/` khi đã triển khai |
 
-Khi có người trong khung, `count > 0` và `boxes` có phần tử dạng
-`{"x1": 84, "y1": 63, "x2": 147, "y2": 261, "conf": 0.755}`.
+CSV: `timestamp,device_id,temperature_c,humidity_pct,lux`, mỗi 10 s, header một lần, không có dòng rỗng.
 
-> **Dashboard hiện không subscribe `nha/+/detection`.** Nó chỉ subscribe `image`,
-> `status`, `sensor`, `sensor_status`. Nên JSON nhận diện vẫn được publish và vẫn xem
-> được bằng `mosquitto_sub`, nhưng **không hiển thị trên giao diện**. Khung người thì
-> vẫn thấy — vì chúng được vẽ vào JPEG trước khi gửi. Muốn hiện `count`/`inference_ms`
-> trên dashboard thì phải thêm `client.subscribe("nha/+/detection", qos=1)` vào
-> `on_connect` của `server_app.py`.
+### Phụ lục C — Bẫy `lgpio` (Python 3.13)
 
-# Phụ lục B — Dữ liệu sinh ra
-
-Hai file CSV, **cùng định dạng**, ghi độc lập:
-
-| Máy | Đường dẫn |
-|---|---|
-| Pi | `/home/admin/iot_data/sensors.csv` (`csv_path` trong `config.yaml`) |
-| Laptop | `C:\mqtt\data\sensors.csv` |
-
-```csv
-timestamp,device_id,temperature_c,humidity_pct,lux
-2026-10-22T22:39:23,pi01,29.3,76,12.5
-2026-10-22T22:39:33,pi01,28.9,80,12.5
-```
-
-- Header ghi đúng 1 lần, 5 cột cố định, append theo thời gian.
-- 10 giây/mẫu → ~8.640 dòng/ngày.
-- **Mẫu lỗi bị bỏ qua, không ghi dòng rỗng.** CSV luôn sạch, không có NaN — vì NaN sẽ
-  làm hỏng `MinMaxScaler` và `window_transform` trong notebook.
-- Mất broker → CSV trên Pi vẫn đầy. Mất thẻ nhớ → MQTT vẫn nhận.
-
-Nối vào notebook (mục 6 của Chapter 12): thay cell tải Yahoo Finance bằng
-
-```python
-df = pd.read_csv(r"C:\mqtt\data\sensors.csv", parse_dates=["timestamp"])
-df = df.set_index("timestamp")
-close = df["temperature_c"]        # hoặc df["lux"]
-```
-
-# Phụ lục C — Bẫy `lgpio` (Python 3.13)
-
-`adafruit-blinka` kéo về `lgpio`, một C-extension. Wheel prebuilt trên PyPI chỉ có cho
-cp39–cp312, trong khi Raspberry Pi OS Trixie dùng Python 3.13 → pip phải compile từ
-source.
+Wheel `lgpio` trên PyPI chỉ có cho cp39–cp312, Raspberry Pi OS mới dùng Python 3.13 nên pip
+phải build từ source.
 
 | Lỗi | Nguyên nhân |
-|---|---|
-| `command 'swig' failed: No such file or directory` | thiếu `swig` |
+| --- | ----------- |
+| `command 'swig' failed` | thiếu `swig` |
 | `cannot find -llgpio` | thiếu thư viện C `liblgpio` |
-| `pip install lgpio` báo thành công nhưng `import lgpio` lỗi | pip lấy nhầm wheel rỗng `lgpio-0.0.0.2` từ piwheels |
+| cài xong mà `import lgpio` lỗi | pip lấy nhầm wheel rỗng `lgpio-0.0.0.2` từ piwheels |
 
-**Cách 1 — wheel prebuilt của Adafruit (khuyến nghị, không cần compile):**
-
-```bash
-python3 --version     # 3.13 hay 3.14 để chọn đúng wheel
-source venv/bin/activate
-pip install https://github.com/adafruit/lgpio-python-wheels/raw/main/wheels/lgpio-0.2.2.0-cp313-cp313-linux_aarch64.whl
-# Python 3.14 → đổi cp313 thành cp314
-pip install -r requirements-pi.txt
-```
-
-**Cách 2 — build từ source:**
+Cách 1 (khuyến nghị) — wheel của Adafruit:
 
 ```bash
-sudo apt install -y swig build-essential python3-dev liblgpio-dev
-source venv/bin/activate
-pip install -r requirements-pi.txt
+venv/bin/pip install https://github.com/adafruit/lgpio-python-wheels/raw/main/wheels/lgpio-0.2.2.0-cp313-cp313-linux_aarch64.whl
 ```
 
-**Cách 3 — dùng bản có sẵn của RPi OS:**
+Cách 2 — build: `sudo apt install -y swig build-essential python3-dev liblgpio-dev` rồi cài lại requirements.
+Cách 3 — dùng bản của hệ điều hành: `sudo apt install -y python3-lgpio`, tạo lại venv với `--system-site-packages`.
+Kiểm tra: `venv/bin/python -c "import lgpio; print(lgpio.__version__)"` phải ra `0.2.2.0`.
 
-```bash
-sudo apt install -y python3-lgpio
-rm -rf venv
-python3 -m venv --system-site-packages venv
-source venv/bin/activate
-pip install -r requirements-pi.txt
-```
+### Phụ lục D — Broker không đọc được file `passwd`
 
-Kiểm tra sau khi cài:
+Log `password-file: Error: Unable to open pwfile "C:\Program Files\Mosquitto\passwd"` là lỗi
+quyền file, không phải sai mật khẩu. Giữ `passwd` và `mosquitto.conf` trong
+`C:\Users\<TEN_BAN>\mosq\` như mục 2.2; file đã bị chặn quyền thì
+`icacls "C:\Users\<TEN_BAN>\mosq\passwd" /reset`.
 
-```bash
-pip show lgpio | head -2
-python -c "import lgpio; print(lgpio.__version__, lgpio.__file__)"
-# kỳ vọng 0.2.2.0 — nếu ra 0.0.0.2 thì cài lại bằng Cách 1
-```
+### Phụ lục E — Cấu trúc thư mục
 
-# Phụ lục D — Broker không đọc được file `passwd`
-
-Nếu broker thoát ngay và log có:
-
-```
-password-file: Error: Unable to open pwfile "C:\Program Files\Mosquitto\passwd"
-mosquitto version 2.1.2 terminating
-```
-
-thì đó là **lỗi quyền file**, không phải sai mật khẩu. File `passwd` tạo trong
-`C:\Program Files` bởi một tiến trình khác (hoặc bằng quyền Administrator) thường có ACL
-mà tiến trình thường không đọc được.
-
-Cách xử lý: giữ `passwd` + `mosquitto.conf` trong thư mục người dùng như mục 1B.3–1B.4
-(`C:\Users\<TEN_BAN>\mosq\`). Nếu đã có file bị chặn quyền thì:
-
-```powershell
-icacls "C:\Users\<TEN_BAN>\mosq\passwd" /reset
-```
-
-# Phụ lục E — Xử lý sự cố
-
-| Triệu chứng | Nguyên nhân | Cách sửa |
-|---|---|---|
-| `Checksum did not validate` | thiếu điện trở 10 kΩ pull-up, dây quá dài | gắn điện trở DATA–3.3V, rút ngắn dây |
-| DHT11 lỗi xuyên suốt | thiếu `libgpiod2`/`sysv-ipc` → đang bit-bang | `sudo apt install -y libgpiod2 sysv-ipc` rồi reboot |
-| `CẢNH BÁO: không có pulseio` | chưa cài 2 gói trên | cài rồi reboot |
-| `i2cdetect -y 1` không thấy `23` | sai dây, hoặc địa chỉ `0x5C` | kiểm tra dây; đổi `BH1750_ADDRESS = 0x5C` |
-| `Lỗi ghi CSV: [Errno 13] Permission denied` | `csv_path` trỏ vào thư mục không ghi được | đổi `csv_path` trong `config.yaml` sang thư mục của user đang chạy (vd `/home/admin/iot_data/sensors.csv`) |
-| Dashboard "Đang chờ ảnh" | Pi chưa chạy client, hoặc sai IP broker | kiểm tra `mqtt.host` trong `config.yaml` = IP laptop, chạy `ping` / `create_connection` từ Pi |
-| Metric **Broker** = `Mất kết nối` | broker chưa chạy / sai tài khoản | bật broker (2.3); kiểm tra `pi01` / `MQTT_PASSWORD` trong `.env` |
-| Metric **Pi** = `chưa rõ` | chưa có retained status | client chưa kết nối broker lần nào |
-| `Connection refused` từ Pi | broker chưa listen 1883 | bật broker; kiểm tra `Get-NetTCPConnection -LocalPort 1883` |
-| `timed out` từ Pi | firewall Windows chặn, hoặc khác mạng | cho phép `mosquitto.exe` qua Windows Firewall |
-| Ảnh không lên | sai `CAM_INDEX` | thử 1, 2... trong client |
-| Hai client camera chạy cùng lúc, ảnh đứng | tranh `/dev/video0` | chỉ chạy một trong `pi_camera_client.py` / `pi_detection_client.py` |
-| `KHÔNG TÌM THẤY model` | thiếu `model.pt` | `scp model.pt admin@<IP_PI>:~/BTL_IOT/` |
-| `ImportError: libopenblas` / `libc10` | thiếu thư viện hệ thống | `sudo apt install -y libopenblas-dev libopenblas0` |
-| Pi OOM khi chạy detection | RAM 4 GB không đủ | giảm `IMGSZ` xuống 256, hoặc export ONNX + `onnxruntime` |
-| `ModuleNotFoundError` | chưa kích hoạt venv | `source venv/bin/activate` |
-
-# Phụ lục F — Cấu trúc thư mục
-
-| File | Nơi chạy | Vai trò |
-|---|---|---|
-| `aiot/collector.py` | Pi (systemd `aiot-collector`) | đọc DHT11, BH1750, PMS7003, MQ135 → SQLite + CSV + MQTT mỗi 10 s (có code, chưa triển khai) |
-| `aiot/sensors.py`, `aiot/payload.py` | Pi / cả hai | đọc phần cứng; định dạng CSV và payload MQTT dùng chung |
-| `deploy/aiot-collector.service` | Pi | unit systemd của collector |
-| `pi_sensor_client.py` | Pi | bản cũ: chỉ DHT11 + BH1750; không chạy cùng collector |
-| `pi_detection_client.py` | Pi | chụp ảnh → YOLOv8n → vẽ khung → publish ảnh + JSON mỗi 2 s |
-| `pi_camera_client.py` | Pi | chỉ chụp + publish ảnh (bản đơn giản, không YOLO) |
-| `server_app.py` | Laptop | nhận ảnh + cảm biến, lưu CSV, dashboard Streamlit |
-| `requirements-pi.txt` | Pi | thư viện trong `~/BTL_IOT/venv` |
-| `requirements.txt` | Laptop | thư viện cho server + notebook |
-| `model.pt` | cả hai | checkpoint YOLOv8n (ultralytics 8.0.166, task `detect`, 1 class `person`) |
-| `time_series_data_preprocessing.ipynb` | Laptop | notebook Chapter 12, đọc CSV cảm biến |
-
-```
-~/BTL_IOT/
-├── venv/                 ← tự tạo, không push lên GitHub
-├── model.pt
-├── pi_camera_client.py
-├── pi_detection_client.py
-├── pi_sensor_client.py
-├── requirements-pi.txt
-├── requirements.txt
-├── server_app.py
-└── README.md
-```
+| Đường dẫn | Vai trò |
+| --------- | ------- |
+| `aiot/` | các dịch vụ trên Pi: `collector`, `controller`, `bot`, `forecast`, `report`, `weather` cùng các module dùng chung (`config`, `db`, `sensors`, `pms7003`, `control`, `relay`, `aqi`, `notifier`, `telegram_api`, `advice`, `camera`, `payload`, `aggregate`) |
+| `deploy/` | unit systemd |
+| `scripts/` | `inject_pm.py` (demo quạt), `acceptance_report.py` (nghiệm thu) |
+| `training/` | dữ liệu công khai, phân tích Chương 12, huấn luyện và đánh giá LSTM |
+| `tests/` | test chạy trên laptop (`.venv\Scripts\python -m pytest`) |
+| `config.yaml`, `.env.example` | cấu hình; mẫu file bí mật |
+| `test_all.py` | kiểm tra phần cứng trên Pi |
+| `pi_sensor_client.py` | client cũ (DHT11 + BH1750), đã được `aiot-collector` thay thế; không chạy cùng |
+| `pi_camera_client.py`, `pi_detection_client.py`, `model.pt` | client camera/nhận diện người qua MQTT (tuỳ chọn) |
+| `server_app.py` | dashboard Streamlit trên laptop |
+| `docs/` | plan triển khai, bảng nghiệm thu |
