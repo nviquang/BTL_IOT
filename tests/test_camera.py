@@ -1,6 +1,8 @@
 """Test chụp ảnh camera USB (cv2 giả, không cần camera thật) và xoá ảnh cũ."""
 import os
+import subprocess
 import sys
+import time
 import types
 
 import pytest
@@ -139,3 +141,59 @@ def test_purge_photos_removes_only_old_jpegs(tmp_path):
 
 def test_purge_photos_missing_dir(tmp_path):
     assert camera.purge_photos(str(tmp_path / "khong_co"), 7, 1_800_000_000) == 0
+
+
+# ---------------- chụp trong tiến trình con (có timeout) ----------------
+class FakeRunner:
+    def __init__(self, result=0, write=True):
+        self.result = result
+        self.write = write
+        self.calls = []
+
+    def __call__(self, cmd, timeout):
+        self.calls.append((cmd, timeout))
+        if isinstance(self.result, BaseException):
+            raise self.result
+        if self.write and self.result == 0:
+            path = cmd[cmd.index("aiot.camera") + 1]
+            with open(path, "wb") as f:
+                f.write(b"jpeg")
+        return self.result
+
+
+def test_capture_subprocess_success(tmp_path):
+    path = str(tmp_path / "a.jpg")
+    runner = FakeRunner()
+    assert camera.capture_subprocess(path, index=2, runner=runner) is True
+    cmd, timeout = runner.calls[0]
+    assert cmd[0] == sys.executable and cmd[1:4] == ["-m", "aiot.camera", path]
+    assert cmd[cmd.index("--index") + 1] == "2"
+    assert timeout == camera.SUBPROCESS_TIMEOUT_S == 20
+
+
+def test_capture_subprocess_timeout_and_failures(tmp_path):
+    path = str(tmp_path / "a.jpg")
+    for runner in (FakeRunner(subprocess.TimeoutExpired(["x"], 20)), FakeRunner(1),
+                   FakeRunner(OSError("không chạy được python")), FakeRunner(0, write=False)):
+        assert camera.capture_subprocess(path, runner=runner) is False
+
+
+def test_default_runner_kills_hung_child():
+    start = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        camera._run_with_timeout([sys.executable, "-c", "import time; time.sleep(30)"], 1)
+    assert time.monotonic() - start < 10
+
+
+def test_default_runner_returns_exit_code():
+    assert camera._run_with_timeout([sys.executable, "-c", "raise SystemExit(3)"], 20) == 3
+
+
+def test_main_exit_codes(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(camera, "capture_jpeg",
+                        lambda path, index=0: calls.append((path, index)) or True)
+    assert camera.main([str(tmp_path / "a.jpg"), "--index", "1"]) == 0
+    assert calls == [(str(tmp_path / "a.jpg"), 1)]
+    monkeypatch.setattr(camera, "capture_jpeg", lambda path, index=0: False)
+    assert camera.main([str(tmp_path / "a.jpg")]) == 1

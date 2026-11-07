@@ -81,9 +81,9 @@ class WeatherCfg:
     sunny_lux: float = 30000.0      # nắng gắt: lux > sunny_lux VÀ nhiệt độ >= sunny_temp_c
     sunny_temp_c: float = 33.0
     rain_hum_pct: float = 85.0      # có thể mưa: độ ẩm >= rain_hum_pct VÀ lux < rain_lux,
-    rain_lux: float = 5000.0        # chỉ xét trong [day_start_h, day_end_h) giờ địa phương
-    day_start_h: int = 6
-    day_end_h: int = 18
+    rain_lux: float = 5000.0        # chỉ xét trong [day_start_h, day_end_h) giờ địa phương;
+    day_start_h: int = 8            # tránh bình minh (~06:10) và hoàng hôn (~17:15) ở Hà Nội
+    day_end_h: int = 16             # tháng 11: lux thấp + ẩm lúc đó không phải sắp mưa
     sustain_windows: int = 3        # số cửa sổ 5 phút liền nhau phải thoả điều kiện
     cooldown_s: int = 10800         # tối đa 1 tin cùng loại mỗi 3 giờ
     photo_dir: str = "/home/admin/iot_data/photos"

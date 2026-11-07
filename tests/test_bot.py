@@ -857,7 +857,7 @@ def test_photo_command_captures_and_returns_photo(conn, tmp_path, monkeypatch):
     def fake_capture(path, index=0, **kw):
         calls.append((path, index))
         return True
-    monkeypatch.setattr(bot, "capture_jpeg", fake_capture)
+    monkeypatch.setattr(bot, "capture_photo", fake_capture)
     cfg = _cfg_photos(tmp_path)
     reply = bot.handle_update(upd("/photo"), conn, cfg, NOW)
     assert isinstance(reply, bot.PhotoReply)
@@ -868,27 +868,27 @@ def test_photo_command_captures_and_returns_photo(conn, tmp_path, monkeypatch):
 
 
 def test_photo_command_capture_failure_replies_text(conn, tmp_path, monkeypatch):
-    monkeypatch.setattr(bot, "capture_jpeg", lambda path, index=0, **kw: False)
+    monkeypatch.setattr(bot, "capture_photo", lambda path, index=0, **kw: False)
     reply = bot.handle_update(upd("/photo"), conn, _cfg_photos(tmp_path), NOW)
-    assert isinstance(reply, str) and "Không chụp được ảnh" in reply
+    assert reply == "Camera không phản hồi, thử lại sau."
 
 
 def test_stale_photo_command_does_not_capture(conn, tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr(bot, "capture_jpeg", lambda *a, **k: calls.append(a) or True)
+    monkeypatch.setattr(bot, "capture_photo", lambda *a, **k: calls.append(a) or True)
     reply = bot.handle_update(upd("/photo", date=NOW - 3600), conn, _cfg_photos(tmp_path), NOW)
     assert calls == [] and isinstance(reply, str) and "/photo" in reply
 
 
 def test_photo_works_while_clock_unsynced(conn, tmp_path, monkeypatch):
-    monkeypatch.setattr(bot, "capture_jpeg", lambda path, index=0, **kw: True)
+    monkeypatch.setattr(bot, "capture_photo", lambda path, index=0, **kw: True)
     reply = bot.handle_update(upd("/photo"), conn, _cfg_photos(tmp_path), NOW,
                               clock_synced=lambda: False)
     assert isinstance(reply, bot.PhotoReply)
 
 
 def test_poll_once_sends_photo_reply(conn, tmp_path, monkeypatch):
-    monkeypatch.setattr(bot, "capture_jpeg", lambda path, index=0, **kw: True)
+    monkeypatch.setattr(bot, "capture_photo", lambda path, index=0, **kw: True)
     client = PhotoClient([[upd("/photo", uid=7)]])
     bot.poll_once(conn, client, _cfg_photos(tmp_path), NOW)
     assert len(client.photos) == 1 and client.photos[0][0] == CHAT
@@ -896,7 +896,7 @@ def test_poll_once_sends_photo_reply(conn, tmp_path, monkeypatch):
 
 
 def test_poll_once_photo_send_failure_falls_back_or_logs(conn, tmp_path, monkeypatch):
-    monkeypatch.setattr(bot, "capture_jpeg", lambda path, index=0, **kw: True)
+    monkeypatch.setattr(bot, "capture_photo", lambda path, index=0, **kw: True)
     client = PhotoClient([[upd("/photo", uid=8)]], photo_errors=[FileNotFoundError("mất")])
     bot.poll_once(conn, client, _cfg_photos(tmp_path), NOW)
     assert len(client.sent) == 1 and "Không gửi được ảnh" in client.sent[0][1]
@@ -907,3 +907,65 @@ def test_poll_once_photo_send_failure_falls_back_or_logs(conn, tmp_path, monkeyp
 
 def test_help_lists_photo(conn):
     assert "/photo" in handle(conn, "/help")
+
+
+
+def test_bot_captures_in_subprocess():
+    from aiot import camera
+    assert bot.capture_photo is camera.capture_subprocess
+
+
+def test_polling_registers_commands_in_thread_and_retries(conn):
+    client = PhotoClient([TelegramError("mạng lỗi"), [], []],
+                         commands_error=TelegramError("mạng lỗi"))
+    stop = FakeStop(1)
+    bot.run_polling(conn, client, CFG, stop)            # lần đầu lỗi, getUpdates lỗi
+    assert client.commands is None
+
+    calls = []
+
+    class Flaky(PhotoClient):
+        def set_my_commands(self, commands):
+            calls.append(1)
+            if len(calls) == 1:
+                raise TelegramError("mạng lỗi")
+            self.commands = commands
+
+    class StopAfterPolls:
+        def __init__(self, client, n):
+            self.client, self.n = client, n
+            self.waits = []
+
+        def is_set(self):
+            return len(self.client.offsets) >= self.n
+
+        def wait(self, t):
+            self.waits.append(t)
+            return self.is_set()
+
+    client = Flaky([[], [], []])
+    bot.run_polling(conn, client, CFG, StopAfterPolls(client, 3))
+    assert len(calls) == 2                              # thử lại một lần sau getUpdates thành công
+    assert client.commands == bot.BOT_COMMANDS
+
+
+def test_polling_registers_commands_once_when_ok(conn):
+    calls = []
+
+    class Ok(PhotoClient):
+        def set_my_commands(self, commands):
+            calls.append(1)
+
+    client = Ok([[], [], []])
+
+    class Stop:
+        waits = []
+
+        def is_set(self):
+            return len(client.offsets) >= 3
+
+        def wait(self, t):
+            return self.is_set()
+
+    bot.run_polling(conn, client, CFG, Stop())
+    assert calls == [1]

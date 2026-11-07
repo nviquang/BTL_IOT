@@ -13,10 +13,16 @@ Cảnh báo "nắng gắt" và "có thể sắp mưa" từ cảm biến ngoài b
   Thiếu dữ liệu thì không kết luận (None) và giữ nguyên trạng thái đã nhớ.
 - Chỉ báo khi chuyển sang "bật" (khoá state 'weather_state:<kind>' = "1"/"0"), tối đa
   1 tin mỗi cooldown_s cho từng loại (khoá 'alert_last:<kind>'), theo giờ yên lặng chung
-  (aiot.notifier.quiet_window). Bị chặn thì không ghi nhận "bật", nên lần chạy sau khi được
-  phép sẽ báo nếu điều kiện vẫn đúng.
-- Khi báo: chụp ảnh (ngoài transaction), rồi ghi tin + ảnh vào outbox và cập nhật khoá
-  trong MỘT transaction. Chụp lỗi thì gửi chữ kèm " (không chụp được ảnh)".
+  (aiot.notifier.quiet_window). Bị chặn (cooldown hoặc giờ yên lặng) thì không ghi nhận
+  "bật": tin được gửi ở lần chạy ĐẦU TIÊN được phép mà điều kiện vẫn đúng (ví dụ nắng gắt
+  bắt đầu lúc 21h50 với /quiet 22 6 thì báo ngay; bắt đầu lúc 22h10 và còn nắng lúc 6h thì
+  báo lúc 6h01).
+- Khoá 'weather_seen:<kind>' ghi lần cuối có đủ dữ liệu để kết luận. "Bật" đã nhớ mà lần
+  cuối có dữ liệu cũ hơn cooldown_s (collector dừng, cảm biến lỗi lâu) thì bị coi như chưa
+  biết, nên điều kiện quay lại sẽ được báo lại.
+- Khi báo: chụp ảnh (ngoài transaction, trong tiến trình con có timeout, xem
+  aiot.camera.capture_subprocess), rồi ghi tin + ảnh vào outbox và cập nhật khoá trong MỘT
+  transaction. Chụp lỗi thì gửi chữ kèm " (không chụp được ảnh)".
 
 Chạy một lần (aiot-weather.timer mỗi 5 phút): cd ~/BTL_IOT && venv/bin/python -m aiot.weather
 Đồng hồ chưa tin được (aiot.collector.is_clock_trusted): bỏ qua cả đánh giá lẫn xoá ảnh cũ
@@ -30,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
-from aiot.camera import capture_jpeg, purge_photos
+from aiot.camera import capture_subprocess, purge_photos
 from aiot.collector import is_clock_trusted
 from aiot.config import load_config
 from aiot.db import get_state, set_state
@@ -59,6 +65,17 @@ def _state_key(kind):
 
 def _last_key(kind):
     return f"alert_last:{kind}"
+
+
+def _seen_key(kind):
+    return f"weather_seen:{kind}"
+
+
+def _int_or_none(text):
+    try:
+        return int(text) if text is not None else None
+    except ValueError:
+        return None
 
 
 def _condition(kind, lux, temp, hum, w):
@@ -121,7 +138,7 @@ def _photo_path(cfg, kind, now):
     return os.path.join(cfg.weather.photo_dir, name)
 
 
-def run_once(conn, now, cfg, *, capture=capture_jpeg):
+def run_once(conn, now, cfg, *, capture=capture_subprocess):
     """Đánh giá luật, ghi tin cho những loại vừa chuyển sang "bật". Trả về danh sách kind
     đã ghi vào outbox."""
     now = int(now)
@@ -130,6 +147,11 @@ def run_once(conn, now, cfg, *, capture=capture_jpeg):
         if obs is None:
             continue                                    # thiếu dữ liệu: giữ trạng thái
         previous = get_state(conn, _state_key(kind))
+        seen = _int_or_none(get_state(conn, _seen_key(kind)))
+        if previous == "1" and (seen is None or now - seen > cfg.weather.cooldown_s):
+            log.info("Trạng thái %s đã nhớ quá cũ (mất dữ liệu lâu), coi như chưa biết", kind)
+            previous = None
+        set_state(conn, _seen_key(kind), now)
         if not obs.active:
             if previous != "0":
                 set_state(conn, _state_key(kind), "0")

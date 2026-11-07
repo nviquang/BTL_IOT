@@ -592,21 +592,28 @@ DHT11, BH1750 và camera USB (`/dev/video0`) đặt ngoài ban công. Mỗi 5 ph
 | Cảnh báo | Điều kiện (mục `weather` trong `config.yaml`) |
 | -------- | --------------------------------------------- |
 | Nắng gắt | lux > 30000 **và** nhiệt độ ≥ 33 °C |
-| Có thể sắp mưa | độ ẩm ≥ 85% **và** lux < 5000, chỉ từ 6h tới 18h |
+| Có thể sắp mưa | độ ẩm ≥ 85% **và** lux < 5000, chỉ từ 8h tới 16h |
 
 Điều kiện phải đúng ở 3 cửa sổ 5 phút liền nhau, cửa sổ mới nhất không cũ quá 10 phút
 (thiếu dữ liệu thì không kết luận). Chỉ báo khi **chuyển sang** trạng thái đó, tối đa 1 tin
-mỗi loại mỗi 3 giờ, theo giờ yên lặng chung (`/quiet`). Khi báo, job chụp một ảnh (lưu ở
+mỗi loại mỗi 3 giờ, theo giờ yên lặng chung (`/quiet`). Tin bị chặn (chưa hết 3 giờ hoặc
+đang giờ yên lặng) được gửi ở lần chạy đầu tiên được phép nếu điều kiện vẫn đúng. Mất dữ
+liệu lâu hơn 3 giờ thì trạng thái đã nhớ bị bỏ, điều kiện quay lại sẽ được báo lại. Khi
+báo, job chụp một ảnh trong tiến trình con có timeout 20 s (lưu ở
 `/home/admin/iot_data/photos`, xoá sau 7 ngày) và ghi tin kèm ảnh vào `outbox`; chụp lỗi thì
 gửi chữ kèm "(không chụp được ảnh)". Tin chờ quá 1 giờ (mất mạng) bị gộp vào tin tóm tắt,
 không gửi ảnh. Đây là **ước lượng từ cảm biến, không phải dự báo thời tiết**; đồng hồ Pi
 chưa đồng bộ NTP thì job bỏ qua lần chạy đó.
 
-Lệnh `/photo` của bot chụp và gửi ảnh ngay (lệnh cũ hơn 120 s bị bỏ, giống `/report`). Khi
-khởi động, bot đặt menu lệnh của Telegram (gõ `/` để thấy danh sách).
+Lệnh `/photo` của bot chụp và gửi ảnh ngay (lệnh cũ hơn 120 s bị bỏ, giống `/report`).
+Camera không trả ảnh trong 20 s thì bot trả lời "Camera không phản hồi, thử lại sau." và
+vẫn nhận lệnh khác. Khi chạy, bot đặt menu lệnh của Telegram (gõ `/` để thấy danh sách);
+lỗi thì thử lại sau lần nhận tin thành công kế tiếp.
 
 ```bash
 cd ~/BTL_IOT && git pull
+timedatectl | grep "Time zone"             # phải là Asia/Ho_Chi_Minh (giờ ngày, giờ yên lặng)
+venv/bin/python -m aiot.camera /tmp/thu.jpg && echo "chụp được"   # thử camera
 venv/bin/python -m aiot.weather            # chạy thử một lần, xem log
 sudo cp deploy/aiot-weather.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now aiot-weather.timer
 sudo systemctl restart aiot-bot            # nạp code mới: gửi ảnh, /photo, menu lệnh
@@ -614,6 +621,11 @@ systemctl list-timers aiot-weather.timer
 ```
 
 Lưu ý:
+- **Múi giờ:** `timedatectl` phải hiện `Asia/Ho_Chi_Minh`; sai múi giờ thì khung 8h–16h và
+  giờ yên lặng lệch (`sudo timedatectl set-timezone Asia/Ho_Chi_Minh`).
+- **Báo nhầm lúc bình minh/hoàng hôn:** trời mờ + ẩm cao giống "sắp mưa". Khung mặc định đã
+  thu về 8h–16h (Hà Nội tháng 11: mặt trời mọc ~06:10, lặn ~17:15); **kiểm tra trong đợt
+  chạy 7 ngày** xem còn báo nhầm không, rồi chỉnh `day_start_h`/`day_end_h`/`rain_lux`.
 - **Camera dùng chung:** mỗi lần chụp mở rồi đóng `/dev/video0`. Nếu `pi_camera_client.py`
   (hoặc `pi_detection_client.py` qua nó) đang chạy thì camera bận: cảnh báo được gửi chữ,
   `/photo` trả lời "Không chụp được ảnh". Muốn có ảnh thì không chạy client camera cũ cùng lúc.

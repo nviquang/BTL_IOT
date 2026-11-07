@@ -19,11 +19,14 @@ Dịch vụ bot Telegram: long polling nhận lệnh, gửi tin trong outbox (g�
   hẳn. Lệnh chỉ đọc luôn được trả lời, trừ /report và /photo cũ hơn stale_command_s (tồn
   đọng 24 giờ khi bot chạy lần đầu hay sau khi mất mạng): bỏ để không gọi Gemini hay chụp
   ảnh cho từng tin cũ.
-- /photo chụp ảnh camera USB ngay (aiot.camera) và trả lời bằng ảnh, không qua outbox.
-  Chụp lỗi (camera bận vì pi_camera_client.py, không có camera/cv2) thì trả lời chữ.
+- /photo chụp ảnh camera USB ngay và trả lời bằng ảnh, không qua outbox. Chụp trong tiến
+  trình con có timeout 20 s (aiot.camera.capture_subprocess), để camera treo không làm
+  đứng luồng long polling (mọi lệnh, kể cả /fan). Chụp lỗi/quá giờ (camera bận vì
+  pi_camera_client.py, không có camera/cv2) thì trả lời chữ.
 - Tin outbox có photo_path (cảnh báo nắng/mưa của aiot.weather) được gửi bằng sendPhoto,
   chữ làm chú thích; file ảnh không còn thì gửi chữ.
-- Khi khởi động, bot đặt menu lệnh (setMyCommands); lỗi chỉ ghi cảnh báo.
+- Luồng long polling đặt menu lệnh (setMyCommands) khi bắt đầu; lỗi chỉ ghi cảnh báo và
+  thử lại sau lần getUpdates thành công kế tiếp (tối đa REGISTER_ATTEMPTS lần).
 - Offset getUpdates lưu ở khoá 'telegram_offset', commit cùng transaction với thay đổi
   của lệnh (crash giữa chừng không áp dụng lại lệnh), và luôn tăng kể cả khi xử lý một
   update bị lỗi, để một tin hỏng không làm bot lặp lại mãi.
@@ -50,7 +53,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from aiot.aqi import classify
-from aiot.camera import capture_jpeg
+from aiot.camera import capture_subprocess as capture_photo
 from aiot.control import ControlState, fan_on, override_active
 from aiot.collector import is_clock_trusted
 from aiot.db import connect, get_state, init_schema, log_event, set_state
@@ -72,6 +75,7 @@ DELIVERY_INTERVAL_S = 5
 BACKOFF_MIN_S = 5
 BACKOFF_MAX_S = 300
 POLL_BACKOFF_MAX_S = 60                # lệnh gửi ngay khi có mạng lại không bị chờ tới quá cũ
+REGISTER_ATTEMPTS = 3                  # số lần thử setMyCommands mỗi lần bot chạy
 PERMANENT_STATUSES = frozenset({400, 403})   # chat không tồn tại / chặn bot: bỏ chat đó
 
 HELP = ("Các lệnh:\n"
@@ -265,6 +269,9 @@ def cmd_report(conn, cfg, now, args):
         return "Không lập được báo cáo lúc này. Gửi /now để xem số liệu hiện tại, thử lại sau."
 
 
+PHOTO_FAILED = "Camera không phản hồi, thử lại sau."
+
+
 class PhotoReply(NamedTuple):
     """Trả lời bằng ảnh (poll_once gửi bằng sendPhoto)."""
     path: str
@@ -275,9 +282,8 @@ def cmd_photo(conn, cfg, now, args):
     """Chụp ảnh camera USB ngay. Ảnh lưu trong weather.photo_dir (aiot.weather xoá ảnh cũ)."""
     w = cfg.weather
     path = os.path.join(w.photo_dir, f"{datetime.fromtimestamp(now):%Y%m%d_%H%M%S}_photo.jpg")
-    if not capture_jpeg(path, index=w.camera_index):
-        return ("Không chụp được ảnh lúc này (camera không có, đang bị chương trình khác dùng "
-                "như pi_camera_client.py, hoặc thiếu OpenCV). Thử lại sau.")
+    if not capture_photo(path, index=w.camera_index):
+        return PHOTO_FAILED
     return PhotoReply(path, f"Ảnh ban công lúc {_fmt_time(now, seconds=True)}.")
 
 
@@ -503,12 +509,14 @@ def _send_reply(client, chat_id, reply):
 
 
 def register_commands(client):
-    """Đặt menu lệnh của bot (setMyCommands). Lỗi chỉ ghi cảnh báo, bot vẫn chạy."""
+    """Đặt menu lệnh của bot (setMyCommands). Trả về True nếu được; lỗi chỉ ghi cảnh báo."""
     try:
         client.set_my_commands(BOT_COMMANDS)
         log.info("Đã đặt menu lệnh (%d lệnh)", len(BOT_COMMANDS))
+        return True
     except Exception as e:
         log.warning("setMyCommands lỗi, bỏ qua (menu lệnh có thể chưa cập nhật): %s", e)
+        return False
 
 
 def _next_backoff(current, maximum=BACKOFF_MAX_S):
@@ -516,11 +524,16 @@ def _next_backoff(current, maximum=BACKOFF_MAX_S):
 
 
 def run_polling(conn, client, cfg, stop):
+    registered = register_commands(client)
+    attempts = 1
     backoff = 0
     while not stop.is_set():
         try:
             poll_once(conn, client, cfg)
             backoff = 0
+            if not registered and attempts < REGISTER_ATTEMPTS:
+                attempts += 1
+                registered = register_commands(client)
         except TelegramError as e:
             if e.retry_after:
                 wait = e.retry_after
@@ -676,7 +689,6 @@ def main(argv=None) -> int:
         run_delivery(c, OutboxSender(TelegramClient(token), cfg.secrets.allowed_chat_ids), stop)
 
     # Luồng long polling có thể đang chờ HTTP tới ~65 giây: để daemon, không chờ nó khi dừng
-    register_commands(TelegramClient(token))
     poll_thread = worker("telegram-poll", polling)
     send_thread = worker("telegram-send", delivery)
     poll_thread.start()

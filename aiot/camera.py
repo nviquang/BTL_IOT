@@ -8,9 +8,18 @@ Chụp một ảnh JPEG từ camera USB (/dev/video0) bằng OpenCV, và xoá �
 - Ghi file tạm rồi đổi tên, để bot không bao giờ gửi một ảnh đang ghi dở.
 - Mọi lỗi (không có cv2, không mở được camera, đọc/nén lỗi, ghi file lỗi) chỉ ghi log và
   trả về False; không bao giờ raise.
+- Dịch vụ (bot, weather) gọi capture_subprocess: chụp trong tiến trình con
+  `python -m aiot.camera <path>` có timeout, vì ioctl UVC/USB bị treo có thể chặn mãi
+  (bot sẽ không trả lời lệnh nào, kể cả /fan, mà systemd vẫn thấy tiến trình sống). Cách
+  này cũng giữ OpenCV ngoài tiến trình bot chạy lâu dài.
+
+Chạy tay: venv/bin/python -m aiot.camera /tmp/thu.jpg [--index 0]   (thoát 0 nếu chụp được)
 """
+import argparse
 import logging
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -18,6 +27,9 @@ log = logging.getLogger("aiot.camera")
 
 JPEG_QUALITY = 80
 DAY_S = 86400
+SUBPROCESS_TIMEOUT_S = 20
+KILL_WAIT_S = 3
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def capture_jpeg(path, index=0, width=640, height=480, warmup_frames=5) -> bool:
@@ -88,3 +100,54 @@ def purge_photos(dir, keep_days, now) -> int:
         except OSError as e:
             log.warning("Không xoá được ảnh cũ %s: %s", p.name, e)
     return removed
+
+
+def _run_with_timeout(cmd, timeout):
+    """Chạy cmd, trả về mã thoát; quá timeout thì kill và raise subprocess.TimeoutExpired.
+
+    Không dùng subprocess.run: sau khi kill, run() chờ tiến trình con không giới hạn, mà
+    tiến trình kẹt trong ioctl của driver (trạng thái D) có thể không chết ngay. Ở đây chỉ
+    chờ thêm KILL_WAIT_S rồi bỏ mặc nó."""
+    proc = subprocess.Popen(cmd, cwd=REPO_ROOT, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        return proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=KILL_WAIT_S)
+        except subprocess.TimeoutExpired:
+            log.error("Tiến trình chụp ảnh (pid %s) không dừng sau khi kill", proc.pid)
+        raise
+
+
+def capture_subprocess(path, index=0, *, timeout=SUBPROCESS_TIMEOUT_S,
+                       runner=_run_with_timeout) -> bool:
+    """capture_jpeg trong tiến trình con có timeout. True khi mã thoát 0 và file đã có.
+    runner(cmd, timeout) -> mã thoát (thay được trong test)."""
+    cmd = [sys.executable, "-m", "aiot.camera", str(path), "--index", str(int(index))]
+    try:
+        code = runner(cmd, timeout)
+    except subprocess.TimeoutExpired:
+        log.warning("Camera không phản hồi sau %s giây, đã dừng tiến trình chụp", timeout)
+        return False
+    except OSError as e:
+        log.warning("Không chạy được tiến trình chụp ảnh: %s", e)
+        return False
+    if code != 0:
+        log.warning("Tiến trình chụp ảnh thoát mã %s", code)
+        return False
+    return os.path.isfile(path)
+
+
+def main(argv=None) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    parser = argparse.ArgumentParser(description="Chụp một ảnh JPEG từ camera USB")
+    parser.add_argument("path")
+    parser.add_argument("--index", type=int, default=0)
+    args = parser.parse_args(argv)
+    return 0 if capture_jpeg(args.path, index=args.index) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

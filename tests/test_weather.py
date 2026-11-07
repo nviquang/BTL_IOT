@@ -48,7 +48,7 @@ def put_windows(conn, newest, values, n=3):
 def test_defaults():
     assert W == WeatherCfg()
     assert (W.sunny_lux, W.sunny_temp_c, W.rain_hum_pct, W.rain_lux) == (30000, 33.0, 85.0, 5000)
-    assert (W.day_start_h, W.day_end_h, W.sustain_windows, W.cooldown_s) == (6, 18, 3, 10800)
+    assert (W.day_start_h, W.day_end_h, W.sustain_windows, W.cooldown_s) == (8, 16, 3, 10800)
     assert W.photo_dir == "/home/admin/iot_data/photos"
     assert W.photo_keep_days == 7 and W.camera_index == 0
 
@@ -108,8 +108,8 @@ def test_invalid_pm_window_still_used_for_weather(conn):
 
 
 def test_rain_likely_in_daytime_only(conn):
-    put_windows(conn, at(15, 55), RAINY)
-    obs = weather.evaluate(conn, at(16, 1), W)
+    put_windows(conn, at(14, 55), RAINY)
+    obs = weather.evaluate(conn, at(15, 1), W)
     assert obs["weather_rain"].active is True
     assert obs["weather_rain"].hum == 91.0 and obs["weather_rain"].lux == 1200.0
     assert obs["weather_sunny"].active is False
@@ -278,3 +278,46 @@ def test_main_exits_zero_on_error(tmp_path, monkeypatch):
         raise RuntimeError("lỗi")
     monkeypatch.setattr(weather, "run_once", boom)
     assert weather.main([]) == 0
+
+
+def test_rain_not_at_dawn_or_dusk(conn):
+    """Bình minh ~06:10, hoàng hôn ~17:15 (Hà Nội tháng 11): lux thấp + ẩm không phải mưa."""
+    put_windows(conn, at(16, 0), RAINY)
+    assert weather.evaluate(conn, at(16, 6), W)["weather_rain"].active is False
+    conn.execute("DELETE FROM readings")
+    put_windows(conn, at(7, 50), RAINY)
+    assert weather.evaluate(conn, at(7, 56), W)["weather_rain"].active is False
+
+
+def test_default_capture_is_subprocess():
+    import inspect
+    from aiot import camera
+    assert inspect.signature(weather.run_once).parameters["capture"].default \
+        is camera.capture_subprocess
+
+
+def test_remembered_on_state_expires_over_data_gap(conn, tmp_path):
+    """Trạng thái "bật" đã nhớ nhưng mất dữ liệu lâu hơn cooldown_s: coi như chưa biết,
+    điều kiện quay lại thì báo lại."""
+    cfg = cfg_with(tmp_path)
+    cam = FakeCamera()
+    put_windows(conn, at(11, 55), SUNNY)
+    weather.run_once(conn, NOW, cfg, capture=cam)
+    assert get_state(conn, "weather_seen:weather_sunny") == str(NOW)
+    # collector dừng 4 giờ (không có cửa sổ nào), rồi nắng lại
+    put_windows(conn, at(15, 55), SUNNY)
+    assert weather.run_once(conn, at(16, 1), cfg, capture=cam) == ["weather_sunny"]
+    assert len(cam.calls) == 2
+
+
+def test_continuous_state_does_not_expire(conn, tmp_path):
+    cfg = cfg_with(tmp_path)
+    cam = FakeCamera()
+    put_windows(conn, at(11, 55), SUNNY)
+    weather.run_once(conn, NOW, cfg, capture=cam)
+    t = NOW
+    for i in range(1, 50):                              # nắng liên tục hơn 4 giờ
+        put(conn, at(11, 55) + i * 300, **SUNNY)
+        t = NOW + i * 300
+        assert weather.run_once(conn, t, cfg, capture=cam) == []
+    assert len(cam.calls) == 1

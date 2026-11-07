@@ -198,7 +198,7 @@ def test_weather_section_defaults_and_override(tmp_path):
     w = cfg.weather
     assert w.sunny_lux == 30000 and w.sunny_temp_c == 33.0
     assert w.rain_hum_pct == 85.0 and w.rain_lux == 5000
-    assert (w.day_start_h, w.day_end_h) == (6, 18)
+    assert (w.day_start_h, w.day_end_h) == (8, 16)
     assert w.sustain_windows == 3 and w.cooldown_s == 10800
     assert w.photo_dir == "/home/admin/iot_data/photos"
     assert w.photo_keep_days == 7 and w.camera_index == 0
