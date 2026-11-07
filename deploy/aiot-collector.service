@@ -4,8 +4,8 @@
 # Không chạy cùng lúc với pi_sensor_client.py (dùng chung cảm biến).
 [Unit]
 Description=AIoT air station collector (DHT11, BH1750, PMS7003, MQ135 -> SQLite/CSV/MQTT)
-After=network-online.target time-sync.target
-Wants=network-online.target
+# Không phụ thuộc mạng hay đồng bộ giờ: khởi động offline phải thu thập ngay
+# (mẫu trước khi đồng bộ NTP được đánh dấu clock_synced=0).
 
 [Service]
 Type=simple

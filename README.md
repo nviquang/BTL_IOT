@@ -256,27 +256,45 @@ tranh nhau DHT11, BH1750 và cổng UART. `pi_sensor_client.py` được giữ l
 Triển khai (một lần):
 
 ```bash
-# 1) Múi giờ (CSV ghi giờ địa phương)
+# 0) Đưa code lên Pi. Nhánh feat/aiot-core chưa push lên GitHub, nên chép file
+#    từ laptop (Git Bash, ở thư mục repo) bằng scp:
+#      scp -r aiot deploy config.yaml requirements-pi.txt admin@<IP_PI>:~/BTL_IOT/
+#    Khi nhánh đã push thì dùng: cd ~/BTL_IOT && git pull
+#    .env (MQTT_PASSWORD) chép riêng và không commit; thiếu .env thì collector bỏ qua MQTT.
+
+# 1) Múi giờ (CSV ghi giờ địa phương) và kiểm tra đồng bộ NTP
 sudo timedatectl set-timezone Asia/Ho_Chi_Minh
+timedatectl show -p NTPSynchronized --value     # "yes"; "no" thì mẫu bị gắn clock_synced=0 và chưa được gộp
 
 # 2) Quyền truy cập GPIO, I2C, UART cho user admin (đăng nhập lại sau khi thêm nhóm)
 sudo usermod -aG gpio,i2c,dialout admin
+ls -l /dev/serial0                              # UART bật, serial console tắt (test_all.py đã đọc PMS7003 ở đây)
 
-# 3) Thư viện (đã có trong requirements-pi.txt)
+# 3) Thư viện (đã có trong requirements-pi.txt; lỗi lgpio xem Phụ lục C)
 cd ~/BTL_IOT && source venv/bin/activate
-pip install pyserial lgpio PyYAML paho-mqtt adafruit-blinka     adafruit-circuitpython-dht adafruit-circuitpython-bh1750
+pip install pyserial lgpio PyYAML paho-mqtt adafruit-blinka \
+    adafruit-circuitpython-dht adafruit-circuitpython-bh1750
 
-# 4) Dừng client cũ nếu đang chạy (terminal tay, nohup hoặc tmux)
-pkill -f pi_sensor_client.py; pgrep -af pi_sensor_client.py   # không còn dòng nào
+# 4) Tìm và dừng client cũ, dù nó chạy kiểu nào
+pgrep -af pi_sensor_client.py                   # tiến trình đang chạy (terminal tay, nohup, tmux, screen)
+systemctl list-units --all | grep -i sensor     # nếu là dịch vụ systemd: sudo systemctl disable --now <tên>
+crontab -l | grep -i pi_sensor_client           # nếu có dòng @reboot: crontab -e và xoá dòng đó
+tmux ls 2>/dev/null                             # nếu có phiên tmux chạy client: tmux kill-session -t <tên>
+pkill -f pi_sensor_client.py
+pgrep -af pi_sensor_client.py                   # không còn dòng nào
 
-# 5) Cài dịch vụ systemd
+# 5) Chạy thử ở foreground: phải thấy log T=... H=... Lux=... PM2.5=... mỗi 10 giây.
+#    Ctrl+C để dừng (dừng sạch, gửi offline lên MQTT).
+python -m aiot.collector
+
+# 6) Cài dịch vụ systemd
 sudo cp deploy/aiot-collector.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now aiot-collector
 journalctl -u aiot-collector -f
 ```
 
-Kiểm tra sau khoảng 1 giờ:
+Kiểm tra sau khoảng 1 giờ (thiếu lệnh `sqlite3` thì `sudo apt install -y sqlite3`):
 
 ```bash
 sqlite3 ~/iot_data/aiot.db "select count(*), sum(pm25 is null), max(ts) from raw_readings; select count(*), sum(valid) from readings;"

@@ -36,6 +36,7 @@ class PiSensors:
         self._sleep = sleep
         self._dht = None
         self._light = None
+        self._i2c = None
         self._pms = None
         self._pms_serial = None
         self._chip = None
@@ -71,6 +72,7 @@ class PiSensors:
 
     def _ensure_light(self):
         if self._light is None and self._may_open("lux"):
+            i2c = None
             try:
                 import adafruit_bh1750
                 import board
@@ -78,7 +80,11 @@ class PiSensors:
 
                 i2c = busio.I2C(board.SCL, board.SDA)
                 self._light = adafruit_bh1750.BH1750(i2c, address=BH1750_ADDRESS)
+                self._i2c = i2c
             except Exception as e:
+                # Giải phóng bus vừa tạo, nếu không mỗi lần thử lại rò một file descriptor
+                if i2c is not None:
+                    _quiet(i2c.deinit)
                 self._open_failed("lux", "BH1750", e)
         return self._light
 
@@ -189,10 +195,14 @@ class PiSensors:
         self._chip = None
 
     def close(self) -> None:
-        """Dọn tiến trình libgpiod_pulsein của DHT, đóng UART và chip GPIO."""
+        """Dọn tiến trình libgpiod_pulsein của DHT, giải phóng bus I2C, đóng UART và chip GPIO."""
         if self._dht is not None:
             _quiet(self._dht.exit)
             self._dht = None
+        self._light = None
+        if self._i2c is not None:
+            _quiet(self._i2c.deinit)
+            self._i2c = None
         self._close_pms()
         self._close_chip()
 

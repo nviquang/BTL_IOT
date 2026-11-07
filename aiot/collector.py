@@ -131,6 +131,15 @@ def is_clock_synced() -> bool:
         return False
 
 
+def _rollback(conn) -> None:
+    """Huỷ transaction đang mở sau lỗi ghi (ví dụ commit lỗi khi đầy đĩa), để không
+    giữ khoá ghi WAL chặn controller và bot."""
+    try:
+        conn.rollback()
+    except Exception as e:
+        log.error("Rollback lỗi: %s", e)
+
+
 def _safe_read(name: str, fn):
     """Đọc một cảm biến; mọi lỗi coi như không có giá trị ở mẫu này."""
     try:
@@ -168,6 +177,7 @@ def collect_once(sensors, conn, csv_writer, publisher, now: datetime, clock_sync
         insert_raw(conn, sample)
     except sqlite3.Error as e:
         log.error("Lỗi ghi SQLite: %s", e)
+        _rollback(conn)
 
     if temp is None or lux is None:
         # Không ghi dòng thiếu vào CSV: notebook time series không chịu được NaN
@@ -212,12 +222,14 @@ def run(sensors, conn, csv_writer, publisher, stop: threading.Event,
                     aggregate_pending(conn, int(time.time()))
                 except sqlite3.Error as e:
                     log.error("Lỗi gộp 5 phút: %s", e)
+                    _rollback(conn)
                 if clock() >= next_purge:
                     next_purge = clock() + PURGE_EVERY_S
                     try:
                         purge_raw(conn, int(time.time()) - RAW_KEEP_S)
                     except sqlite3.Error as e:
                         log.error("Lỗi xoá mẫu thô cũ: %s", e)
+                        _rollback(conn)
 
         # Giữ nhịp đều đúng INTERVAL giây
         next_time += INTERVAL

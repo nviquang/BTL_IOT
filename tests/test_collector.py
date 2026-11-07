@@ -275,3 +275,101 @@ def test_run_aggregates_only_when_clock_synced(conn, csv_path, monkeypatch, sync
     assert bool(calls) is expect_rows
     if synced:
         assert sum(1 for c in calls if isinstance(c, tuple)) == 1   # purge đúng một lần
+
+
+# ---------------- Vòng sửa lỗi sau review ----------------
+def test_bh1750_reopen_does_not_leak_i2c_bus(monkeypatch):
+    """BH1750 vắng mặt: mỗi lần thử mở lại phải giải phóng bus I2C vừa tạo."""
+    import sys
+    import types
+
+    from aiot import sensors as sensors_mod
+
+    created, deinited = [], []
+
+    class FakeI2C:
+        def __init__(self, scl, sda):
+            created.append(self)
+
+        def deinit(self):
+            deinited.append(self)
+
+    def no_sensor(i2c, address):
+        raise ValueError("No I2C device at address: 0x23")
+
+    monkeypatch.setitem(sys.modules, "board", types.SimpleNamespace(SCL=3, SDA=2))
+    monkeypatch.setitem(sys.modules, "busio", types.SimpleNamespace(I2C=FakeI2C))
+    monkeypatch.setitem(sys.modules, "adafruit_bh1750", types.SimpleNamespace(BH1750=no_sensor))
+    t = [0.0]
+    s = sensors_mod.PiSensors(clock=lambda: t[0], sleep=lambda _: None)
+    for _ in range(5):
+        assert s.read_lux() is None
+        t[0] += sensors_mod.REOPEN_S
+    assert len(created) == 5
+    assert deinited == created
+    s.close()
+
+
+def test_bh1750_bus_released_on_close(monkeypatch):
+    import sys
+    import types
+
+    from aiot import sensors as sensors_mod
+
+    deinited = []
+
+    class FakeI2C:
+        def __init__(self, scl, sda):
+            pass
+
+        def deinit(self):
+            deinited.append(self)
+
+    class FakeBH1750:
+        def __init__(self, i2c, address):
+            self.lux = 170.8
+
+    monkeypatch.setitem(sys.modules, "board", types.SimpleNamespace(SCL=3, SDA=2))
+    monkeypatch.setitem(sys.modules, "busio", types.SimpleNamespace(I2C=FakeI2C))
+    monkeypatch.setitem(sys.modules, "adafruit_bh1750", types.SimpleNamespace(BH1750=FakeBH1750))
+    s = sensors_mod.PiSensors(sleep=lambda _: None)
+    assert s.read_lux() == 170.8
+    s.close()
+    assert len(deinited) == 1
+
+
+class CommitFailsConn:
+    """Bọc kết nối thật; commit() lỗi như khi đầy đĩa hay khoá quá busy_timeout."""
+    def __init__(self, real):
+        self.real = real
+
+    def execute(self, *a):
+        return self.real.execute(*a)
+
+    def commit(self):
+        raise sqlite3.OperationalError("database or disk is full")
+
+    def rollback(self):
+        self.real.rollback()
+
+    @property
+    def in_transaction(self):
+        return self.real.in_transaction
+
+
+def test_failed_commit_rolls_back_and_releases_lock(conn, csv_path):
+    run(FakeSensors(), CommitFailsConn(conn), csv_path)
+    assert conn.in_transaction is False
+    assert raw_rows(conn) == []
+    assert csv_path.read_bytes().count(b"\r\n") == 2   # CSV vẫn được ghi
+
+
+def test_failed_purge_rolls_back(conn, csv_path, monkeypatch):
+    import aiot.collector as col
+
+    monkeypatch.setattr(col, "aggregate_pending", lambda c, now: None)
+    insert_conn = CommitFailsConn(conn)
+    t = [0.0]
+    col.run(FakeSensors(), insert_conn, CsvLog(str(csv_path), "pi01"), RecordingPublisher(),
+            FakeStop(t, max_loops=7), clock=lambda: t[0], synced=lambda: True)
+    assert conn.in_transaction is False
