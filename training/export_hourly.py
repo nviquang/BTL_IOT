@@ -8,7 +8,11 @@ Xuất chuỗi trung bình giờ từ SQLite của trạm ra CSV để huấn lu
   nguyên nên trùng mốc epoch chia hết 3600), ghi kèm độ lệch, ví dụ 2026-11-05 07:00:00+07:00.
 
 Chạy: python training/export_hourly.py --db aiot.db --out hourly.csv
-(chép aiot.db từ Pi về trước, ví dụ scp admin@pi.local:~/BTL_IOT/data/aiot.db .)
+DB trên Pi ở /home/admin/iot_data/aiot.db (db_path trong config.yaml). DB đang chạy ở chế
+độ WAL nên không scp thẳng file (có thể thiếu trang còn nằm trong -wal); tạo bản sao nhất
+quán trên Pi rồi mới chép về:
+  ssh admin@pi.local 'sqlite3 ~/iot_data/aiot.db ".backup /tmp/aiot_copy.db"'
+  scp admin@pi.local:/tmp/aiot_copy.db aiot.db
 """
 import argparse
 import sqlite3

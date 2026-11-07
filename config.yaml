@@ -54,4 +54,6 @@ forecast:
   scaler_path: /home/admin/BTL_IOT/models/scaler.json
 
 report:
+  # Chỉ dùng để chấm "đúng giờ" (scripts/acceptance_report.py). Giờ gửi thật do
+  # OnCalendar trong deploy/aiot-morning.timer quyết định: đổi giờ thì sửa CẢ HAI.
   time: "06:30"

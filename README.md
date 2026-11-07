@@ -265,12 +265,24 @@ Giữ terminal này mở suốt buổi demo. Kiểm tra từ máy khác (hoặc 
 `aiot/collector.py` đọc **cả 4 cảm biến** (DHT11, BH1750, PMS7003, MQ135 DO) mỗi 10 giây:
 
 - ghi mẫu thô vào SQLite `raw_readings` (`db_path` trong `config.yaml`), kể cả khi DHT11
-  lỗi; gộp trung bình 5 phút vào `readings` mỗi phút (chỉ khi đồng hồ đã đồng bộ NTP);
+  lỗi; gộp trung bình 5 phút vào `readings` mỗi phút (chỉ khi đồng hồ tin được, xem dưới);
   xoá mẫu thô cũ hơn 7 ngày mỗi ngày một lần;
-- ghi `sensors.csv` **đúng định dạng cũ** (chỉ khi có đủ DHT11 và lux);
+- ghi `sensors.csv` **đúng định dạng cũ** (chỉ khi có đủ DHT11 và lux, và đồng hồ tin được;
+  MQTT cũng vậy, để CSV/dashboard không nhận dòng sai giờ);
 - gửi MQTT `nha/pi01/sensor` (payload cũ thêm `pm1`, `pm25`, `pm10`, `mq135_do`) nếu
   `mqtt.enabled` và có `MQTT_PASSWORD`; mất broker thì vẫn thu thập;
 - `mq135_do` để trống trong 180 giây đầu vì MQ135 cần sấy.
+
+**Đồng hồ "tin được"** (`aiot.collector.is_clock_trusted`, dùng chung cho collector, controller
+qua bot, forecast và báo cáo sáng): đã đồng bộ NTP **ít nhất một lần từ lúc khởi động**, tức là
+có file `/run/systemd/timesync/synchronized` (systemd-timesyncd tạo ở lần đồng bộ đầu, mất khi
+khởi động lại). Không dùng `NTPSynchronized=yes` vì giá trị này về `no` khoảng 9 giờ sau khi mất
+Internet dù đồng hồ vẫn đúng, làm dừng gộp dữ liệu, dự báo và lệnh điều khiển. Chỉ khi không có
+file đó (ví dụ máy dùng chrony thay timesyncd) mới hỏi `timedatectl`. Trong lúc chưa tin được,
+mẫu vẫn vào `raw_readings` với `clock_synced=0` nhưng không ghi CSV/MQTT. **Chưa kiểm chứng trên
+Pi sau một lần mất mạng dài** (cần thử: rút Wi-Fi > 9 giờ, kiểm tra `readings` vẫn được gộp).
+Sau mất điện, đồng hồ có thể khôi phục về giờ cũ hơn mẫu đã lưu: collector ghi cảnh báo
+"ts=... <= MAX(raw_readings.ts)" khi mẫu mới trùng ts bị bỏ.
 
 **Không bao giờ chạy collector và `pi_sensor_client.py` cùng lúc**: hai tiến trình
 tranh nhau DHT11, BH1750 và cổng UART. `pi_sensor_client.py` được giữ lại làm bản cũ.
@@ -286,7 +298,8 @@ Triển khai (một lần):
 
 # 1) Múi giờ (CSV ghi giờ địa phương) và kiểm tra đồng bộ NTP
 sudo timedatectl set-timezone Asia/Ho_Chi_Minh
-timedatectl show -p NTPSynchronized --value     # "yes"; "no" thì mẫu bị gắn clock_synced=0 và chưa được gộp
+ls /run/systemd/timesync/synchronized          # có file: đã đồng bộ NTP ít nhất một lần từ lúc khởi động
+timedatectl show -p NTPSynchronized --value     # dự phòng khi không có file trên
 
 # 2) Quyền truy cập GPIO, I2C, UART cho user admin (đăng nhập lại sau khi thêm nhóm)
 sudo usermod -aG gpio,i2c,dialout admin
@@ -396,7 +409,15 @@ journalctl -u aiot-controller -f                 # thấy "Controller bắt đ�
 
 Dừng: `sudo systemctl stop aiot-controller` (quạt tắt). Ghi đè thủ công sẽ đến từ bot
 Telegram (khoá state `pending_override`); trước khi có bot, có thể thử bằng tay:
-`sqlite3 ~/iot_data/aiot.db "insert or replace into state values('pending_override','{\"fan\": true, \"ttl_s\": 600}');"`
+`sqlite3 ~/iot_data/aiot.db "insert or replace into state values('pending_override', json_object('fan', json('true'), 'ttl_s', 600, 'at', unixepoch()));"`
+(lệnh thiếu `at` hoặc lệch quá `telegram.stale_command_s + control.loop_s` giây bị bỏ với sự kiện
+`override_stale`, để lệnh cũ không chạy khi controller khởi động lại sau nhiều giờ).
+
+Sau khi Pi khởi động lại, controller chỉ dùng mẫu PM ghi từ lúc khởi động (bỏ mẫu trước khi tắt
+máy), xoá mốc "điều kiện đúng liên tục" đã lưu, và trong `stale_s` giây đầu không báo lỗi cảm
+biến khi collector chưa kịp ghi mẫu đầu. Relay lỗi thì có cảnh báo `relay_error` qua Telegram.
+Mỗi vòng controller ghi khoá `controller_heartbeat`; `/status`, `/fan`, `/mode` cảnh báo khi
+khoá này cũ hơn 3 vòng `loop_s` (dịch vụ không chạy).
 
 ### 2.4d. Bot Telegram (`aiot/bot.py`)
 
@@ -409,8 +430,9 @@ chạm GPIO: `/fan`, `/mode` chỉ ghi khoá `pending_override` để controller
 vòng `loop_s` giây. Lệnh: `/now`, `/status`, `/fan on|off`, `/mode auto|manual`,
 `/quiet 22 6`, `/forecast` (6 giờ tới, nhãn AQI, tên mô hình; xem 2.4e), `/help`, `/report`
 (báo cáo 24 giờ qua, trả lời ngay, có thể gọi Gemini; xem 2.4f). Lệnh điều khiển lệch quá 120 s so với đồng hồ Pi (ví dụ gửi lúc mất mạng)
-bị bỏ; khi đồng hồ Pi chưa đồng bộ NTP (vừa khởi động lại, chưa có mạng; Pi không có RTC)
-thì lệnh điều khiển bị từ chối, lệnh chỉ đọc vẫn trả lời.
+bị bỏ; khi đồng hồ Pi chưa tin được (chưa đồng bộ NTP lần nào từ lúc khởi động; Pi không có
+RTC) thì lệnh điều khiển bị từ chối, lệnh chỉ đọc vẫn trả lời. `/report` cũ hơn 120 s (tồn đọng
+khi bot chạy lần đầu hoặc sau khi mất mạng) cũng bị bỏ, để không gọi Gemini cho từng tin cũ.
 
 **Bước 1 — Tạo bot:** trong Telegram nhắn `@BotFather` → `/newbot` → đặt tên → nhận token
 dạng `123456789:AA...`. Giữ token như mật khẩu; lộ thì `/revoke` trong BotFather để đổi.
@@ -485,7 +507,7 @@ sqlite3 ~/iot_data/aiot.db "select datetime(made_at,'unixepoch','localtime'), ho
 > **Trạng thái: có code và unit test (client Gemini giả), CHƯA THỬ VỚI API KEY THẬT.**
 > Không ghi API key vào tài liệu, chat nhóm hay commit.
 
-Mỗi ngày 06:30 timer lập báo cáo 24 giờ qua (PM2.5 TB/thấp/cao kèm nhãn AQI, số giờ theo
+Mỗi ngày 06:30 (`OnCalendar` trong `deploy/aiot-morning.timer`) timer lập báo cáo 24 giờ qua (PM2.5 TB/thấp/cao kèm nhãn AQI, số giờ theo
 nhóm, nhiệt độ, độ ẩm, độ phủ dữ liệu, dự báo 6 giờ kèm tên mô hình, trạng thái quạt, MQ135
 nếu có vượt ngưỡng) và ghi vào outbox; bot gửi (gửi bù khi có mạng lại). Mỗi ngày chỉ một
 bản (khoá `morning_report_date`); `Persistent=true` chạy bù nếu Pi tắt lúc 06:30. Đồng hồ
@@ -509,6 +531,11 @@ systemctl list-timers aiot-morning.timer            # lần chạy kế tiếp l
 journalctl -u aiot-morning -n 20
 sqlite3 ~/iot_data/aiot.db "select key, value from state where key like 'gemini_calls:%' or key = 'morning_report_date';"
 ```
+
+**Đổi giờ báo cáo:** `report.time` trong `config.yaml` **không** điều khiển timer; giờ chạy
+thật nằm ở `OnCalendar=*-*-* 06:30:00` trong `deploy/aiot-morning.timer`. Muốn đổi giờ phải sửa
+cả hai (timer rồi `sudo systemctl daemon-reload`), vì `scripts/acceptance_report.py` dùng
+`report.time` để chấm báo cáo đúng giờ.
 
 Lưu ý: `python -m aiot.report` chạy thử trong ngày sẽ ghi `morning_report_date`, nên timer
 06:30 cùng ngày không gửi lại; muốn thử lại thì xoá khoá đó bằng sqlite3.
