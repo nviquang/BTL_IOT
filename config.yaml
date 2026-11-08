@@ -27,7 +27,7 @@ control:
   stale_s: 120              # mất dữ liệu PM > 2 phút: giữ nguyên trạng thái, cảnh báo
   override_ttl_s: 7200      # ghi đè thủ công hết hạn sau 2 giờ
   loop_s: 20
-  demo: false               # true: mọi thời gian chờ và cửa sổ TB rút còn demo_wait_s
+  demo: true                # true: mọi thời gian chờ và cửa sổ TB rút còn demo_wait_s
   demo_wait_s: 20
 
 telegram:
