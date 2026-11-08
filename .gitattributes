@@ -1,0 +1,7 @@
+# Script và unit chạy trên Pi phải giữ LF (core.autocrlf=true trên laptop Windows sẽ
+# đổi thành CRLF khi checkout, làm bash và systemd đọc sai).
+*.sh      text eol=lf
+*.service text eol=lf
+*.timer   text eol=lf
+*.py      text eol=lf
+*.yaml    text eol=lf

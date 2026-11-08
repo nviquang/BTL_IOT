@@ -144,6 +144,10 @@ class TelegramClient:
                             len(chunk), chunk[0], chunk[-1], e)
         return done
 
+    def get_me(self, timeout=SEND_TIMEOUT_S):
+        """Thông tin bot (kiểm tra token). Lỗi: TelegramError đã che token."""
+        return self._call("getMe", {}, timeout=timeout)
+
     def set_my_commands(self, commands):
         """Đặt menu lệnh của bot. commands: [{"command": "now", "description": "..."}]."""
         self._call("setMyCommands",
