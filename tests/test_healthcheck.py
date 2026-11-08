@@ -291,3 +291,44 @@ def test_run_checks_skip_controller(db_path, tmp_path):
     heartbeat = [c for c in checks if c.name == "controller heartbeat"][0]
     assert heartbeat.ok is None
     assert hc.exit_code(checks) == 1   # chưa có dữ liệu
+
+
+# ---------------- gợi ý nhóm video ----------------
+class FakeGroup:
+    def __init__(self, gid, members):
+        self.gr_gid = gid
+        self.gr_mem = members
+
+
+def test_video_hint_none_when_session_has_group():
+    hint = hc.video_group_hint(user="admin", getgroups=lambda: [44, 1000],
+                               getgrnam=lambda name: FakeGroup(44, ["admin"]))
+    assert hint is None
+
+
+def test_video_hint_relogin_when_added_but_session_old():
+    hint = hc.video_group_hint(user="admin", getgroups=lambda: [1000],
+                               getgrnam=lambda name: FakeGroup(44, ["admin"]))
+    assert "đăng nhập lại SSH" in hint
+
+
+def test_video_hint_not_member():
+    hint = hc.video_group_hint(user="admin", getgroups=lambda: [1000],
+                               getgrnam=lambda name: FakeGroup(44, []))
+    assert "video" in hint and "đăng nhập lại" not in hint
+
+
+def test_video_hint_no_group_module():
+    def missing(name):
+        raise KeyError(name)
+    assert hc.video_group_hint(user="admin", getgroups=lambda: [], getgrnam=missing) is None
+
+
+def test_camera_failure_appends_hint():
+    check = hc.check_camera(lambda p, i: False, legacy_running=lambda: False, index=0,
+                            hint=lambda: "đăng nhập lại SSH")
+    assert check.ok is False
+    assert "đăng nhập lại SSH" in check.detail
+    ok = hc.check_camera(lambda p, i: open(p, "wb").write(b"x") > 0, legacy_running=lambda: False,
+                         index=0, hint=lambda: pytest.fail("không cần gợi ý khi chụp được"))
+    assert ok.ok is True

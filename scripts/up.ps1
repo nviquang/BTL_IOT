@@ -13,6 +13,7 @@ param(
     [string]$PiHost = "",
     [switch]$NoDeploy,
     [switch]$NoFan,
+    [switch]$WithYolo,
     [switch]$Stop,
     [switch]$StopPi,
     [switch]$Status
@@ -29,11 +30,15 @@ Set-Location $RepoDir
 
 $PiUser = "admin"
 $DefaultHosts = @("10.157.117.41", "pi.local")
+# IP của Pi đổi theo mạng: chấp nhận host key của máy mới gặp lần đầu (vẫn từ chối khi key
+# của một host đã biết bị đổi)
+$SshOpts = @("-o", "StrictHostKeyChecking=accept-new")
 $MosqConf = Join-Path $env:USERPROFILE "mosq\mosquitto.conf"
 $VenvPy = Join-Path $RepoDir ".venv\Scripts\python.exe"
 $DashboardUrl = "http://localhost:8501"
 $RemoteTar = "/tmp/btl_iot_deploy.tar"
-$DeployPaths = @("aiot", "deploy", "scripts", "config.yaml", "requirements-pi.txt", "test_all.py", "README.md", "docs")
+$DeployPaths = @("aiot", "deploy", "scripts", "config.yaml", "requirements-pi.txt", "requirements-pi-camera.txt",
+    "test_all.py", "README.md", "docs")
 $DashboardModules = "import streamlit, paho.mqtt, yaml, pandas, matplotlib"
 $DashboardPackages = @("streamlit", "paho-mqtt", "PyYAML", "pandas", "matplotlib")
 
@@ -62,7 +67,7 @@ function Test-PortListening([int]$Port) {
 
 function Invoke-Ssh([string]$PiTarget, [string]$Command) {
     # Trả về mã thoát của ssh; lệnh từ xa không được chứa dấu ngoặc kép (PS 5.1 truyền sai)
-    & ssh -o ConnectTimeout=10 $PiTarget $Command | Out-Host
+    & ssh @SshOpts -o ConnectTimeout=10 $PiTarget $Command | Out-Host
     return $LASTEXITCODE
 }
 
@@ -71,10 +76,14 @@ function Find-Pi {
     if ($PiHost) { $candidates = @($PiHost) } else { $candidates = $DefaultHosts }
     foreach ($h in $candidates) {
         Write-Info "Thử ssh $PiUser@$h ..."
-        & ssh -o BatchMode=yes -o ConnectTimeout=5 "$PiUser@$h" "true" 2>$null | Out-Null
+        $out = & ssh @SshOpts -o BatchMode=yes -o ConnectTimeout=5 "$PiUser@$h" "true" 2>&1
         if ($LASTEXITCODE -eq 0) {
             Write-Ok "Pi ở $h"
             return $h
+        }
+        $lines = @($out | ForEach-Object { "$_" } | Where-Object { $_.Trim() })
+        if ($lines.Count -gt 0) {
+            Write-Warn "ssh: $($lines[-1].Trim())"
         }
     }
     Stop-WithError ("không SSH được tới Pi ($($candidates -join ', ')). Kiểm tra Pi đã bật, cùng Wi-Fi, " +
@@ -82,8 +91,8 @@ function Find-Pi {
 }
 
 function Get-LaptopIp([string]$PiTarget) {
-    # IP laptop như Pi nhìn thấy (đúng giao diện mạng đi tới Pi)
-    $out = & ssh -o BatchMode=yes -o ConnectTimeout=5 $PiTarget 'echo $SSH_CLIENT' 2>$null
+    # IP laptop như Pi nhìn thấy (đúng giao diện mạng đi tới Pi); -4 để có địa chỉ IPv4
+    $out = & ssh -4 @SshOpts -o BatchMode=yes -o ConnectTimeout=5 $PiTarget 'echo $SSH_CLIENT' 2>$null
     if ($LASTEXITCODE -eq 0 -and $out) {
         $first = ([string]$out).Trim().Split(" ")[0]
         if ($first -match '^\d{1,3}(\.\d{1,3}){3}$') { return $first }
@@ -100,14 +109,39 @@ function Get-LaptopIp([string]$PiTarget) {
     }
 }
 
+function Set-PiMqttHost([string]$PiTarget) {
+    # Chỉ sửa bản config.yaml trên Pi, không sửa file trong git
+    $ip = Get-LaptopIp $PiTarget
+    if (-not $ip) {
+        Write-Warn "không xác định được IP laptop: giữ nguyên mqtt.host trong config.yaml trên Pi"
+        return
+    }
+    $remote = "cd ~/BTL_IOT && sed -i -E 's/^(  host:[[:space:]]*)[^[:space:]#]+/\1$ip/' config.yaml"
+    if ((Invoke-Ssh $PiTarget $remote) -ne 0) {
+        Write-Warn "không sửa được mqtt.host trên Pi"
+        return
+    }
+    Write-Ok "mqtt.host trên Pi = $ip (IP laptop)"
+}
+
+function Test-MosqListener {
+    # Mosquitto 2.x không có dòng listener thì chỉ nghe localhost: Pi không kết nối được
+    $line = Select-String -Path $MosqConf -Pattern '^\s*listener\s+1883(\s|$)' -ErrorAction SilentlyContinue
+    if (-not $line) {
+        Write-Warn "$MosqConf không có dòng 'listener 1883': broker chỉ nghe localhost, Pi sẽ không gửi được dữ liệu"
+    }
+}
+
 function Start-Broker {
     Write-Step "Broker MQTT (Mosquitto)"
+    $hasConf = Test-Path $MosqConf
+    if ($hasConf) { Test-MosqListener }
     if (Test-PortListening 1883) {
         Write-Ok "đã có broker nghe cổng 1883"
         return
     }
-    if (-not (Test-Path $MosqConf)) {
-        Write-Warn "không có ${MosqConf}: chạy tiếp không có broker (dashboard sẽ không nhận dữ liệu; README chi tiết mục 2.2)"
+    if (-not $hasConf) {
+        Write-Warn "không có ${MosqConf}: chạy tiếp không có broker (dashboard sẽ không nhận dữ liệu; docs\van_hanh_chi_tiet.md mục 2.2)"
         return
     }
     $exe = $null
@@ -148,26 +182,15 @@ function Deploy-ToPi([string]$PiTarget) {
     Write-Ok "đã đóng gói HEAD ($sizeKb KB)"
 
     if ((Invoke-Ssh $PiTarget "mkdir -p ~/BTL_IOT") -ne 0) { Stop-WithError "không tạo được ~/BTL_IOT trên Pi" }
-    & scp -q $tar "${PiTarget}:$RemoteTar"
+    & scp @SshOpts -q $tar "${PiTarget}:$RemoteTar"
     if ($LASTEXITCODE -ne 0) { Stop-WithError "scp gói code lỗi" }
-    & scp -q (Join-Path $RepoDir ".env") "${PiTarget}:BTL_IOT/.env"
+    & scp @SshOpts -q (Join-Path $RepoDir ".env") "${PiTarget}:BTL_IOT/.env"
     if ($LASTEXITCODE -ne 0) { Stop-WithError "scp .env lỗi" }
     Remove-Item $tar -Force
 
-    $ip = Get-LaptopIp $PiTarget
-    $sedCmd = ""
-    if ($ip) {
-        # Chỉ sửa bản config.yaml trên Pi, không sửa file trong git
-        $sedCmd = " && sed -i -E 's/^(  host:[[:space:]]*)[^[:space:]#]+/\1$ip/' config.yaml"
-    }
-    $remote = "cd ~/BTL_IOT && tar -xf $RemoteTar && rm -f $RemoteTar && chmod 600 .env && chmod +x scripts/pi_up.sh$sedCmd"
+    $remote = "cd ~/BTL_IOT && tar -xf $RemoteTar && rm -f $RemoteTar && chmod 600 .env && chmod +x scripts/pi_up.sh"
     if ((Invoke-Ssh $PiTarget $remote) -ne 0) { Stop-WithError "giải nén code trên Pi lỗi" }
     Write-Ok "đã chép code + .env lên ~/BTL_IOT (chmod 600 .env)"
-    if ($ip) {
-        Write-Ok "mqtt.host trên Pi = $ip (IP laptop)"
-    } else {
-        Write-Warn "không xác định được IP laptop: giữ nguyên mqtt.host trong config.yaml trên Pi"
-    }
 }
 
 function Start-Dashboard {
@@ -218,16 +241,17 @@ function Stop-Local {
     } else {
         Write-Ok "Streamlit không chạy"
     }
-    $mosq = @(Get-Process mosquitto -ErrorAction SilentlyContinue)
+    # Chỉ dừng Mosquitto chạy bằng file cấu hình của dự án (không đụng broker khác hay dịch vụ Windows)
+    $conf = $MosqConf.ToLowerInvariant()
+    $mosq = @(Get-CimInstance Win32_Process -Filter "Name='mosquitto.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine.ToLowerInvariant().Contains($conf) })
     if ($mosq.Count -gt 0) {
-        try {
-            $mosq | Stop-Process -Force -ErrorAction Stop
-            Write-Ok "đã dừng Mosquitto"
-        } catch {
-            Write-Warn "không dừng được Mosquitto (có thể đang chạy như dịch vụ Windows, cần quyền admin)"
+        foreach ($p in $mosq) {
+            try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop } catch { Write-Warn "không dừng được Mosquitto (pid $($p.ProcessId))" }
         }
+        Write-Ok "đã dừng Mosquitto chạy bằng $MosqConf"
     } else {
-        Write-Ok "Mosquitto không chạy"
+        Write-Ok "không có Mosquitto nào chạy bằng $MosqConf"
     }
 }
 
@@ -243,7 +267,7 @@ if ($Stop) {
     if ($StopPi) {
         Write-Step "Dừng dịch vụ trên Pi"
         $pi = Find-Pi
-        & ssh -t "$PiUser@$pi" "bash ~/BTL_IOT/scripts/pi_up.sh --stop"
+        & ssh @SshOpts -t "$PiUser@$pi" "bash ~/BTL_IOT/scripts/pi_up.sh --stop"
         if ($LASTEXITCODE -ne 0) { Stop-WithError "pi_up.sh --stop lỗi (mã $LASTEXITCODE)" }
     } else {
         Write-Info "Dịch vụ trên Pi vẫn chạy (thêm -StopPi để dừng cả Pi)."
@@ -254,7 +278,7 @@ if ($Stop) {
 if ($Status) {
     Write-Step "Trạng thái trạm trên Pi"
     $pi = Find-Pi
-    & ssh -t "$PiUser@$pi" "bash ~/BTL_IOT/scripts/pi_up.sh --status"
+    & ssh @SshOpts -t "$PiUser@$pi" "bash ~/BTL_IOT/scripts/pi_up.sh --status"
     exit $LASTEXITCODE
 }
 
@@ -269,11 +293,13 @@ if (-not $NoDeploy) {
 } else {
     Write-Info "-NoDeploy: dùng code đang có trên Pi"
 }
+Set-PiMqttHost $target
 
 Write-Step "Chạy scripts/pi_up.sh trên Pi (có thể hỏi mật khẩu sudo của admin)"
 $piArgs = ""
-if ($NoFan) { $piArgs = " --no-fan" }
-& ssh -t $target "bash ~/BTL_IOT/scripts/pi_up.sh$piArgs"
+if ($NoFan) { $piArgs += " --no-fan" }
+if ($WithYolo) { $piArgs += " --with-yolo" }
+& ssh @SshOpts -t $target "bash ~/BTL_IOT/scripts/pi_up.sh$piArgs"
 $piCode = $LASTEXITCODE
 
 Start-Dashboard

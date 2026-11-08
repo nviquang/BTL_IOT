@@ -192,8 +192,35 @@ def _capture(path, index):
     return capture_subprocess(path, index=index)
 
 
+def _getgrnam(name):
+    import grp                 # chỉ có trên Linux; laptop Windows không có
+    return grp.getgrnam(name)
+
+
+def _current_user():
+    import getpass
+    return getpass.getuser()
+
+
+def video_group_hint(user=None, getgroups=None, getgrnam=_getgrnam):
+    """Gợi ý khi phiên hiện tại không có quyền camera (nhóm video), ngược lại None.
+
+    usermod -aG chỉ có hiệu lực ở phiên đăng nhập mới; dịch vụ systemd thì có ngay."""
+    try:
+        group = getgrnam("video")
+        user = user if user is not None else _current_user()
+        groups = getgroups() if getgroups is not None else os.getgroups()
+    except (ImportError, KeyError, OSError, AttributeError):
+        return None
+    if group.gr_gid in groups:
+        return None
+    if user in group.gr_mem:
+        return f"{user} đã được thêm vào nhóm video nhưng phiên này chưa có: đăng nhập lại SSH rồi kiểm tra lại"
+    return f"{user} chưa thuộc nhóm video: chạy lại scripts/pi_up.sh"
+
+
 def check_camera(capture=_capture, legacy_running=legacy_camera_running, index=0,
-                 tmp_dir=None) -> Check:
+                 tmp_dir=None, hint=video_group_hint) -> Check:
     name = "camera"
     if legacy_running():
         return Check(name, None, "bỏ qua: pi_camera_client/pi_detection_client đang giữ camera")
@@ -207,8 +234,11 @@ def check_camera(capture=_capture, legacy_running=legacy_camera_running, index=0
             os.remove(path)
         except OSError:
             pass
-    return Check(name, ok, f"chụp thử /dev/video{index} được" if ok
-                 else f"không chụp được từ /dev/video{index}")
+    if ok:
+        return Check(name, True, f"chụp thử /dev/video{index} được")
+    detail = f"không chụp được từ /dev/video{index}"
+    extra = hint() if hint is not None else None
+    return Check(name, False, f"{detail} ({extra})" if extra else detail)
 
 
 def _clock_trusted():

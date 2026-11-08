@@ -113,7 +113,7 @@ cd ~/BTL_IOT && git pull                  # các lần sau
 Khi nhánh chưa push (đang làm trên laptop), chép từ laptop bằng Git Bash ở thư mục repo:
 
 ```bash
-git archive HEAD aiot deploy scripts config.yaml requirements-pi.txt test_all.py README.md | ssh admin@<IP_PI> "cd ~/BTL_IOT && tar -xf -"
+git archive HEAD aiot deploy scripts config.yaml requirements-pi.txt requirements-pi-camera.txt test_all.py README.md | ssh admin@<IP_PI> "cd ~/BTL_IOT && tar -xf -"
 ```
 
 `git archive` lấy đúng bản đã commit và giữ kiểu xuống dòng LF (file `.service` có CRLF sẽ
@@ -130,9 +130,13 @@ venv/bin/pip install -r requirements-pi.txt
 
 - Nếu cài `lgpio` lỗi (`swig failed`, `cannot find -llgpio`, hoặc cài xong mà `import lgpio`
   vẫn lỗi) xem [Phụ lục C](#phụ-lục-c--bẫy-lgpio-python-313).
-- `requirements-pi.txt` có `ultralytics` cho client nhận diện người (tuỳ chọn). Nếu dùng, cài
-  torch CPU **trước** để không kéo bản CUDA ~2 GB:
-  `venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision`.
+- `requirements-pi.txt` chỉ có thư viện lõi (kể cả `opencv-python-headless` cho camera). Nếu venv
+  đã có `cv2` từ `opencv-python` thì đừng cài thêm bản headless (hai gói cùng ghi thư mục `cv2`);
+  `scripts/pi_up.sh` tự bỏ dòng đó.
+- Client nhận diện người (tuỳ chọn) cần `requirements-pi-camera.txt` (`ultralytics`). Cài torch CPU
+  **trước** để không kéo bản CUDA ~2 GB:
+  `venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision`, rồi
+  `venv/bin/pip install -r requirements-pi-camera.txt` (hoặc `pi_up.sh --with-yolo`).
 
 Kiểm tra nhanh:
 

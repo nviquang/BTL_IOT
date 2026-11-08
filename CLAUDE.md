@@ -197,7 +197,7 @@ Các mục có ghi "tạm" đã có giá trị mặc định trong `config.yaml`
 
 - SSH bằng key: `ssh admin@10.157.117.41` (hoặc `pi.local`), khi laptop cùng Wi-Fi `abc` với Pi. IP có thể đổi theo mạng.
 - Code trên Pi ở `~/BTL_IOT`, venv ở `~/BTL_IOT/venv`. User là `admin`, không có `/home/pi`.
-- Bật một lệnh: trên laptop `powershell -ExecutionPolicy Bypass -File scripts\up.ps1` (Mosquitto, chép bản HEAD + `.env` lên Pi, đặt `mqtt.host` trên Pi, chạy `pi_up.sh`, mở dashboard); trên Pi `bash scripts/pi_up.sh [--no-fan|--stop|--status]` (idempotent: cài phần thiếu, cập nhật unit, khởi động lại dịch vụ).
+- Bật một lệnh: trên laptop `powershell -ExecutionPolicy Bypass -File scripts\up.ps1` (Mosquitto, chép bản HEAD + `.env` lên Pi, đặt `mqtt.host` trên Pi, chạy `pi_up.sh`, mở dashboard); trên Pi `bash scripts/pi_up.sh [--no-fan|--with-yolo|--stop|--status]` (idempotent: cài phần thiếu, cập nhật unit, chỉ khởi động lại dịch vụ khi code/cấu hình/.env/thư viện đổi). YOLO (torch, ultralytics) tách ra `requirements-pi-camera.txt`, chỉ cài với `--with-yolo`.
 - Bảng kiểm tra: `venv/bin/python -m aiot.healthcheck` (không cần sudo); mã thoát 1 chỉ khi collector không chạy hoặc không có mẫu mới < 60 s. Các bước thủ công chuyển sang `docs/van_hanh_chi_tiet.md`.
 - Collector (`python -m aiot.collector`, dịch vụ `aiot-collector`) thay cho `pi_sensor_client.py`; không chạy cả hai cùng lúc vì dùng chung cảm biến.
 - `test_all.py` đã có trong repo. `test.py` trên Pi đã cũ, vẫn yêu cầu ADS1115. Thay đổi chưa commit của `pi_sensor_client.py` trên Pi (đường dẫn CSV) đã đưa vào repo; Pi cần cập nhật code từ repo và tạo `.env` có `MQTT_PASSWORD`.

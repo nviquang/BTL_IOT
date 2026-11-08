@@ -50,10 +50,11 @@ HEAD`) và chép cùng `.env` lên `~/BTL_IOT` → đặt `mqtt.host` trên Pi t
 | Tham số | Việc |
 | ------- | ---- |
 | `-PiHost <IP>` | dùng IP/tên Pi này thay vì tự dò |
-| `-NoDeploy` | không chép code, chỉ chạy `pi_up.sh` với code đang có trên Pi |
+| `-NoDeploy` | không chép code, chỉ cập nhật `mqtt.host` và chạy `pi_up.sh` với code đang có trên Pi |
 | `-NoFan` | không chạy bộ điều khiển quạt (`pi_up.sh --no-fan`) |
+| `-WithYolo` | cài thêm torch CPU + ultralytics trên Pi (`pi_up.sh --with-yolo`, rất lâu) |
 | `-Status` | chỉ in bảng kiểm tra của Pi |
-| `-Stop` | dừng dashboard và Mosquitto trên laptop; thêm `-StopPi` để dừng cả dịch vụ trên Pi |
+| `-Stop` | dừng dashboard và Mosquitto (chỉ bản chạy bằng `mosq\mosquitto.conf`) trên laptop; thêm `-StopPi` để dừng cả dịch vụ trên Pi |
 
 ### 3. Cách 2 — ngay trên Pi
 
@@ -64,15 +65,19 @@ bash ~/BTL_IOT/scripts/pi_up.sh
 ```
 
 Lần đầu script cài gói hệ thống, bật I2C/UART, đặt múi giờ `Asia/Ho_Chi_Minh`, thêm `admin`
-vào nhóm `gpio,i2c,dialout,video`, tạo venv và cài `requirements-pi.txt` (có thể mất 10–30
-phút). Các lần sau chỉ cập nhật unit systemd đã đổi và khởi động lại dịch vụ để nạp code mới.
-Nếu script báo đã đổi I2C/UART thì chạy `sudo reboot` một lần.
+vào nhóm `gpio,i2c,dialout,video`, tạo venv và cài `requirements-pi.txt` (vài phút). Các lần
+sau chỉ cập nhật unit systemd đã đổi; dịch vụ đang chạy chỉ được khởi động lại khi code,
+`config.yaml`, `.env`, unit hoặc thư viện đổi (khởi động lại controller lúc quạt đang bật làm
+relay nhả rồi đóng lại). Nếu script báo đã đổi I2C/UART thì chạy `sudo reboot` một lần.
+Repo phải ở `/home/admin/BTL_IOT` (các unit systemd trỏ vào đó).
 
 | Cờ | Việc |
 | -- | ---- |
 | (không cờ) | cài phần còn thiếu, bật `aiot-collector`, `aiot-controller`, `aiot-bot` và 3 timer, in bảng kiểm tra |
 | `--no-fan` | như trên nhưng dừng và tắt tự khởi động `aiot-controller` (chưa làm demo quạt) |
-| `--stop` | dừng mọi dịch vụ và timer; controller dừng thì quạt tắt (vẫn tự chạy khi bật lại Pi) |
+| `--with-yolo` | cài thêm torch CPU + ultralytics cho `pi_detection_client.py` (tuỳ chọn, rất lâu; lỗi không ảnh hưởng dịch vụ chính) |
+| `--force` | cho chạy khi repo không ở `/home/admin/BTL_IOT` |
+| `--stop` | dừng mọi dịch vụ và timer, tắt tự khởi động `aiot-controller` (quạt tắt); dịch vụ khác vẫn tự chạy khi bật lại Pi |
 | `--status` | chỉ in bảng kiểm tra, không cần sudo |
 | `--help` | hướng dẫn |
 

@@ -1,0 +1,6 @@
+# Nhận diện người bằng YOLOv8n (pi_detection_client.py), tuỳ chọn: pi_up.sh --with-yolo.
+# Cài torch bản CPU TRƯỚC để không kéo bản CUDA (~2 GB):
+#   ~/BTL_IOT/venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+# rồi mới:
+#   ~/BTL_IOT/venv/bin/pip install -r requirements-pi-camera.txt
+ultralytics

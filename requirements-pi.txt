@@ -1,17 +1,14 @@
-# Thư viện cài trên Raspberry Pi 4 (venv: ~/BTL_IOT/venv)
+# Thư viện lõi cài trên Raspberry Pi 4 (venv: ~/BTL_IOT/venv); scripts/pi_up.sh tự cài.
 #   ~/BTL_IOT/venv/bin/pip install -r requirements-pi.txt
+# Nhận diện người YOLOv8n (tuỳ chọn, rất nặng) nằm riêng ở requirements-pi-camera.txt
+# (pi_up.sh --with-yolo), để lỗi cài torch không chặn các thư viện lõi.
 
-# MQTT client (đồng bộ với pi_camera_client.py)
+# MQTT client (collector, pi_camera_client.py)
 paho-mqtt
-
-# Nhận diện người bằng YOLOv8n (pi_detection_client.py)
-# LƯU Ý: cài torch CPU-only TRƯỚC để không kéo bản CUDA (~2 GB):
-#   pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
-# rồi mới: pip install ultralytics
-ultralytics
 
 # Blinka: lớp tương thích CircuitPython cho Linux/RPi (board, busio, pulseio)
 adafruit-blinka
+sysv_ipc                        # pulseio của Blinka cần để đọc DHT11
 
 # Cảm biến
 adafruit-circuitpython-dht      # DHT11 - nhiệt độ + độ ẩm (chân 11 / GPIO17)
@@ -19,6 +16,10 @@ adafruit-circuitpython-bh1750   # BH1750 - ánh sáng (I2C chân 3, 5)
 pyserial                        # PMS7003 - bụi PM1.0/PM2.5/PM10 (UART /dev/serial0)
 lgpio                           # MQ135 chân DO (GPIO26) và relay quạt (GPIO23)
 smbus2                          # test_all.py quét bus I2C
+
+# Camera USB (aiot/camera.py: /photo, cảnh báo nắng/mưa). Nếu venv đã có cv2 từ
+# opencv-python thì pi_up.sh bỏ dòng này: hai gói cùng ghi thư mục cv2 và làm hỏng import.
+opencv-python-headless
 
 # Dịch vụ aiot/
 PyYAML                          # đọc config.yaml
