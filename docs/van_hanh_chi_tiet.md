@@ -165,15 +165,18 @@ python -m venv .venv
 1. Cài Mosquitto từ <https://mosquitto.org/download/> (mặc định vào `C:\Program Files\Mosquitto`).
 2. Tạo user `pi01` (lệnh hỏi mật khẩu hai lần; thêm `-c` chỉ khi tạo file lần đầu):
    ```powershell
-   mkdir C:\Users\<TEN_BAN>\mosq -Force
-   & "C:\Program Files\Mosquitto\mosquitto_passwd.exe" -c "C:\Users\<TEN_BAN>\mosq\passwd" pi01
+   mkdir "$env:USERPROFILE\mosq" -Force
+   & "C:\Program Files\Mosquitto\mosquitto_passwd.exe" -c "$env:USERPROFILE\mosq\passwd" pi01
    ```
-   Đổi mật khẩu sau này: chạy lại **không có `-c`** (không cần mật khẩu cũ).
-3. Tạo `C:\Users\<TEN_BAN>\mosq\mosquitto.conf`:
+   Mật khẩu không được để trống. Đổi mật khẩu sau này: chạy lại **không có `-c`** (không cần
+   mật khẩu cũ).
+3. Tạo file cấu hình: `notepad "$env:USERPROFILE\mosq\mosquitto.conf"`, dán 3 dòng dưới. Dòng
+   cuối là đường dẫn thật tới file `passwd` (xem bằng `echo "$env:USERPROFILE\mosq\passwd"`;
+   ví dụ máy `nviquang` là `C:\Users\nviquang\mosq\passwd`):
    ```conf
    listener 1883
    allow_anonymous false
-   password_file C:\Users\<TEN_BAN>\mosq\passwd
+   password_file C:\Users\nviquang\mosq\passwd
    ```
 4. Cho phép `mosquitto.exe` qua Windows Firewall (mạng Private).
 
@@ -425,7 +428,7 @@ Dashboard Streamlit nhận dữ liệu qua MQTT, lưu thêm một bản CSV ở 
 
 1. Bật broker (giữ cửa sổ này mở):
    ```powershell
-   & "C:\Program Files\Mosquitto\mosquitto.exe" -c "C:\Users\<TEN_BAN>\mosq\mosquitto.conf" -v
+   & "C:\Program Files\Mosquitto\mosquitto.exe" -c "$env:USERPROFILE\mosq\mosquitto.conf" -v
    ```
 2. Trên Pi, `mqtt.host` trong `config.yaml` phải là IP laptop (`ipconfig`), `.env` có
    `MQTT_PASSWORD`; khởi động lại collector sau khi sửa.
@@ -567,8 +570,8 @@ Kiểm tra: `venv/bin/python -c "import lgpio; print(lgpio.__version__)"` phải
 
 Log `password-file: Error: Unable to open pwfile "C:\Program Files\Mosquitto\passwd"` là lỗi
 quyền file, không phải sai mật khẩu. Giữ `passwd` và `mosquitto.conf` trong
-`C:\Users\<TEN_BAN>\mosq\` như mục 2.2; file đã bị chặn quyền thì
-`icacls "C:\Users\<TEN_BAN>\mosq\passwd" /reset`.
+`$env:USERPROFILE\mosq\` như mục 2.2; file đã bị chặn quyền thì
+`icacls "$env:USERPROFILE\mosq\passwd" /reset`.
 
 ### Phụ lục E — Cấu trúc thư mục
 

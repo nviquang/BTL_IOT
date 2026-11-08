@@ -272,6 +272,30 @@ def run(sensors, conn, csv_writer, publisher, stop: threading.Event,
             next_time = clock()
 
 
+def install_signal_handlers(stop, importer=None) -> None:
+    """Đặt handler SIGTERM/SIGINT để dừng sạch (stop.set()).
+
+    Blinka (adafruit_dht -> pulseio) khi được import tự đăng ký SIGTERM gọi SystemExit(1),
+    đè handler của collector: systemd dừng dịch vụ thì vòng lặp bị cắt ngang và thoát mã 1.
+    Vì vậy import thư viện đó trước (nếu có) rồi mới đặt handler của mình. Tiến trình
+    libgpiod_pulsein vẫn được dọn: sensors.close() gọi dht.exit(), và atexit của Blinka.
+    """
+    import importlib
+
+    load = importer or importlib.import_module
+    try:
+        load("adafruit_dht")
+    except Exception:
+        pass                    # laptop/thiếu thư viện: không có handler nào để đè
+
+    def on_signal(signum, frame):
+        log.info("Nhận tín hiệu %s, đang dừng", signum)
+        stop.set()
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     from aiot.config import load_config
@@ -281,13 +305,7 @@ def main() -> None:
     cfg = load_config(root / "config.yaml", root / ".env")
 
     stop = threading.Event()
-
-    def on_signal(signum, frame):
-        log.info("Nhận tín hiệu %s, đang dừng", signum)
-        stop.set()
-
-    signal.signal(signal.SIGTERM, on_signal)
-    signal.signal(signal.SIGINT, on_signal)
+    install_signal_handlers(stop)
 
     conn = connect(cfg.db_path)
     init_schema(conn)

@@ -433,3 +433,48 @@ def test_untrusted_sample_colliding_with_existing_ts_warns(conn, csv_path, caplo
     with caplog.at_level(logging.WARNING, logger="aiot.collector"):
         run(FakeSensors(), conn, csv_path, now=datetime(2026, 11, 5, 8, 1, 0), clock_synced=False)
     assert not any("raw_readings" in r.getMessage() for r in caplog.records)
+
+
+def test_signal_handlers_installed_after_hardware_libs(monkeypatch):
+    """Blinka (adafruit_dht -> pulseio) tự đăng ký SIGTERM gây SystemExit(1) khi được import.
+    Collector phải import thư viện đó trước rồi mới đặt handler của mình, để SIGTERM dừng sạch."""
+    import signal as _signal
+    import types
+
+    from aiot import collector
+
+    def blinka_like_handler(signum, frame):
+        raise SystemExit(1)
+
+    def fake_import(name):
+        _signal.signal(_signal.SIGTERM, blinka_like_handler)
+        return types.ModuleType(name)
+
+    old = _signal.getsignal(_signal.SIGTERM)
+    try:
+        stop = collector.threading.Event()
+        collector.install_signal_handlers(stop, importer=fake_import)
+        handler = _signal.getsignal(_signal.SIGTERM)
+        assert handler is not blinka_like_handler
+        handler(_signal.SIGTERM, None)          # không raise SystemExit
+        assert stop.is_set()
+    finally:
+        _signal.signal(_signal.SIGTERM, old)
+
+
+def test_signal_handlers_survive_missing_hardware_libs():
+    import signal as _signal
+
+    from aiot import collector
+
+    def missing(name):
+        raise ImportError(name)
+
+    old = _signal.getsignal(_signal.SIGTERM)
+    try:
+        stop = collector.threading.Event()
+        collector.install_signal_handlers(stop, importer=missing)
+        _signal.getsignal(_signal.SIGTERM)(_signal.SIGTERM, None)
+        assert stop.is_set()
+    finally:
+        _signal.signal(_signal.SIGTERM, old)
