@@ -188,7 +188,7 @@ function Deploy-ToPi([string]$PiTarget) {
     if ($LASTEXITCODE -ne 0) { Stop-WithError "scp .env lỗi" }
     Remove-Item $tar -Force
 
-    $remote = "cd ~/BTL_IOT && tar -xf $RemoteTar && rm -f $RemoteTar && chmod 600 .env && chmod +x scripts/pi_up.sh"
+    $remote = "cd ~/BTL_IOT && tar -xmf $RemoteTar && rm -f $RemoteTar && chmod 600 .env && chmod +x scripts/pi_up.sh"
     if ((Invoke-Ssh $PiTarget $remote) -ne 0) { Stop-WithError "giải nén code trên Pi lỗi" }
     Write-Ok "đã chép code + .env lên ~/BTL_IOT (chmod 600 .env)"
 }
