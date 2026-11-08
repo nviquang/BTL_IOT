@@ -26,7 +26,8 @@ from datetime import datetime
 from pathlib import Path
 
 from aiot.aggregate import aggregate_pending
-from aiot.db import RawSample, connect, init_schema, insert_raw, purge_raw
+from aiot.control import ControlState, fan_on, override_active
+from aiot.db import RawSample, connect, get_state, init_schema, insert_raw, purge_raw
 from aiot.payload import CSV_HEADER, build_csv_row, build_payload
 
 log = logging.getLogger("aiot.collector")
@@ -38,6 +39,11 @@ RAW_KEEP_S = 7 * 86400          # giữ mẫu thô 7 ngày
 MQ135_WARMUP_S = 180
 TOPIC_SENSOR = "nha/pi01/sensor"
 TOPIC_STATUS = "nha/pi01/sensor_status"
+# Khoá state do controller ghi (trùng hằng số trong aiot/controller.py; không import
+# controller để collector không kéo theo notifier/forecast)
+CONTROL_STATE_KEY = "control_state"
+HEARTBEAT_KEY = "controller_heartbeat"
+RELAY_FAULT_KEY = "relay_fault"
 
 
 # ---------------- Thành phần nhỏ ----------------
@@ -172,6 +178,38 @@ def _warn_ts_collision(conn, ts: int) -> None:
                     "sẽ bị bỏ (INSERT OR IGNORE)", ts, last)
 
 
+FAN_HEARTBEAT_MAX_S = 90        # controller lặp 15–30 s; quá 90 s không có nhịp = không rõ
+
+
+def fan_status(conn, now: int) -> dict:
+    """Trạng thái quạt do controller ghi trong SQLite, để gửi kèm payload MQTT.
+
+    fan_on: True/False, None khi không rõ (controller không chạy/nhịp cũ, trạng thái hỏng).
+    fan_mode: 'auto' hoặc 'manual' (đang ghi đè thủ công); fan_state: 'NORMAL'/'PROTECT';
+    fan_relay_fault: True khi controller không ghi được GPIO23. Không bao giờ raise."""
+    unknown = {"fan_on": None, "fan_mode": None, "fan_state": None, "fan_relay_fault": None}
+    try:
+        hb = get_state(conn, HEARTBEAT_KEY)
+        text = get_state(conn, CONTROL_STATE_KEY)
+        relay_fault = get_state(conn, RELAY_FAULT_KEY) == "1"
+    except sqlite3.Error as e:
+        log.warning("Không đọc được trạng thái quạt: %s", e)
+        _rollback(conn)
+        return unknown
+    try:
+        if hb is None or text is None or abs(int(now) - int(hb)) > FAN_HEARTBEAT_MAX_S:
+            return unknown
+        st = ControlState.from_json(text)
+    except ValueError:
+        return unknown
+    return {
+        "fan_on": bool(fan_on(st, int(now))),
+        "fan_mode": "manual" if override_active(st, int(now)) else "auto",
+        "fan_state": st.mode,
+        "fan_relay_fault": relay_fault,
+    }
+
+
 # ---------------- Một lần thu thập ----------------
 def collect_once(sensors, conn, csv_writer, publisher, now: datetime, clock_synced: bool,
                  *, mq135_ready: bool = True) -> RawSample:
@@ -221,7 +259,9 @@ def collect_once(sensors, conn, csv_writer, publisher, now: datetime, clock_sync
     except OSError as e:
         log.error("Lỗi ghi CSV: %s", e)
     try:
-        publisher.publish(build_payload(row, pm1, pm25, pm10, mq))
+        payload = build_payload(row, pm1, pm25, pm10, mq)
+        payload.update(fan_status(conn, sample.ts))
+        publisher.publish(payload)
     except Exception as e:
         log.warning("Lỗi gửi MQTT: %s", e)
     log.info("T=%s H=%s Lux=%s PM2.5=%s MQ135=%s", row["temperature_c"], row["humidity_pct"],

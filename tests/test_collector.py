@@ -478,3 +478,55 @@ def test_signal_handlers_survive_missing_hardware_libs():
         assert stop.is_set()
     finally:
         _signal.signal(_signal.SIGTERM, old)
+
+
+# ---------------- Trạng thái quạt gửi kèm payload ----------------
+def _set_controller(conn, *, mode="NORMAL", override_fan=None, override_until=None,
+                    heartbeat=None, relay_fault=False):
+    from aiot.control import ControlState
+    from aiot.db import set_state
+    st = ControlState(mode=mode, override_fan=override_fan, override_until=override_until)
+    set_state(conn, "control_state", st.to_json())
+    set_state(conn, "controller_heartbeat", heartbeat if heartbeat is not None else int(NOW.timestamp()))
+    if relay_fault:
+        set_state(conn, "relay_fault", "1")
+
+
+def test_payload_fan_unknown_without_controller(conn, csv_path):
+    pub = RecordingPublisher()
+    run(FakeSensors(), conn, csv_path, publisher=pub)
+    p = pub.payloads[0]
+    assert p["fan_on"] is None and p["fan_mode"] is None and p["fan_state"] is None
+
+
+def test_payload_fan_follows_controller_state(conn, csv_path):
+    _set_controller(conn, mode="PROTECT")
+    pub = RecordingPublisher()
+    run(FakeSensors(), conn, csv_path, publisher=pub)
+    p = pub.payloads[0]
+    assert p["fan_on"] is True and p["fan_mode"] == "auto" and p["fan_state"] == "PROTECT"
+    assert p["fan_relay_fault"] is False
+    json.dumps(p)
+
+
+def test_payload_fan_manual_override(conn, csv_path):
+    now = int(NOW.timestamp())
+    _set_controller(conn, mode="NORMAL", override_fan=True, override_until=now + 600, relay_fault=True)
+    pub = RecordingPublisher()
+    run(FakeSensors(), conn, csv_path, publisher=pub)
+    p = pub.payloads[0]
+    assert p["fan_on"] is True and p["fan_mode"] == "manual" and p["fan_relay_fault"] is True
+
+
+def test_payload_fan_unknown_when_heartbeat_stale(conn, csv_path):
+    _set_controller(conn, mode="PROTECT", heartbeat=int(NOW.timestamp()) - 600)
+    pub = RecordingPublisher()
+    run(FakeSensors(), conn, csv_path, publisher=pub)
+    assert pub.payloads[0]["fan_on"] is None
+
+
+def test_fan_state_keys_match_controller():
+    from aiot import collector, controller
+    assert collector.CONTROL_STATE_KEY == controller.STATE_KEY
+    assert collector.HEARTBEAT_KEY == controller.HEARTBEAT_KEY
+    assert collector.RELAY_FAULT_KEY == controller.RELAY_FAULT_KEY

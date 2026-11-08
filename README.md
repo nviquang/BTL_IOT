@@ -22,12 +22,12 @@ Pi bằng key (`ssh admin@10.157.117.41` vào thẳng, không hỏi mật khẩu
 Chép `.env.example` thành `.env` ở thư mục repo trên laptop rồi điền. File này không commit;
 script tự chép lên Pi và đặt quyền `600`.
 
-| Khoá | Lấy ở đâu | Thiếu thì |
-| ---- | --------- | --------- |
-| `TELEGRAM_TOKEN` | Telegram: nhắn `@BotFather` → `/newbot` → token dạng `123456789:AA...` | bot không chạy |
-| `ALLOWED_CHAT_IDS` | mã chat được phép dùng bot, cách nhau dấu phẩy (xem dưới) | bot không chạy |
-| `GEMINI_API_KEY` | Google AI Studio → API key | báo cáo dùng lời khuyên mẫu |
-| `MQTT_PASSWORD` | mật khẩu user `pi01` của Mosquitto trên laptop | collector bỏ qua MQTT, dashboard trống |
+| Khoá               | Lấy ở đâu                                                              | Thiếu thì                              |
+| ------------------ | ---------------------------------------------------------------------- | -------------------------------------- |
+| `TELEGRAM_TOKEN`   | Telegram: nhắn `@BotFather` → `/newbot` → token dạng `123456789:AA...` | bot không chạy                         |
+| `ALLOWED_CHAT_IDS` | mã chat được phép dùng bot, cách nhau dấu phẩy (xem dưới)              | bot không chạy                         |
+| `GEMINI_API_KEY`   | Google AI Studio → API key                                             | báo cáo dùng lời khuyên mẫu            |
+| `MQTT_PASSWORD`    | mật khẩu user `pi01` của Mosquitto trên laptop                         | collector bỏ qua MQTT, dashboard trống |
 
 **Lấy chat id:** gửi `/start` cho bot (cả nhóm dùng thì thêm bot vào nhóm và nhắn một tin), rồi
 mở trên máy của bạn `https://api.telegram.org/bot<TOKEN>/getUpdates` và đọc `message.chat.id`
@@ -47,14 +47,14 @@ HEAD`) và chép cùng `.env` lên `~/BTL_IOT` → đặt `mqtt.host` trên Pi t
 `pi_up.sh` trên Pi (hỏi mật khẩu sudo của `admin` một lần) → mở dashboard
 <http://localhost:8501>. Thay đổi chưa commit **không** được đưa lên Pi.
 
-| Tham số | Việc |
-| ------- | ---- |
-| `-PiHost <IP>` | dùng IP/tên Pi này thay vì tự dò |
-| `-NoDeploy` | không chép code, chỉ cập nhật `mqtt.host` và chạy `pi_up.sh` với code đang có trên Pi |
-| `-NoFan` | không chạy bộ điều khiển quạt (`pi_up.sh --no-fan`) |
-| `-WithYolo` | cài thêm torch CPU + ultralytics trên Pi (`pi_up.sh --with-yolo`, rất lâu) |
-| `-Status` | chỉ in bảng kiểm tra của Pi |
-| `-Stop` | dừng dashboard và Mosquitto (chỉ bản chạy bằng `mosq\mosquitto.conf`) trên laptop; thêm `-StopPi` để dừng cả dịch vụ trên Pi |
+| Tham số        | Việc                                                                                                                         |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `-PiHost <IP>` | dùng IP/tên Pi này thay vì tự dò                                                                                             |
+| `-NoDeploy`    | không chép code, chỉ cập nhật `mqtt.host` và chạy `pi_up.sh` với code đang có trên Pi                                        |
+| `-NoFan`       | không chạy bộ điều khiển quạt (`pi_up.sh --no-fan`)                                                                          |
+| `-WithYolo`    | cài thêm torch CPU + ultralytics trên Pi (`pi_up.sh --with-yolo`, rất lâu)                                                   |
+| `-Status`      | chỉ in bảng kiểm tra của Pi                                                                                                  |
+| `-Stop`        | dừng dashboard và Mosquitto (chỉ bản chạy bằng `mosq\mosquitto.conf`) trên laptop; thêm `-StopPi` để dừng cả dịch vụ trên Pi |
 
 ### 3. Cách 2 — ngay trên Pi
 
@@ -71,15 +71,15 @@ sau chỉ cập nhật unit systemd đã đổi; dịch vụ đang chạy chỉ 
 relay nhả rồi đóng lại). Nếu script báo đã đổi I2C/UART thì chạy `sudo reboot` một lần.
 Repo phải ở `/home/admin/BTL_IOT` (các unit systemd trỏ vào đó).
 
-| Cờ | Việc |
-| -- | ---- |
-| (không cờ) | cài phần còn thiếu, bật `aiot-collector`, `aiot-controller`, `aiot-bot` và 3 timer, in bảng kiểm tra |
-| `--no-fan` | như trên nhưng dừng và tắt tự khởi động `aiot-controller` (chưa làm demo quạt) |
+| Cờ            | Việc                                                                                                                 |
+| ------------- | -------------------------------------------------------------------------------------------------------------------- |
+| (không cờ)    | cài phần còn thiếu, bật `aiot-collector`, `aiot-controller`, `aiot-bot` và 3 timer, in bảng kiểm tra                 |
+| `--no-fan`    | như trên nhưng dừng và tắt tự khởi động `aiot-controller` (chưa làm demo quạt)                                       |
 | `--with-yolo` | cài thêm torch CPU + ultralytics cho `pi_detection_client.py` (tuỳ chọn, rất lâu; lỗi không ảnh hưởng dịch vụ chính) |
-| `--force` | cho chạy khi repo không ở `/home/admin/BTL_IOT` |
-| `--stop` | dừng mọi dịch vụ và timer, tắt tự khởi động `aiot-controller` (quạt tắt); dịch vụ khác vẫn tự chạy khi bật lại Pi |
-| `--status` | chỉ in bảng kiểm tra, không cần sudo |
-| `--help` | hướng dẫn |
+| `--force`     | cho chạy khi repo không ở `/home/admin/BTL_IOT`                                                                      |
+| `--stop`      | dừng mọi dịch vụ và timer, tắt tự khởi động `aiot-controller` (quạt tắt); dịch vụ khác vẫn tự chạy khi bật lại Pi    |
+| `--status`    | chỉ in bảng kiểm tra, không cần sudo                                                                                 |
+| `--help`      | hướng dẫn                                                                                                            |
 
 Lần đầu bật quạt tự động nên làm demo với DB thử trước
 ([chi tiết 5.3](docs/van_hanh_chi_tiet.md#53-điều-khiển-quạt-aiot-controller)), nên có thể chạy
@@ -89,18 +89,18 @@ Lần đầu bật quạt tự động nên làm demo với DB thử trước
 
 Gõ `/` trong Telegram để thấy menu. Bot chỉ trả lời chat có trong `ALLOWED_CHAT_IDS`.
 
-| Lệnh | Việc |
-| ---- | ---- |
-| `/now` | số liệu cảm biến mới nhất (PM, nhiệt độ, độ ẩm, ánh sáng, MQ135) |
-| `/status` | chế độ, quạt, ghi đè, lỗi cảm biến, tuổi dữ liệu, giờ yên lặng |
-| `/forecast` | dự báo PM2.5 6 giờ tới kèm nhãn AQI |
-| `/report` | báo cáo 24 giờ qua (tính vào 3 lượt Gemini/ngày) |
-| `/photo` | chụp ảnh ban công ngay |
-| `/fan on` / `/fan off` | bật/tắt quạt thủ công trong 2 giờ |
-| `/mode auto` / `/mode manual` | quạt theo PM2.5 / giữ quạt như hiện tại trong 2 giờ |
-| `/quiet 22 6` | giờ yên lặng 22h → 6h (chỉ cảnh báo khẩn cấp được gửi) |
-| `/clear` | xoá tin của bot và của bạn trong 48 giờ qua |
-| `/help` | danh sách lệnh |
+| Lệnh                          | Việc                                                             |
+| ----------------------------- | ---------------------------------------------------------------- |
+| `/now`                        | số liệu cảm biến mới nhất (PM, nhiệt độ, độ ẩm, ánh sáng, MQ135) |
+| `/status`                     | chế độ, quạt, ghi đè, lỗi cảm biến, tuổi dữ liệu, giờ yên lặng   |
+| `/forecast`                   | dự báo PM2.5 6 giờ tới kèm nhãn AQI                              |
+| `/report`                     | báo cáo 24 giờ qua (tính vào 3 lượt Gemini/ngày)                 |
+| `/photo`                      | chụp ảnh ban công ngay                                           |
+| `/fan on` / `/fan off`        | bật/tắt quạt thủ công trong 2 giờ                                |
+| `/mode auto` / `/mode manual` | quạt theo PM2.5 / giữ quạt như hiện tại trong 2 giờ              |
+| `/quiet 22 6`                 | giờ yên lặng 22h → 6h (chỉ cảnh báo khẩn cấp được gửi)           |
+| `/clear`                      | xoá tin của bot và của bạn trong 48 giờ qua                      |
+| `/help`                       | danh sách lệnh                                                   |
 
 Bot tự gửi: cảnh báo đổi nhóm AQI, mức khẩn cấp, lỗi cảm biến, báo cáo 06:30, cảnh báo nắng /
 sắp mưa kèm ảnh. Lệnh điều khiển cũ hơn 2 phút bị bỏ để quạt không bật bất ngờ.
@@ -109,12 +109,12 @@ sắp mưa kèm ảnh. Lệnh điều khiển cũ hơn 2 phút bị bỏ để q
 
 Cuối `pi_up.sh` (và `--status`, `up.ps1 -Status`) in bảng do `python -m aiot.healthcheck` tạo:
 
-| Ký hiệu | Nghĩa |
-| ------- | ----- |
-| ✅ | đạt |
-| ❌ | mục **quan trọng** chưa đạt: `aiot-collector` không chạy hoặc không có mẫu mới trong 60 giây; mã thoát 1 |
-| ⚠️ | cảnh báo, trạm vẫn đo được (ví dụ timer chưa bật, thiếu khoá `.env`, camera không chụp được) |
-| ➖ | bỏ qua có chủ ý (`--no-fan`, thiếu token Telegram, client camera cũ đang giữ camera) |
+| Ký hiệu | Nghĩa                                                                                                    |
+| ------- | -------------------------------------------------------------------------------------------------------- |
+| ✅       | đạt                                                                                                      |
+| ❌       | mục **quan trọng** chưa đạt: `aiot-collector` không chạy hoặc không có mẫu mới trong 60 giây; mã thoát 1 |
+| ⚠️      | cảnh báo, trạm vẫn đo được (ví dụ timer chưa bật, thiếu khoá `.env`, camera không chụp được)             |
+| ➖       | bỏ qua có chủ ý (`--no-fan`, thiếu token Telegram, client camera cũ đang giữ camera)                     |
 
 Các dòng: `.env` (chỉ in tên khoá thiếu, không in giá trị), trạng thái 6 unit systemd, tuổi
 mẫu mới nhất, cảm biến không có số (MQ135 trống trong 3 phút sấy đầu là bình thường), nhịp của
@@ -145,13 +145,13 @@ Có ❌ thì xem `journalctl -u aiot-collector -n 30` và
   tin Telegram được gửi bù khi có mạng.
 - **An toàn AI:** Gemini chỉ viết lời khuyên. Bật/tắt quạt là luật cố định trong `aiot/control.py`.
 
-| Dịch vụ (systemd) | Chạy | Việc |
-| ----------------- | ---- | ---- |
-| `aiot-collector` | liên tục | đọc cảm biến mỗi 10 s → SQLite + CSV + MQTT, gộp trung bình 5 phút |
-| `aiot-controller` | liên tục | luật quạt mỗi 20 s, lệnh `/fan`, `/mode` |
-| `aiot-bot` | liên tục | bot Telegram, gửi cảnh báo và báo cáo |
-| `aiot-forecast.timer` | mỗi giờ, phút 02 | dự báo PM2.5 6 giờ tới |
-| `aiot-morning.timer` | 06:30 hằng ngày | báo cáo sáng + lời khuyên Gemini |
-| `aiot-weather.timer` | mỗi 5 phút | luật nắng/mưa, chụp ảnh khi cảnh báo |
+| Dịch vụ (systemd)     | Chạy             | Việc                                                               |
+| --------------------- | ---------------- | ------------------------------------------------------------------ |
+| `aiot-collector`      | liên tục         | đọc cảm biến mỗi 10 s → SQLite + CSV + MQTT, gộp trung bình 5 phút |
+| `aiot-controller`     | liên tục         | luật quạt mỗi 20 s, lệnh `/fan`, `/mode`                           |
+| `aiot-bot`            | liên tục         | bot Telegram, gửi cảnh báo và báo cáo                              |
+| `aiot-forecast.timer` | mỗi giờ, phút 02 | dự báo PM2.5 6 giờ tới                                             |
+| `aiot-morning.timer`  | 06:30 hằng ngày  | báo cáo sáng + lời khuyên Gemini                                   |
+| `aiot-weather.timer`  | mỗi 5 phút       | luật nắng/mưa, chụp ảnh khi cảnh báo                               |
 
 Test trên laptop: `.venv\Scripts\python -m pytest`. **Tắt Pi và rút cáp nguồn trước khi đổi dây.**

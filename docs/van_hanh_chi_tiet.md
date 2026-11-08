@@ -425,6 +425,10 @@ sudo systemctl disable --now aiot-weather.timer # tắt cảnh báo nắng/mưa
 ## 7. Dashboard và camera trên laptop (tuỳ chọn)
 
 Dashboard Streamlit nhận dữ liệu qua MQTT, lưu thêm một bản CSV ở `C:\mqtt\data\sensors.csv`.
+Dashboard hiển thị PMS7003 (PM1.0/2.5/10 kèm nhóm AQI), DHT11, BH1750, bit MQ135 DO và trạng
+thái quạt (bật/tắt, tự động/thủ công, lỗi relay). Trạng thái quạt do collector đọc từ SQLite và
+gửi kèm mẫu; controller không chạy (nhịp cũ hơn 90 s) thì hiện "Không rõ". Dashboard không còn
+hiển thị ảnh camera.
 
 1. Bật broker (giữ cửa sổ này mở):
    ```powershell
@@ -437,7 +441,7 @@ Dashboard Streamlit nhận dữ liệu qua MQTT, lưu thêm một bản CSV ở 
    .venv\Scripts\python -m streamlit run server_app.py
    ```
 
-Client camera cũ (gửi ảnh qua MQTT): `venv/bin/python pi_camera_client.py` hoặc
+Client camera cũ (gửi ảnh qua MQTT, dashboard không còn hiển thị): `venv/bin/python pi_camera_client.py` hoặc
 `pi_detection_client.py` (nhận diện người YOLOv8n). Chúng **chiếm `/dev/video0`**: khi chạy,
 `/photo` và cảnh báo nắng/mưa không chụp được ảnh. Chỉ chạy một client camera, và chỉ khi cần.
 
@@ -524,15 +528,20 @@ có người trông; quạt mini là mô phỏng (proof of concept).
 | ----- | -------- |
 | `nha/pi01/sensor` | JSON cảm biến mỗi 10 s |
 | `nha/pi01/sensor_status` | `online` / `offline` (collector, retained) |
-| `nha/pi01/image` | ảnh JPEG (client camera cũ) |
+| `nha/pi01/image` | ảnh JPEG (client camera cũ, dashboard không đọc) |
 | `nha/pi01/detection` | JSON nhận diện người |
 | `nha/pi01/status` | `online` / `offline` (client camera, retained) |
 
 ```json
 {"timestamp": "2026-11-05T08:00:00", "device_id": "pi01",
  "temperature_c": 28.5, "humidity_pct": 83.0, "lux": 170.8,
- "pm1": 26.0, "pm25": 39.0, "pm10": 47.0, "mq135_do": 1}
+ "pm1": 26.0, "pm25": 39.0, "pm10": 47.0, "mq135_do": 1,
+ "fan_on": false, "fan_mode": "auto", "fan_state": "NORMAL", "fan_relay_fault": false}
 ```
+
+`pm*`, `mq135_do` là `null` khi đọc lỗi (MQ135 cũng `null` trong 180 s sấy). Các trường `fan_*`
+là `null` khi controller không chạy hoặc nhịp cũ hơn 90 s; `fan_mode` là `manual` khi đang ghi đè
+thủ công.
 
 ### Phụ lục B — Dữ liệu sinh ra
 
