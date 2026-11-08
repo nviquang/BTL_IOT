@@ -2,11 +2,12 @@
 import dataclasses
 import os
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
 from aiot import weather
-from aiot.config import Config, WeatherCfg
+from aiot.config import Config, WeatherCfg, load_config
 from aiot.db import connect, get_state, init_schema, set_state
 from aiot.notifier import pending_messages
 
@@ -336,3 +337,67 @@ def test_stale_on_state_expiry_persists_through_quiet_hours(conn, tmp_path):
     assert get_state(conn, "weather_state:weather_sunny") != "1"
     put_windows(conn, at(12, 55), SUNNY)
     assert weather.run_once(conn, at(13, 1), cfg, capture=cam) == ["weather_sunny"]
+
+
+# ---------------- cấu hình demo (deploy/weather_demo.yaml) ----------------
+ROOT = Path(__file__).resolve().parent.parent
+FLASH = dict(lux=500.0, temp=31.0, hum=60.0)
+ROOM = dict(lux=215.0, temp=24.0, hum=60.0)
+COVERED = dict(lux=5.0, temp=24.0, hum=85.0)
+
+
+@pytest.fixture
+def demo(tmp_path):
+    return load_config(ROOT / "deploy" / "weather_demo.yaml", tmp_path / "khong_co.env")
+
+
+def fake_capture(path, index=0):
+    return True
+
+
+def run_demo(conn, demo, values, now=NOW):
+    put_windows(conn, now - 360, values, n=1)   # cửa sổ vừa khép, như timer ở phút 1, 6...
+    return weather.run_once(conn, now, demo, capture=fake_capture)
+
+
+def test_demo_flash_triggers_sunny(conn, demo):
+    assert run_demo(conn, demo, FLASH) == ["weather_sunny"]
+
+
+def test_demo_room_light_triggers_nothing(conn, demo):
+    assert run_demo(conn, demo, ROOM) == []
+
+
+def test_demo_covered_sensor_triggers_rain_in_evening(conn, demo):
+    assert run_demo(conn, demo, COVERED, now=at(20, 1)) == ["weather_rain"]
+
+
+def test_demo_mean_exactly_at_threshold_does_not_trigger(conn, demo):
+    assert run_demo(conn, demo, dict(FLASH, lux=300.0)) == []
+
+
+def test_demo_temp_exactly_30_does_not_trigger_sunny(conn, demo):
+    assert run_demo(conn, demo, dict(FLASH, temp=30.0)) == []
+
+
+def test_demo_humidity_exactly_80_does_not_trigger_rain(conn, demo):
+    assert run_demo(conn, demo, dict(COVERED, hum=80.0)) == []
+
+
+def test_demo_silent_in_quiet_hours(conn, demo):
+    assert run_demo(conn, demo, FLASH, now=at(23, 1)) == []
+
+
+def test_demo_can_repeat_after_five_minutes(conn, demo):
+    assert run_demo(conn, demo, FLASH) == ["weather_sunny"]
+    assert run_demo(conn, demo, ROOM, now=NOW + 300) == []
+    assert run_demo(conn, demo, FLASH, now=NOW + 600) == ["weather_sunny"]
+
+
+def test_demo_changes_only_weather(tmp_path, demo):
+    real = load_config(ROOT / "config.yaml", tmp_path / "khong_co.env")
+    assert demo.db_path == real.db_path
+    assert demo.control == real.control
+    assert demo.telegram == real.telegram
+    assert demo.weather.photo_dir == real.weather.photo_dir
+    assert demo.weather.camera_index == real.weather.camera_index

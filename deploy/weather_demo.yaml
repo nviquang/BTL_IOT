@@ -1,0 +1,14 @@
+# Ngưỡng DEMO cho cảnh báo nắng/mưa trong phòng. Không phải ngưỡng thật (config.yaml).
+# Chạy tay trên Pi ngay sau khi một cửa sổ 5 phút khép lại (phút 1, 6, 11...):
+#   cd ~/BTL_IOT && venv/bin/python -m aiot.weather --config deploy/weather_demo.yaml
+# aiot-weather.timer vẫn dùng config.yaml, không đọc file này.
+# Các mục khác (db_path, telegram, giờ yên lặng...) lấy giá trị mặc định trong aiot/config.py.
+weather:
+  sunny_lux: 300.0          # giữa đèn phòng (215 lux) và flash điện thoại (500 lux)
+  sunny_temp_c: 30.1        # > 30 °C; code so sánh >= nên đặt 30.1
+  rain_hum_pct: 80.1        # > 80%; code so sánh >= nên đặt 80.1
+  rain_lux: 50.0            # chỉ đạt khi lấy tay che cảm biến
+  day_start_h: 0            # báo mưa cả ngày; giờ yên lặng 22h -> 6h vẫn chặn gửi
+  day_end_h: 24
+  sustain_windows: 1        # chỉ cần 1 cửa sổ 5 phút
+  cooldown_s: 240           # demo lại được ở cửa sổ kế tiếp
