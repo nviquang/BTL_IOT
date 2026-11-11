@@ -58,7 +58,7 @@ report:
   # OnCalendar trong deploy/aiot-morning.timer quyết định: đổi giờ thì sửa CẢ HAI.
   time: "06:30"
 
-# Cảnh báo nắng gắt / có thể mưa (aiot/weather.py, chạy bởi aiot-weather.timer mỗi 5 phút).
+# Cảnh báo nắng gắt / có thể mưa (aiot/weather.py, chạy bởi aiot-weather.timer mỗi 20 giây).
 # DHT11, BH1750 và camera USB đặt ngoài ban công. Đây là ước lượng từ cảm biến,
 # không phải dự báo thời tiết. Mỗi điều kiện phải đúng ở 3 cửa sổ 5 phút liền nhau.
 weather:
@@ -68,7 +68,7 @@ weather:
   rain_lux: 5000.0
   day_start_h: 8            # tránh bình minh (~06:10) và hoàng hôn (~17:15), lux thấp + ẩm
   day_end_h: 16
-  sustain_windows: 3
+  sustain_windows: 3        # 0 = tức thời: chỉ cần một mẫu thô 10 giây vượt ngưỡng
   cooldown_s: 10800         # tối đa 1 tin cùng loại mỗi 3 giờ
   photo_dir: /home/admin/iot_data/photos
   photo_keep_days: 7        # ảnh cũ hơn bị xoá

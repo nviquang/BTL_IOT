@@ -32,6 +32,7 @@ và bật/tắt quạt qua relay GPIO23.
 - Dự báo (Task 9): mỗi bước đọc latest_forecast (TB 3 giờ tới của dự báo mới nhất, bỏ
   qua nếu cũ hơn control.forecast_max_age_s) cho luật 'Chủ động'. Đọc lỗi thì coi như
   không có dự báo, ghi log một lần, vẫn điều khiển bình thường.
+- MQ135: mẫu thô có mq135_do = 0 trong 2 vòng gần nhất thì bật quạt ngay và gửi cảnh báo 'gas'.
 - SIGTERM/SIGINT: đưa GPIO23 về LOW, nhả chip, thoát 0.
 - Không phụ thuộc Internet hay Gemini.
 
@@ -49,7 +50,8 @@ from pathlib import Path
 
 from aiot.config import TelegramCfg
 from aiot.control import ControlState, Event, apply_override, decide, fan_on, inputs_from_series
-from aiot.db import connect, delete_state, get_state, init_schema, log_event, pm25_series, set_state
+from aiot.db import (connect, delete_state, get_state, init_schema, log_event, mq135_alarm,
+                     pm25_series, set_state)
 from aiot.forecast import latest_forecast
 from aiot.notifier import (FAULT_PENDING_KEY, check_aqi_change, event_message, resend_suppressed,
                            send_alert)
@@ -291,8 +293,10 @@ def step(conn, relay, cfg, now: int, *, tcfg: TelegramCfg | None = None,
     lookback = max(cfg.enter_mean_s, cfg.exit_mean_s, cfg.danger_window_s) + 60
     series = pm25_series(conn, max(now - lookback, boot_wall))
     forecast_3h, forecast_made_at = _read_forecast(conn, cfg, now)
+    # Nhìn lại 2 vòng để không sót xung ngắn giữa hai lần chạy
+    gas_alarm = mq135_alarm(conn, max(now - 2 * cfg.loop_s, boot_wall))
     inp = inputs_from_series(series, now, cfg, forecast_3h=forecast_3h,
-                             forecast_made_at=forecast_made_at)
+                             forecast_made_at=forecast_made_at, gas_alarm=gas_alarm)
     fault_before = st.fault_active
     st, decide_events = decide(st, inp, cfg)
     if uptime < cfg.stale_s and any(ev.kind == "sensor_fault" for ev in decide_events):

@@ -401,3 +401,80 @@ def test_demo_changes_only_weather(tmp_path, demo):
     assert demo.telegram == real.telegram
     assert demo.weather.photo_dir == real.weather.photo_dir
     assert demo.weather.camera_index == real.weather.camera_index
+
+
+# ---------------- chế độ tức thời (sustain_windows: 0) ----------------
+INSTANT = dataclasses.replace(W, sustain_windows=0, sunny_lux=300.0, sunny_temp_c=30.1,
+                              rain_hum_pct=80.1, rain_lux=50.0, day_start_h=0, day_end_h=24,
+                              cooldown_s=240)
+HOT_BRIGHT = dict(lux=811.7, temp=33.8, hum=62.0)
+DARK_HUMID = dict(lux=10.0, temp=26.0, hum=85.0)
+ROOM_RAW = dict(lux=223.0, temp=28.9, hum=69.0)
+
+
+def put_raw(conn, ts, lux=None, temp=None, hum=None):
+    conn.execute("INSERT OR REPLACE INTO raw_readings (ts, temp, hum, lux, clock_synced) "
+                 "VALUES (?, ?, ?, ?, 1)", (ts, temp, hum, lux))
+    conn.commit()
+
+
+def test_instant_one_sample_triggers_without_any_window(conn):
+    put_raw(conn, NOW - 5, **HOT_BRIGHT)
+    obs = weather.evaluate(conn, NOW, INSTANT)["weather_sunny"]
+    assert obs.active is True and obs.lux == 811.7 and obs.temp == 33.8
+
+
+def test_instant_ignores_five_minute_average(conn):
+    put_windows(conn, at(11, 55), ROOM_RAW)
+    put_raw(conn, NOW - 5, **HOT_BRIGHT)
+    assert weather.evaluate(conn, NOW, INSTANT)["weather_sunny"].active is True
+
+
+def test_instant_needs_both_conditions_in_same_sample(conn):
+    put_raw(conn, NOW - 15, lux=811.7, temp=28.9, hum=62.0)
+    put_raw(conn, NOW - 5, lux=223.0, temp=33.8, hum=62.0)
+    assert weather.evaluate(conn, NOW, INSTANT)["weather_sunny"].active is False
+
+
+def test_instant_catches_spike_between_checks(conn):
+    put_raw(conn, NOW - 25, **HOT_BRIGHT)
+    put_raw(conn, NOW - 5, **ROOM_RAW)
+    obs = weather.evaluate(conn, NOW, INSTANT)["weather_sunny"]
+    assert obs.active is True and obs.lux == 811.7
+
+
+def test_instant_exactly_at_threshold_does_not_trigger(conn):
+    put_raw(conn, NOW - 5, **dict(HOT_BRIGHT, lux=300.0))
+    assert weather.evaluate(conn, NOW, INSTANT)["weather_sunny"].active is False
+
+
+def test_instant_old_sample_is_ignored(conn):
+    put_raw(conn, NOW - weather.INSTANT_LOOKBACK_S - 1, **HOT_BRIGHT)
+    assert weather.evaluate(conn, NOW, INSTANT)["weather_sunny"] is None
+
+
+def test_instant_missing_field_means_unknown(conn):
+    put_raw(conn, NOW - 5, lux=None, temp=33.8, hum=62.0)
+    assert weather.evaluate(conn, NOW, INSTANT)["weather_sunny"] is None
+
+
+def test_instant_rain_respects_daytime_hours(conn):
+    limited = dataclasses.replace(INSTANT, day_start_h=8, day_end_h=16)
+    put_raw(conn, at(20) - 5, **DARK_HUMID)
+    assert weather.evaluate(conn, at(20), limited)["weather_rain"].active is False
+    assert weather.evaluate(conn, at(20), INSTANT)["weather_rain"].active is True
+
+
+def test_instant_run_once_photographs_once_per_crossing(conn, tmp_path):
+    cfg = dataclasses.replace(CFG, weather=dataclasses.replace(INSTANT, photo_dir=str(tmp_path)))
+    shots = []
+    capture = lambda path, index=0: shots.append(path) or True
+    put_raw(conn, NOW - 5, **HOT_BRIGHT)
+    assert weather.run_once(conn, NOW, cfg, capture=capture) == ["weather_sunny"]
+    assert weather.run_once(conn, NOW + 20, cfg, capture=capture) == []
+    assert len(shots) == 1
+
+
+def test_windowed_mode_ignores_raw_samples(conn):
+    put_raw(conn, NOW - 5, **dict(SUNNY))
+    assert weather.evaluate(conn, NOW, W)["weather_sunny"] is None

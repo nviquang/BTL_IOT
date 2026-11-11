@@ -11,6 +11,8 @@ Cảnh báo "nắng gắt" và "có thể sắp mưa" từ cảm biến ngoài b
   trường cần thiết, các cửa sổ liền nhau (cách nhau đúng 300 s) và cửa sổ mới nhất bắt đầu
   không quá MAX_AGE_S trước now. Không dùng cờ valid (chỉ nói về PM2.5).
   Thiếu dữ liệu thì không kết luận (None) và giữ nguyên trạng thái đã nhớ.
+- Chế độ tức thời (sustain_windows: 0): bỏ cửa sổ 5 phút, "bật" ngay khi có MỘT mẫu thô 10 s
+  trong INSTANT_LOOKBACK_S giây gần nhất thoả đủ điều kiện (cùng một mẫu).
 - Chỉ báo khi chuyển sang "bật" (khoá state 'weather_state:<kind>' = "1"/"0"), tối đa
   1 tin mỗi cooldown_s cho từng loại (khoá 'alert_last:<kind>'), theo giờ yên lặng chung
   (aiot.notifier.quiet_window). Bị chặn (cooldown hoặc giờ yên lặng) thì không ghi nhận
@@ -24,7 +26,7 @@ Cảnh báo "nắng gắt" và "có thể sắp mưa" từ cảm biến ngoài b
   aiot.camera.capture_subprocess), rồi ghi tin + ảnh vào outbox và cập nhật khoá trong MỘT
   transaction. Chụp lỗi thì gửi chữ kèm " (không chụp được ảnh)".
 
-Chạy một lần (aiot-weather.timer mỗi 5 phút): cd ~/BTL_IOT && venv/bin/python -m aiot.weather
+Chạy một lần (aiot-weather.timer mỗi 20 giây): cd ~/BTL_IOT && venv/bin/python -m aiot.weather
 Đồng hồ chưa tin được (aiot.collector.is_clock_trusted): bỏ qua cả đánh giá lẫn xoá ảnh cũ
 (giờ trong ngày và tuổi file đều có thể sai). Luôn thoát 0.
 """
@@ -46,6 +48,7 @@ log = logging.getLogger("aiot.weather")
 
 WINDOW_S = 300
 MAX_AGE_S = 600                     # cửa sổ mới nhất phải bắt đầu trong 10 phút gần đây
+INSTANT_LOOKBACK_S = 40             # lớn hơn chu kỳ timer 20 s, để không sót mẫu giữa hai lượt
 KINDS = ("weather_sunny", "weather_rain")
 NO_PHOTO = " (không chụp được ảnh)"
 DISCLAIMER = "(Đây là ước lượng từ cảm biến ngoài ban công, không phải dự báo thời tiết.)"
@@ -84,7 +87,24 @@ def _condition(kind, lux, temp, hum, w):
     return hum >= w.rain_hum_pct and lux < w.rain_lux
 
 
+def _observe_instant(conn, kind, now, w):
+    """Chế độ tức thời: active nếu một mẫu thô gần đây thoả đủ điều kiện."""
+    where = " AND ".join(f"{f} IS NOT NULL" for f in _FIELDS[kind])
+    rows = conn.execute(
+        f"SELECT lux, temp, hum FROM raw_readings WHERE ts <= ? AND ts > ? AND {where} "
+        f"ORDER BY ts DESC", (int(now), int(now) - INSTANT_LOOKBACK_S)).fetchall()
+    if not rows:
+        return None
+    hit = next((r for r in rows if _condition(kind, *r, w)), None)
+    active = hit is not None
+    if kind == "weather_rain":
+        active = active and w.day_start_h <= datetime.fromtimestamp(int(now)).hour < w.day_end_h
+    return Observation(active, *(hit or rows[0]))
+
+
 def _observe(conn, kind, now, w):
+    if int(w.sustain_windows) == 0:
+        return _observe_instant(conn, kind, now, w)
     fields = _FIELDS[kind]
     n = max(1, int(w.sustain_windows))
     where = " AND ".join(f"{f} IS NOT NULL" for f in fields)

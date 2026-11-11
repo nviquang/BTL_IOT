@@ -779,3 +779,95 @@ def test_relay_failure_enqueues_alert_once_and_corrects_fan_on(conn):
 def test_relay_failure_on_restore_enqueues_alert(conn):
     restore(conn, FakeRelay(fail=1), CFG, 1000, tcfg=TCFG)
     assert [k for k, _ in outbox(conn)] == ["relay_error"]
+
+
+# ---------- MQ135 vượt ngưỡng ----------
+UP = lambda: 10 ** 6                    # Pi đã chạy lâu
+
+
+def add_mq(conn, ts, mq):
+    insert_raw(conn, RawSample(ts, None, 20.0, None, None, None, None, mq, True))
+
+
+def test_mq135_over_threshold_turns_fan_on_and_alerts(conn):
+    relay = FakeRelay()
+    add_mq(conn, 995, 0)
+    st = step(conn, relay, CFG, 1000, tcfg=TCFG, monotonic=UP)
+    assert st.mode == "PROTECT" and relay.calls == [True]
+    assert kinds(conn) == ["gas", "fan_on"]
+    msgs = dict(outbox(conn))
+    assert "MQ135" in msgs["gas"] and "MQ135" in msgs["fan_on"]
+
+
+def test_mq135_not_over_threshold_keeps_fan_off(conn):
+    relay = FakeRelay()
+    add_mq(conn, 995, 1)
+    assert step(conn, relay, CFG, 1000, tcfg=TCFG, monotonic=UP).mode == "NORMAL"
+    assert relay.calls == [False]
+
+
+def test_mq135_warming_up_null_is_not_an_alarm(conn):
+    add_mq(conn, 995, None)
+    assert step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG, monotonic=UP).mode == "NORMAL"
+
+
+def test_mq135_short_pulse_between_loops_is_caught(conn):
+    add_mq(conn, 975, 0)
+    add_mq(conn, 995, 1)
+    assert step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG, monotonic=UP).mode == "PROTECT"
+
+
+def test_mq135_old_alarm_is_ignored(conn):
+    add_mq(conn, 1000 - 2 * CFG.loop_s - 1, 0)
+    add_mq(conn, 995, 1)
+    assert step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG, monotonic=UP).mode == "NORMAL"
+
+
+def test_mq135_sample_from_before_boot_is_ignored(conn):
+    add_mq(conn, 985, 0)
+    add_mq(conn, 998, 1)
+    assert step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG, monotonic=lambda: 5).mode == "NORMAL"
+
+
+def test_gas_message_is_urgent_and_does_not_claim_co2():
+    from aiot.control import Event
+    from aiot.notifier import event_message
+    text, urgent = event_message(Event("gas"), ControlState(mode="PROTECT"), None, 1000)
+    assert urgent is True and "MQ135" in text and "CO" not in text
+
+
+def test_gas_message_mentions_manual_override():
+    from aiot.control import Event
+    from aiot.notifier import event_message
+    st = ControlState(mode="PROTECT", override_fan=False, override_until=9000)
+    text, _ = event_message(Event("gas"), st, None, 1000)
+    assert "ghi đè" in text
+
+
+def test_gas_alert_kind_is_collapsible_when_stale():
+    from aiot.notifier import ALERT_KINDS
+    assert "gas" in ALERT_KINDS
+
+
+def test_fan_off_message_after_gas_names_mq135():
+    from aiot.control import Event, Inputs
+    from aiot.notifier import event_message
+    text, urgent = event_message(Event("fan_off", "exit_gas"), ControlState(),
+                                 Inputs(now=1000, mean_exit=23.0), 1000)
+    assert "MQ135" in text and "đã tắt quạt" in text and "23,0" in text and urgent is False
+
+
+def test_fan_off_message_after_pm_does_not_mention_mq135():
+    from aiot.control import Event, Inputs
+    from aiot.notifier import event_message
+    text, _ = event_message(Event("fan_off", "exit"), ControlState(),
+                            Inputs(now=1000, mean_exit=23.0), 1000)
+    assert "MQ135" not in text and "đã tắt quạt" in text
+
+
+def test_fan_off_message_after_gas_mentions_manual_override():
+    from aiot.control import Event
+    from aiot.notifier import event_message
+    st = ControlState(override_fan=True, override_until=9000)
+    text, _ = event_message(Event("fan_off", "exit_gas"), st, None, 1000)
+    assert "MQ135" in text and "ghi đè" in text

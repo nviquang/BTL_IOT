@@ -7,7 +7,7 @@ Chính sách cảnh báo và hàng đợi tin Telegram (bảng outbox).
   telegram.quiet_start/quiet_end. Giờ địa phương theo datetime.fromtimestamp(now).
   start == end nghĩa là không có giờ yên lặng.
 - Tối đa 1 tin cùng loại mỗi telegram.alert_cooldown_s (khoá 'alert_last:<kind>').
-  urgent=True (chỉ dùng cho 'danger') bỏ qua giờ yên lặng nhưng không bỏ qua giới hạn này.
+  urgent=True (chỉ dùng cho 'danger', 'gas') bỏ qua giờ yên lặng nhưng không bỏ qua giới hạn này.
 - Lỗi cảm biến bị chặn được gửi bù khi hết chặn nếu vẫn còn lỗi (resend_suppressed).
 - Mọi hàm ghi có commit=False để gộp vào transaction của người gọi (controller).
 - Văn bản tin là tiếng Việt dạng chữ thường, không Markdown.
@@ -25,12 +25,12 @@ from aiot.db import delete_state, get_state, set_state
 log = logging.getLogger("aiot.notifier")
 
 ALERT_KINDS = frozenset({
-    "aqi_change", "danger", "sensor_fault", "sensor_recovered",
+    "aqi_change", "danger", "gas", "sensor_fault", "sensor_recovered",
     "fan_on", "fan_off", "override_expired", "relay_error", "alert_summary",
     # Nắng/mưa (aiot.weather): tin cũ hơn 1 giờ không còn đúng nên cũng bị gộp (bỏ ảnh)
     "weather_sunny", "weather_rain",
 })
-URGENT_KINDS = frozenset({"danger"})
+URGENT_KINDS = frozenset({"danger", "gas"})
 # Không bao giờ gộp: 'morning_report', 'reply' (và mọi loại không thuộc ALERT_KINDS)
 
 QUIET_KEY = "quiet_hours"
@@ -233,6 +233,7 @@ def check_aqi_change(conn, pm25_15min, now, cfg, *, commit=True):
 _FAN_ON_REASONS = {
     "enter": "bụi mịn PM2.5 trung bình cao kéo dài",
     "danger": "bụi mịn ở mức khẩn cấp",
+    "gas": "cảm biến khí MQ135 báo vượt ngưỡng",
     "proactive": "dự báo 3 giờ tới bụi mịn tăng cao",
 }
 
@@ -261,6 +262,16 @@ def event_message(ev, st, inp, now):
             text += "Quạt lọc được bật tự động."
         return text, True
 
+    if ev.kind == "gas":
+        text = ("CẢNH BÁO KHÍ: cảm biến MQ135 báo vượt ngưỡng. "
+                "Mở cửa cho thoáng và kiểm tra nguồn khói, khí gas trong nhà. ")
+        if manual:
+            text += f"Quạt lọc đang {_on_off(on)} theo ghi đè thủ công{until}"
+            text += "; gửi /mode auto để quạt tự bật." if not on else "."
+        else:
+            text += "Quạt lọc được bật tự động."
+        return text, True
+
     if ev.kind == "fan_on":
         reason = _FAN_ON_REASONS.get(ev.detail, ev.detail or "không khí xấu")
         if ev.detail == "enter" and inp is not None and inp.mean_enter is not None:
@@ -271,12 +282,14 @@ def event_message(ev, st, inp, now):
         return f"Đã bật quạt lọc: {reason}.", False
 
     if ev.kind == "fan_off":
+        head = ("Cảm biến khí MQ135 đã hết báo vượt ngưỡng" if ev.detail == "exit_gas"
+                else "Không khí đã tốt lại")
         value = (f" (PM2.5 trung bình {_fmt_pm(inp.mean_exit)} µg/m³)"
                  if inp is not None and inp.mean_exit is not None else "")
         if manual:
-            return (f"Không khí đã tốt lại{value}. Luật tự động về chế độ bình thường, nhưng "
+            return (f"{head}{value}. Luật tự động về chế độ bình thường, nhưng "
                     f"ghi đè thủ công đang giữ quạt {_on_off(on)}{until}."), False
-        return f"Không khí đã tốt lại{value}, đã tắt quạt lọc.", False
+        return f"{head}{value}, đã tắt quạt lọc.", False
 
     if ev.kind == "sensor_fault":
         return ("Lỗi cảm biến: không nhận được dữ liệu PM2.5. Quạt giữ nguyên trạng thái "

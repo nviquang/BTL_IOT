@@ -54,9 +54,10 @@ class Inputs:
     mean_exit: float | None = None          # TB exit_mean_s (15 phút)
     forecast_3h: float | None = None        # dự báo TB 3 giờ tới
     forecast_made_at: int | None = None
+    gas_alarm: bool = False                 # MQ135 DO vừa báo vượt ngưỡng
 
 
-def inputs_from_series(series, now, cfg, forecast_3h=None, forecast_made_at=None):
+def inputs_from_series(series, now, cfg, forecast_3h=None, forecast_made_at=None, gas_alarm=False):
     """Dựng Inputs từ chuỗi PM2.5 [(ts, µg/m³)] tăng dần theo các cửa sổ trong cfg."""
     return Inputs(
         now=now,
@@ -66,13 +67,14 @@ def inputs_from_series(series, now, cfg, forecast_3h=None, forecast_made_at=None
         mean_exit=rolling_mean(series, now, cfg.exit_mean_s),
         forecast_3h=forecast_3h,
         forecast_made_at=forecast_made_at,
+        gas_alarm=gas_alarm,
     )
 
 
 @dataclass(frozen=True)
 class Event:
-    """kind: fan_on, fan_off, danger, sensor_fault, sensor_recovered, override_expired.
-    Với fan_on/fan_off, detail là lý do: enter, danger, proactive, exit."""
+    """kind: fan_on, fan_off, danger, gas, sensor_fault, sensor_recovered, override_expired.
+    Với fan_on/fan_off, detail là lý do: enter, danger, gas, proactive, exit, exit_gas."""
     kind: str
     detail: str = ""
 
@@ -87,6 +89,8 @@ class ControlState:
     override_fan: bool | None = None    # ghi đè thủ công: True bật, False tắt, None không ghi đè
     override_until: int | None = None
     danger_active: bool = False         # đang ở mức khẩn cấp (để chỉ báo một lần)
+    gas_active: bool = False            # MQ135 đang báo vượt ngưỡng (để chỉ báo một lần)
+    gas_episode: bool = False           # MQ135 đã báo trong đợt BẢO VỆ này (để báo đúng lý do tắt)
 
     def to_json(self):
         return json.dumps(dataclasses.asdict(self), sort_keys=True)
@@ -100,6 +104,8 @@ class ControlState:
             raise ValueError(f"Trạng thái điều khiển không phải JSON hợp lệ: {e}") from None
         if not isinstance(data, dict):
             raise ValueError("Trạng thái điều khiển phải là một object JSON")
+        data.setdefault("gas_active", False)    # trạng thái lưu trước khi có luật MQ135
+        data.setdefault("gas_episode", False)
         names = [f.name for f in dataclasses.fields(cls)]
         missing = [n for n in names if n not in data]
         if missing:
@@ -113,7 +119,7 @@ class ControlState:
         for n in ("entered_at", "enter_since", "exit_since", "override_until"):
             if data[n] is not None and not is_int(data[n]):
                 raise ValueError(f"{n} phải là số nguyên hoặc null")
-        for n in ("fault_active", "danger_active"):
+        for n in ("fault_active", "danger_active", "gas_active", "gas_episode"):
             if not isinstance(data[n], bool):
                 raise ValueError(f"{n} phải là true/false")
         if data["override_fan"] is not None and not isinstance(data["override_fan"], bool):
@@ -165,13 +171,23 @@ def decide(st, inp, cfg):
         st = dataclasses.replace(st, override_fan=None, override_until=None)
         events.append(Event("override_expired"))
 
+    # MQ135 vượt ngưỡng: chỉ báo khi vừa chuyển sang vượt ngưỡng.
+    if inp.gas_alarm and not st.gas_active:
+        events.append(Event("gas"))
+    st = dataclasses.replace(st, gas_active=inp.gas_alarm,
+                             gas_episode=st.gas_episode or inp.gas_alarm)
+
     # Mất dữ liệu PM: giữ nguyên mode, xoá bộ đếm, không quyết định theo số liệu cũ.
+    # MQ135 là tín hiệu độc lập với PM nên vẫn được bật quạt.
     stale = inp.last_sample_ts is None or now - inp.last_sample_ts > cfg.stale_s
     if stale:
         if not st.fault_active:
             events.append(Event("sensor_fault"))
         st = dataclasses.replace(st, fault_active=True, enter_since=None,
                                  exit_since=None, danger_active=False)
+        if inp.gas_alarm and st.mode == "NORMAL":
+            events.append(Event("fan_on", "gas"))
+            st = dataclasses.replace(st, mode="PROTECT", entered_at=now)
         return st, events
 
     if st.fault_active:
@@ -195,6 +211,8 @@ def decide(st, inp, cfg):
                              inp.mean_enter is not None and inp.mean_enter > cfg.enter_pm25, now)
         if danger:
             reason = "danger"
+        elif inp.gas_alarm:
+            reason = "gas"
         elif forecast_high:
             reason = "proactive"
         elif enter_since is not None and now - enter_since >= cfg.enter_hold_s:
@@ -211,12 +229,14 @@ def decide(st, inp, cfg):
 
     # PROTECT
     exit_since = _since(st.exit_since,
-                        inp.mean_exit is not None and inp.mean_exit < cfg.exit_pm25, now)
+                        inp.mean_exit is not None and inp.mean_exit < cfg.exit_pm25
+                        and not inp.gas_alarm, now)
     held_long_enough = st.entered_at is None or now - st.entered_at >= cfg.min_state_s
     if (exit_since is not None and now - exit_since >= cfg.exit_hold_s
             and held_long_enough and not forecast_high and not danger):
-        events.append(Event("fan_off", "exit"))
-        st = dataclasses.replace(st, mode="NORMAL", enter_since=None, exit_since=None)
+        events.append(Event("fan_off", "exit_gas" if st.gas_episode else "exit"))
+        st = dataclasses.replace(st, mode="NORMAL", enter_since=None, exit_since=None,
+                                 gas_episode=False)
     else:
         st = dataclasses.replace(st, exit_since=exit_since, enter_since=None)
     return st, events

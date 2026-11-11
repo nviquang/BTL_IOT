@@ -84,7 +84,7 @@ class WeatherCfg:
     rain_lux: float = 5000.0        # chỉ xét trong [day_start_h, day_end_h) giờ địa phương;
     day_start_h: int = 8            # tránh bình minh (~06:10) và hoàng hôn (~17:15) ở Hà Nội
     day_end_h: int = 16             # tháng 11: lux thấp + ẩm lúc đó không phải sắp mưa
-    sustain_windows: int = 3        # số cửa sổ 5 phút liền nhau phải thoả điều kiện
+    sustain_windows: int = 3        # số cửa sổ 5 phút liền nhau phải thoả; 0 = tức thời (mẫu thô)
     cooldown_s: int = 10800         # tối đa 1 tin cùng loại mỗi 3 giờ
     photo_dir: str = "/home/admin/iot_data/photos"
     photo_keep_days: int = 7

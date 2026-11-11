@@ -110,6 +110,13 @@ def insert_raw(conn: sqlite3.Connection, s: RawSample) -> None:
     conn.commit()
 
 
+def mq135_alarm(conn: sqlite3.Connection, since_ts: int) -> bool:
+    """Có mẫu thô từ since_ts trở đi báo MQ135 vượt ngưỡng (mq135_do = 0) không."""
+    row = conn.execute("SELECT 1 FROM raw_readings WHERE ts >= ? AND mq135_do = 0 LIMIT 1",
+                       (int(since_ts),)).fetchone()
+    return row is not None
+
+
 def pm25_series(conn: sqlite3.Connection, since_ts: int) -> list[tuple[int, float]]:
     """PM2.5 thô từ since_ts trở đi, bỏ NULL và giá trị ngoài PM_RANGE (cùng quy tắc
     với bước gộp 5 phút, để controller không quyết định theo giá trị lỗi).

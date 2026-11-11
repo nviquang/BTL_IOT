@@ -1,12 +1,13 @@
-# Chạy aiot-weather.service mỗi 5 phút, ở phút 1, 6, 11, ... (sau khi collector ghi xong
-# cửa sổ 5 phút vừa kết thúc). Persistent=false: Pi tắt lúc tới giờ thì không chạy bù
+# Chạy aiot-weather.service mỗi 20 giây, để chế độ tức thời (weather.sustain_windows: 0)
+# phản ứng ngay. AccuracySec=1s vì mặc định 1 phút. Persistent=false: Pi tắt thì không chạy bù
 # (cảnh báo nắng/mưa cũ không còn ý nghĩa).
 # Cài: xem aiot-weather.service. Kiểm tra: systemctl list-timers aiot-weather.timer
 [Unit]
-Description=Run AIoT sunny/rain alert every 5 minutes
+Description=Run AIoT sunny/rain alert every 20 seconds
 
 [Timer]
-OnCalendar=*:01/5
+OnCalendar=*:*:0/20
+AccuracySec=1s
 Persistent=false
 
 [Install]

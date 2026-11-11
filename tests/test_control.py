@@ -396,3 +396,125 @@ def test_danger_boundary_149_9_does_not_enter():
     st, events = decide(ControlState(), inp(1000, danger_level=149.9), CFG)
     assert st.mode == "NORMAL"
     assert events == []
+
+
+# ---------- MQ135 vượt ngưỡng ----------
+
+def test_gas_alarm_enters_immediately_with_low_pm():
+    st, events = decide(ControlState(), inp(1000, gas_alarm=True, mean_enter=20.0), CFG)
+    assert st.mode == "PROTECT" and st.entered_at == 1000 and st.gas_active is True
+    assert events == [Event("gas"), Event("fan_on", "gas")]
+
+
+def test_gas_event_reported_once_per_episode():
+    _, log = run(ControlState(), [1000, 1020, 1040], gas_alarm=True)
+    assert kinds(log) == ["gas", "fan_on"]
+
+
+def test_gas_event_repeats_after_alarm_clears():
+    _, log = run(ControlState(), [1000, 1020, 1040], gas_alarm=lambda t: t != 1020)
+    assert kinds(log).count("gas") == 2
+
+
+def test_no_gas_alarm_changes_nothing():
+    st, events = decide(ControlState(), inp(1000, gas_alarm=False), CFG)
+    assert st == ControlState() and events == []
+
+
+def test_does_not_exit_protect_while_gas_alarm_active():
+    st = ControlState(mode="PROTECT", entered_at=0, exit_since=0)
+    st, events = decide(st, inp(5000, mean_exit=10.0, gas_alarm=True), CFG)
+    assert st.mode == "PROTECT" and st.exit_since is None
+    assert Event("fan_off", "exit") not in events
+
+
+def test_exit_hold_restarts_when_gas_alarm_clears():
+    st = ControlState(mode="PROTECT", entered_at=0, gas_active=True)
+    st, _ = decide(st, inp(5000, mean_exit=10.0), CFG)
+    assert st.mode == "PROTECT" and st.exit_since == 5000 and st.gas_active is False
+    st, _ = decide(st, inp(5000 + CFG.exit_hold_s - 1, mean_exit=10.0), CFG)
+    assert st.mode == "PROTECT"
+    st, events = decide(st, inp(5000 + CFG.exit_hold_s, mean_exit=10.0), CFG)
+    assert st.mode == "NORMAL" and events == [Event("fan_off", "exit")]
+
+
+def test_gas_alarm_turns_fan_on_even_when_pm_data_is_lost():
+    st, events = decide(ControlState(), inp(5000, last_sample_ts=1000, gas_alarm=True), CFG)
+    assert st.mode == "PROTECT" and st.fault_active is True
+    assert [e.kind for e in events] == ["gas", "sensor_fault", "fan_on"]
+
+
+def test_danger_reason_wins_when_gas_also_active():
+    st, events = decide(ControlState(), inp(1000, gas_alarm=True, danger_level=200.0), CFG)
+    assert st.mode == "PROTECT"
+    assert [e for e in events if e.kind == "fan_on"] == [Event("fan_on", "danger")]
+
+
+def test_manual_off_override_still_beats_gas_alarm():
+    st = ControlState(override_fan=False, override_until=9000)
+    st, _ = decide(st, inp(1000, gas_alarm=True), CFG)
+    assert st.mode == "PROTECT" and fan_on(st, 1000) is False
+
+
+def test_inputs_from_series_passes_gas_alarm():
+    assert inputs_from_series([], 1000, CFG, gas_alarm=True).gas_alarm is True
+    assert inputs_from_series([], 1000, CFG).gas_alarm is False
+
+
+def test_state_saved_before_gas_feature_still_loads():
+    old = json.loads(ControlState(mode="PROTECT", entered_at=5).to_json())
+    del old["gas_active"]
+    assert ControlState.from_json(json.dumps(old)) == ControlState(mode="PROTECT", entered_at=5)
+
+
+def test_state_with_non_bool_gas_active_is_rejected():
+    text = json.dumps({**json.loads(ControlState().to_json()), "gas_active": 1})
+    with pytest.raises(ValueError):
+        ControlState.from_json(text)
+
+
+def _exit_after(st, t=5000):
+    """Hai bước: bắt đầu đếm thoát rồi đủ thời gian giữ."""
+    st, _ = decide(st, inp(t, mean_exit=10.0), CFG)
+    return decide(st, inp(t + CFG.exit_hold_s, mean_exit=10.0), CFG)
+
+
+def test_fan_off_reason_is_gas_when_entered_by_gas():
+    st, _ = decide(ControlState(), inp(1000, gas_alarm=True), CFG)
+    st, events = _exit_after(st)
+    assert st.mode == "NORMAL" and events == [Event("fan_off", "exit_gas")]
+
+
+def test_fan_off_reason_is_gas_when_gas_appeared_during_pm_protect():
+    st = ControlState(mode="PROTECT", entered_at=0)
+    st, _ = decide(st, inp(1000, mean_exit=60.0, gas_alarm=True), CFG)
+    st, events = _exit_after(st)
+    assert events == [Event("fan_off", "exit_gas")]
+
+
+def test_fan_off_reason_stays_exit_without_gas():
+    st, events = _exit_after(ControlState(mode="PROTECT", entered_at=0))
+    assert events == [Event("fan_off", "exit")]
+
+
+def test_gas_episode_is_cleared_after_exit():
+    st, _ = decide(ControlState(), inp(1000, gas_alarm=True), CFG)
+    st, _ = _exit_after(st)
+    assert st.gas_episode is False
+
+
+def test_gas_episode_survives_save_and_load():
+    st, _ = decide(ControlState(), inp(1000, gas_alarm=True), CFG)
+    assert ControlState.from_json(st.to_json()).gas_episode is True
+
+
+def test_state_saved_before_gas_episode_still_loads():
+    old = json.loads(ControlState(mode="PROTECT", entered_at=5).to_json())
+    del old["gas_episode"]
+    assert ControlState.from_json(json.dumps(old)).gas_episode is False
+
+
+def test_state_with_non_bool_gas_episode_is_rejected():
+    text = json.dumps({**json.loads(ControlState().to_json()), "gas_episode": 1})
+    with pytest.raises(ValueError):
+        ControlState.from_json(text)

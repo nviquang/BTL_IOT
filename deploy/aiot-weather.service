@@ -1,5 +1,5 @@
 # Cảnh báo nắng gắt / có thể mưa kèm ảnh camera (chạy một lần, do aiot-weather.timer gọi
-# mỗi 5 phút).
+# mỗi 20 giây).
 # Cài: sudo cp deploy/aiot-weather.service deploy/aiot-weather.timer /etc/systemd/system/
 #      sudo systemctl daemon-reload && sudo systemctl enable --now aiot-weather.timer
 # Tin được ghi vào outbox; aiot-bot gửi (ảnh bằng sendPhoto). Đồng hồ chưa đồng bộ NTP thì
