@@ -13,7 +13,6 @@ param(
     [string]$PiHost = "",
     [switch]$NoDeploy,
     [switch]$NoFan,
-    [switch]$WithYolo,
     [switch]$Stop,
     [switch]$StopPi,
     [switch]$Status
@@ -37,7 +36,7 @@ $MosqConf = Join-Path $env:USERPROFILE "mosq\mosquitto.conf"
 $VenvPy = Join-Path $RepoDir ".venv\Scripts\python.exe"
 $DashboardUrl = "http://localhost:8501"
 $RemoteTar = "/tmp/btl_iot_deploy.tar"
-$DeployPaths = @("aiot", "deploy", "scripts", "config.yaml", "requirements-pi.txt", "requirements-pi-camera.txt",
+$DeployPaths = @("aiot", "deploy", "scripts", "config.yaml", "requirements-pi.txt",
     "test_all.py", "README.md", "docs")
 $DashboardModules = "import streamlit, paho.mqtt, yaml, pandas, matplotlib"
 $DashboardPackages = @("streamlit", "paho-mqtt", "PyYAML", "pandas", "matplotlib")
@@ -298,7 +297,6 @@ Set-PiMqttHost $target
 Write-Step "Chạy scripts/pi_up.sh trên Pi (có thể hỏi mật khẩu sudo của admin)"
 $piArgs = ""
 if ($NoFan) { $piArgs += " --no-fan" }
-if ($WithYolo) { $piArgs += " --with-yolo" }
 & ssh @SshOpts -t $target "bash ~/BTL_IOT/scripts/pi_up.sh$piArgs"
 $piCode = $LASTEXITCODE
 

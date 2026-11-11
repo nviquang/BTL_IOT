@@ -1,7 +1,5 @@
 # Thư viện lõi cài trên Raspberry Pi 4 (venv: ~/BTL_IOT/venv); scripts/pi_up.sh tự cài.
 #   ~/BTL_IOT/venv/bin/pip install -r requirements-pi.txt
-# Nhận diện người YOLOv8n (tuỳ chọn, rất nặng) nằm riêng ở requirements-pi-camera.txt
-# (pi_up.sh --with-yolo), để lỗi cài torch không chặn các thư viện lõi.
 
 # MQTT client (collector, pi_camera_client.py)
 paho-mqtt

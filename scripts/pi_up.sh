@@ -2,7 +2,6 @@
 # Bật toàn bộ trạm AIoT trên Raspberry Pi bằng một lệnh (chạy trên Pi, user admin).
 #   bash ~/BTL_IOT/scripts/pi_up.sh              cài/cập nhật rồi bật mọi dịch vụ
 #   bash ~/BTL_IOT/scripts/pi_up.sh --no-fan     như trên nhưng không chạy aiot-controller
-#   bash ~/BTL_IOT/scripts/pi_up.sh --with-yolo  cài thêm torch CPU + ultralytics (rất lâu)
 #   bash ~/BTL_IOT/scripts/pi_up.sh --stop       dừng mọi dịch vụ và timer (quạt tắt)
 #   bash ~/BTL_IOT/scripts/pi_up.sh --status     chỉ in bảng kiểm tra (không cần sudo)
 # Chạy lại bao nhiêu lần cũng được: bước nào đã xong thì bỏ qua. Dịch vụ chỉ được khởi động
@@ -23,9 +22,7 @@ SERVICES=(aiot-collector aiot-controller aiot-bot)
 TIMERS=(aiot-forecast.timer aiot-morning.timer aiot-weather.timer)
 VENV_PY="$REPO_DIR/venv/bin/python"
 REQ_STAMP="$REPO_DIR/venv/.requirements-pi.sha256"
-YOLO_STAMP="$REPO_DIR/venv/.requirements-pi-camera.sha256"
 CODE_STAMP="$REPO_DIR/venv/.deployed-code.sha256"
-TORCH_INDEX="https://download.pytorch.org/whl/cpu"
 DATA_DIR="/home/admin/iot_data"
 WAIT_S=30
 
@@ -43,12 +40,11 @@ die()     { printf '%sLỗi:%s %s\n' "$C_RED" "$C_RESET" "$1" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-Cách dùng: bash scripts/pi_up.sh [--no-fan] [--with-yolo] [--force] | --stop | --status | --help
+Cách dùng: bash scripts/pi_up.sh [--no-fan] [--force] | --stop | --status | --help
 
   (không cờ)   cài phần còn thiếu, cập nhật unit systemd, bật dịch vụ (khởi động lại khi
                code/cấu hình/thư viện đổi), rồi in bảng kiểm tra sức khoẻ
   --no-fan     như trên nhưng dừng và tắt tự khởi động aiot-controller (quạt không bị điều khiển)
-  --with-yolo  cài thêm torch CPU + ultralytics cho pi_detection_client.py (rất lâu, tuỳ chọn)
   --force      cho chạy khi repo không ở /home/admin/BTL_IOT (unit systemd vẫn dùng đường dẫn đó)
   --stop       dừng mọi dịch vụ và timer, tắt tự khởi động aiot-controller (quạt tắt)
   --status     chỉ in bảng kiểm tra sức khoẻ, không cần sudo
@@ -58,12 +54,10 @@ EOF
 
 MODE="up"
 NO_FAN=0
-WITH_YOLO=0
 FORCE=0
 for arg in "$@"; do
   case "$arg" in
     --no-fan) NO_FAN=1 ;;
-    --with-yolo) WITH_YOLO=1 ;;
     --force) FORCE=1 ;;
     --stop) MODE="stop" ;;
     --status) MODE="status" ;;
@@ -334,23 +328,6 @@ else
     ok "đã cài thư viện"
   else
     warn "thư viện chưa cài đủ; lần chạy sau sẽ thử lại"
-  fi
-fi
-
-if (( WITH_YOLO )); then
-  yolo_hash="$(sha256sum requirements-pi-camera.txt | cut -d' ' -f1)"
-  if [[ -f "$YOLO_STAMP" && "$(cat "$YOLO_STAMP")" == "$yolo_hash" ]]; then
-    ok "đã có torch + ultralytics (bỏ qua)"
-  else
-    info "Cài torch CPU rồi ultralytics (có thể mất 30 phút trở lên)..."
-    if "$VENV_PY" -m pip install -q --index-url "$TORCH_INDEX" torch torchvision \
-        && "$VENV_PY" -m pip install -q -r requirements-pi-camera.txt; then
-      printf '%s\n' "$yolo_hash" > "$YOLO_STAMP"
-      ok "đã cài torch + ultralytics"
-    else
-      warn "cài YOLO lỗi; các dịch vụ chính không bị ảnh hưởng"
-    fi
-    py_imports cv2 || warn "import cv2 lỗi sau khi cài ultralytics (xung đột opencv-python và opencv-python-headless?)"
   fi
 fi
 
