@@ -106,8 +106,8 @@ source:
 # dự báo, nhật ký lên url mỗi interval_s giây và nhận lệnh quạt/còi/chế độ từ web.
 # INGEST_TOKEN nằm trong .env (cùng giá trị với biến môi trường INGEST_TOKEN trên Render).
 cloud:
-  enabled: false            # bật sau khi đã deploy và đặt url
-  url: ""                   # ví dụ https://aiot-tram.onrender.com
+  enabled: true             # bật sau khi đã deploy và đặt url
+  url: https://aiot-tram.onrender.com
   interval_s: 5
   timeout_s: 10
   history_step_s: 60
