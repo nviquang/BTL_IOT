@@ -278,12 +278,19 @@ class Uplink:
         """Một lần gửi. True nếu cloud nhận (200). Lỗi mạng/HTTP thì False, không raise."""
         now = int(now if now is not None else time.time())
         payload, new_cur = build_payload(self.conn, self.cfg, now, self.acks)
-        try:
-            resp = self.session.post(self.url, json=payload, headers=self.headers,
-                                     timeout=self.cfg.cloud.timeout_s)
-        except Exception as e:      # requests.RequestException và lỗi mạng khác
-            log.warning("Không gửi được lên cloud: %s", type(e).__name__)
-            return False
+        resp = None
+        for attempt in (1, 2):
+            try:
+                resp = self.session.post(self.url, json=payload, headers=self.headers,
+                                         timeout=self.cfg.cloud.timeout_s)
+                break
+            except Exception as e:      # requests.RequestException và lỗi mạng khác
+                # Lần 1 lỗi kết nối: thường do server vừa đóng kết nối keep-alive đang rảnh
+                # mà Session định dùng lại; thử lại ngay một lần bằng kết nối mới
+                if attempt == 1 and type(e).__name__ == "ConnectionError":
+                    continue
+                log.warning("Không gửi được lên cloud: %s", type(e).__name__)
+                return False
         if resp.status_code != 200:
             log.warning("Cloud trả HTTP %s", resp.status_code)
             return False

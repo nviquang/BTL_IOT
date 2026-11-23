@@ -8,7 +8,7 @@ services:
     plan: free
     region: singapore
     buildCommand: pip install -r cloud/requirements.txt
-    startCommand: uvicorn cloud.app:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"
+    startCommand: uvicorn cloud.app:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*" --timeout-keep-alive 30
     healthCheckPath: /healthz
     autoDeploy: true
     envVars:

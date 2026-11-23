@@ -2,7 +2,7 @@
 
 Thay cho bản kế hoạch trước (web chạy trên Pi + Cloudflare Tunnel, không mật khẩu).
 
-**Trạng thái 23/11/2026:** bước 1–4 và 6 đã làm xong (code, test, chạy thử cục bộ bằng `scripts/cloud_demo.py`). Bước 5 (deploy) cần nhóm tạo tài khoản Render và Neon theo README mục "Web trên cloud".
+**Trạng thái 23/11/2026:** bước 1–4 và 6 đã làm xong (code, test, chạy thử cục bộ bằng `scripts/cloud_demo.py`; uplink đã chạy trên Pi thật đẩy số liệu thật về server thử qua đường hầm SSH, chưa gửi lệnh tới mạch). Bước 5 (deploy) cần nhóm tạo tài khoản Render và Neon theo README mục "Web trên cloud".
 
 ## Mục tiêu
 

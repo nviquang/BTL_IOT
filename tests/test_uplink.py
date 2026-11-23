@@ -77,7 +77,7 @@ def test_payload_and_cursor_advance(conn):
 def test_network_error_keeps_cursor_and_resends(conn):
     import requests
     add(conn, NOW - 120, NOW)
-    s = Session(requests.ConnectionError("mất mạng"), Resp(500))
+    s = Session(requests.ConnectionError("mất mạng"), requests.ConnectionError("mất mạng"), Resp(500))
     up = uplink.Uplink(conn, CFG, session=s)
     assert up.once(NOW) is False
     assert up.once(NOW) is False
@@ -170,3 +170,10 @@ def test_main_refuses_without_config(tmp_path, monkeypatch):
     p.write_text("cloud:\n  enabled: true\n  url: http://example.com\n", encoding="utf-8")
     monkeypatch.setenv("INGEST_TOKEN", "x")
     assert uplink.main(["--config", str(p)]) == 2               # không phải https
+
+
+def test_connection_error_retried_once(conn):
+    import requests
+    s = Session(requests.ConnectionError("keep-alive vừa đóng"), Resp())
+    assert uplink.Uplink(conn, CFG, session=s).once(NOW) is True
+    assert len(s.calls) == 2
