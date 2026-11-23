@@ -7,7 +7,8 @@ Thay cho bản kế hoạch trước (web chạy trên Pi + Cloudflare Tunnel, k
 - Pi đã cập nhật bằng `up.ps1`; `aiot-uplink` chạy, healthcheck "web cloud" đạt.
 - Lệnh "Bật quạt" gửi từ web qua Internet tới controller trong khoảng 2 giây (22:49, sự kiện `override` trên Pi, không có `relay_error`).
 - Lệnh "Tắt quạt" (22:49:51 → áp dụng 22:49:56) và "Kêu còi" từ web (22:51:50 → controller ghi đè còi 22:51:51, kêu 60 giây rồi tự hết hạn, log không có lỗi GPIO).
-- Còn ghi nhận: người đứng cạnh mạch xác nhận quạt quay/còi kêu bằng mắt và tai; thử từ điện thoại qua 4G.
+- Người ở cạnh mạch xác nhận quạt quay và còi kêu khi bấm trên web (23/11/2026).
+- Chưa thử qua 4G: các lệnh gửi từ cùng dải mạng với Pi (113.160.14.x).
 
 ## Mục tiêu
 
