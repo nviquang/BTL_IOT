@@ -25,7 +25,7 @@ def summary(**over):
         "pm25_mean": 20.0, "pm25_min": 8.0, "pm25_max": 40.0, "aqi_24h": "Trung bình",
         "pm25_last_1h_mean": 22.0, "aqi_now": "Trung bình",
         "aqi_hours": {label: 0 for label in LABELS},
-        "temp_mean": 27.0, "hum_mean": 70.0, "mq135_exceeded_windows": 0,
+        "temp_mean": 27.0, "hum_mean": 70.0,
         "fan_on_now": False, "control_mode": "BÌNH THƯỜNG", "manual_override": False,
         "fan_on_minutes_24h": 0,
         "forecast": {"model": "persistence", "made_at_local": "06:00",

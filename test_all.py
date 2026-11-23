@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Test tất cả module: DHT11, PMS7003, BH1750, MQ135 (chân DO), quạt qua relay.
+Test tất cả module: DHT11, PMS7003, BH1750, quạt qua relay, còi báo.
 Chạy: cd ~/BTL_IOT && source venv/bin/activate && python test_all.py
 Mã thoát: 0 nếu tất cả OK, 1 nếu có mục lỗi hoặc bị bỏ qua.
-Phần quạt sẽ bật/tắt relay và hỏi bạn quạt có quay không, nên phải chạy ở terminal
-cạnh mạch. Không có terminal (chạy nền, cron) thì bỏ qua, không đụng tới relay.
+Phần quạt và còi sẽ bật/tắt thiết bị và hỏi bạn quạt có quay / còi có kêu không, nên phải
+chạy ở terminal cạnh mạch. Không có terminal (chạy nền, cron) thì bỏ qua, không đụng tới chân.
 
 Khác test.py: kiểm tra bus I2C trước khi quét. SDA bị kéo thấp sẽ làm mọi địa chỉ
 "trả lời" giả và đọc ra toàn số 0, nên phải loại trường hợp này để không báo OK sai.
@@ -19,9 +19,8 @@ DHT_GPIO = "D17"             # DHT11 nối pin 11 = GPIO17
 PMS_PORT = "/dev/serial0"    # PMS7003 nối UART (TX cảm biến -> RX Pi, GPIO15)
 I2C_BUS = 1
 BH1750_ADDRS = (0x23, 0x5C)
-MQ135_DO_GPIO = 26           # DO của MQ135 qua cầu phân áp 10k/20k vào pin 37 = GPIO26
-MQ135_SAMPLES = 20           # đọc trong khoảng 2 giây
 RELAY_GPIO = 23              # relay IN nối pin 16 = GPIO23
+BUZZER_GPIO = 5              # còi I/O nối pin 29 = GPIO5 (VCC pin 17 = 3.3V, GND pin 25)
 GPIO_CHIP = 0                # gpiochip của header 40 chân trên Pi 4
 # =====================================
 
@@ -150,52 +149,6 @@ def test_bh1750(bus, found):
         report("BH1750", FAIL, str(e))
 
 
-def test_mq135():
-    """Đọc chân DO. Chỉ biết vượt ngưỡng hay chưa, không có giá trị nồng độ.
-
-    Cầu phân áp kéo GPIO về 0 khi DO hở dây, nên DO = 0 không chứng minh được dây đã nối.
-    Module mất GND thì DO bị kéo lên VCC, nên DO = 1 cũng không chứng minh module đang chạy:
-    phải có người nhìn đèn nguồn thì mới báo OK.
-    Đã xác nhận trên module thật bằng cách vặn biến trở: đèn DO sáng thì đọc 0 (vượt ngưỡng),
-    đèn DO tắt thì đọc 1 (chưa vượt ngưỡng).
-    """
-    header("MQ135 (chân DO)")
-    import lgpio
-    chip = None
-    try:
-        chip = lgpio.gpiochip_open(GPIO_CHIP)
-        lgpio.gpio_claim_input(chip, MQ135_DO_GPIO, lgpio.SET_PULL_DOWN)
-        samples = []
-        for _ in range(MQ135_SAMPLES):
-            samples.append(lgpio.gpio_read(chip, MQ135_DO_GPIO))
-            time.sleep(0.1)
-    except Exception as e:
-        report("MQ135", FAIL, str(e))
-        return
-    finally:
-        if chip is not None:
-            lgpio.gpiochip_close(chip)
-
-    high = sum(samples)
-    detail = f"DO = 1 ở {high}/{len(samples)} lần đọc"
-    if high == 0:
-        report("MQ135", FAIL, f"{detail}. Đang vượt ngưỡng, hoặc hở dây DO, 5V hay GND. Vặn biến trở xem đèn báo có đổi không")
-        return
-    if not sys.stdin.isatty():
-        report("MQ135", SKIP, f"{detail}. Mức 1 cũng xuất hiện khi module mất GND, cần chạy ở terminal để xác nhận đèn nguồn")
-        return
-    while True:
-        answer = input("  Đèn nguồn trên MQ135 có sáng không? (c/k): ").strip().lower()
-        if answer in ("c", "k"):
-            break
-    if answer == "k":
-        report("MQ135", FAIL, f"{detail}. Module chưa có nguồn nên DO không đáng tin. Kiểm tra VCC 5V, GND. Mức 1 khi mất GND có thể đưa điện áp cao vào GPIO")
-    elif high == len(samples):
-        report("MQ135", OK, f"{detail}. Có tín hiệu từ module, chưa vượt ngưỡng")
-    else:
-        report("MQ135", OK, f"{detail}. Đang dao động quanh ngưỡng, nên chỉnh lại biến trở")
-
-
 def test_i2c():
     names = ("BH1750",)
     header("Bus I2C")
@@ -302,12 +255,79 @@ def test_fan():
         report("Quạt", OK, "relay kích mức LOW. Lưu ý: GPIO23 mặc định LOW nên quạt có thể tự chạy khi Pi khởi động hoặc sau khi script thoát" + power_warning)
 
 
+def ask_buzzer_sounding(level):
+    while True:
+        answer = input(f"  Còi I/O = {'HIGH' if level else 'LOW'}. Còi có kêu không? (c/k): ").strip().lower()
+        if answer in ("c", "k"):
+            return answer == "c"
+
+
+def test_buzzer():
+    header("Còi báo")
+    if not sys.stdin.isatty():
+        report("Còi", SKIP, "cần chạy ở terminal cạnh mạch để xác nhận còi kêu")
+        return
+    input("Còi sẽ kêu vài giây. Nhấn Enter để bắt đầu...")
+
+    import lgpio
+    chip = None
+    sounding = {}
+    try:
+        chip = lgpio.gpiochip_open(GPIO_CHIP)
+        lgpio.gpio_claim_output(chip, BUZZER_GPIO, 1)
+        for level in (0, 1):
+            lgpio.gpio_write(chip, BUZZER_GPIO, level)
+            time.sleep(0.5)
+            sounding[level] = ask_buzzer_sounding(level)
+            lgpio.gpio_write(chip, BUZZER_GPIO, 1 if sounding[0] else 0)   # tắt trong lúc chờ
+        # Trả về mức im trước khi nhả chân
+        lgpio.gpio_write(chip, BUZZER_GPIO, 1 if sounding[0] else 0)
+    except Exception as e:
+        report("Còi", FAIL, str(e))
+        return
+    finally:
+        if chip is not None:
+            lgpio.gpiochip_close(chip)
+
+    if sounding[0] and sounding[1]:
+        report("Còi", FAIL, "còi kêu ở cả 2 mức: VCC đang cấp 5V (phải dùng 3.3V, pin 17) hoặc I/O chưa nối GPIO5")
+    elif not sounding[0] and not sounding[1]:
+        report("Còi", FAIL, "còi không kêu ở cả 2 mức: kiểm tra VCC pin 17, GND pin 25, I/O pin 29")
+    elif sounding[0]:
+        report("Còi", OK, "còi kích mức thấp (đúng với buzzer.active_low: true)")
+    else:
+        report("Còi", OK, "còi kích mức cao: đặt buzzer.active_low: false trong config.yaml")
+
+
+SENSOR_SERVICES = ("aiot-collector", "aiot-controller", "pi-sensor")
+
+
+def busy_services():
+    """Dịch vụ đang giữ cảm biến/relay/còi; chạy cùng lúc thì test không nhận được chân."""
+    busy = []
+    for name in SENSOR_SERVICES:
+        try:
+            out = subprocess.run(["systemctl", "is-active", name], capture_output=True,
+                                 text=True, timeout=5).stdout.strip()
+        except Exception:
+            continue
+        if out == "active":
+            busy.append(name)
+    return busy
+
+
 def main():
+    busy = busy_services()
+    if busy:
+        print("Các dịch vụ đang giữ cảm biến, relay và còi: " + ", ".join(busy))
+        print("Dừng trước:  bash scripts/pi_up.sh --stop")
+        print("Test xong bật lại:  bash scripts/pi_up.sh")
+        return 1
     test_dht()
     test_pms()
     test_i2c()
-    test_mq135()
     test_fan()
+    test_buzzer()
 
     print("\n========== TỔNG KẾT ==========")
     for name, (status, detail) in results.items():

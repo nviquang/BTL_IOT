@@ -92,6 +92,35 @@ class WeatherCfg:
 
 
 @dataclass(frozen=True)
+class BuzzerCfg:
+    """Còi báo vượt ngưỡng tại chỗ (aiot/alarm.py, aiot/buzzer.py), chạy trong controller."""
+    enabled: bool = True
+    gpio: int = 5                   # GPIO5 = pin 29, mặc định kéo lên khi Pi khởi động
+    active_low: bool = True         # module ghi 低电平触发: LOW = kêu
+    alarm_pm25: float = 150.0       # kêu khi trung vị PM2.5 1 phút >= ngưỡng này
+    beep_on_s: float = 0.3          # mỗi tiếng bíp
+    beep_off_s: float = 0.2
+    burst_s: float = 10.0           # một hồi còi dài bao lâu
+    repeat_s: int = 300             # còn vượt ngưỡng thì kêu lại sau chừng này giây
+    mute_s: int = 1800              # /mute không kèm số phút thì tắt tiếng chừng này giây
+
+
+@dataclass(frozen=True)
+class SourceCfg:
+    """Bộ nhận diện nguồn bụi (aiot/source_model.py), chạy trong controller mỗi control.loop_s.
+
+    enabled và mô hình nạp được: quạt và còi theo nhãn AI (nấu ăn: quạt; ô nhiễm: quạt +
+    còi; khói thuốc/nhang: còi). Không có mô hình, thiếu dữ liệu 1 giây hay chưa đủ tin
+    cậy: quay về luật ngưỡng PM2.5 (control, buzzer.alarm_pm25)."""
+    enabled: bool = True
+    model_path: str = "/home/admin/BTL_IOT/models/source_rf.json"
+    vote_n: int = 3                 # trung bình xác suất của 3 lần dự đoán gần nhất (15 giây)
+    min_confidence: float = 0.6     # chỉ đổi nhãn khi xác suất trung bình >= ngưỡng này
+    max_gap_s: int = 30             # dự đoán cách nhau lâu hơn thì làm mượt lại từ đầu
+    stale_s: int = 15               # mẫu 1 giây mới nhất cũ hơn: không dự đoán
+
+
+@dataclass(frozen=True)
 class Secrets:
     telegram_token: str | None = None
     gemini_api_key: str | None = None
@@ -122,6 +151,8 @@ class Config:
     forecast: ForecastCfg = field(default_factory=ForecastCfg)
     report: ReportCfg = field(default_factory=ReportCfg)
     weather: WeatherCfg = field(default_factory=WeatherCfg)
+    buzzer: BuzzerCfg = field(default_factory=BuzzerCfg)
+    source: SourceCfg = field(default_factory=SourceCfg)
     secrets: Secrets = field(default_factory=Secrets)
 
 
@@ -134,6 +165,8 @@ SECTIONS = {
     "forecast": ForecastCfg,
     "report": ReportCfg,
     "weather": WeatherCfg,
+    "buzzer": BuzzerCfg,
+    "source": SourceCfg,
 }
 TOP_LEVEL_KEYS = ("db_path", "csv_path", "device_id")
 

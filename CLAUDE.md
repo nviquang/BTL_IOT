@@ -5,23 +5,25 @@ Bài tập nhóm môn IoT, dựa trên Chương 12 *Hands-On Artificial Intellig
 Cách nối dây chi tiết và kết quả test nằm ở `so_do_noi_day_raspberry_pi.md`.
 
 Không thuộc hệ thống (đã loại khỏi thiết kế):
-- ADS1115 và chân AO của MQ-135 (MQ135 chỉ đọc chân DO)
+- ADS1115 và cảm biến khí MQ135 (chỉ có chân DO 1 bit, không đọc được nồng độ; đã gỡ khỏi mạch và code ngày 23/11/2026)
 - Toàn bộ phần đóng/mở cửa: servo, mô hình cửa, công tắc hành trình, lệnh `/door`, lỗi "cửa kẹt"
 - DHT22 (mạch dùng DHT11)
-- Nguồn 5V rời, OLED, LED báo và còi (không có trong mạch hiện tại)
+- Nguồn 5V rời, OLED, LED báo (không có trong mạch hiện tại)
 
 ## Trạng thái dự án
 
 | Phần | Trạng thái |
 | ---- | ---------- |
-| Mạch: DHT11, PMS7003, BH1750, MQ135 DO, relay + quạt | Đạt `test_all.py` ngày 04/11/2026 |
+| Mạch: DHT11, PMS7003, BH1750, relay + quạt | Đạt `test_all.py` ngày 04/11/2026 và 23/11/2026 |
 | Thu thập DHT11 + BH1750 → CSV + MQTT → dashboard Streamlit | Có code (`pi_sensor_client.py`, `server_app.py`) |
 | Camera + nhận diện người YOLOv8n qua MQTT | Có code (`pi_camera_client.py`, `pi_detection_client.py`) |
 | Collector `aiot/collector.py`: 4 cảm biến → SQLite + CSV + MQTT, gộp 5 phút | Có code, đã chạy thử 75 s trên Pi ngày 07/11/2026, chưa cài dịch vụ (README 2.4a) |
 | Điều khiển quạt tự động `aiot/controller.py` | Có code, chưa thử trên mạch (README 2.4c) |
+| Còi báo vượt ngưỡng (`aiot/alarm.py`, `aiot/buzzer.py`, `/mute`) | Có code và test, chưa nối và thử trên mạch |
 | Bot Telegram, cảnh báo, báo cáo sáng, lời khuyên Gemini | Có code, chưa thử với bot thật và Gemini thật (README 2.4d, 2.4f) |
 | Dự báo PM2.5 mỗi giờ (đối chứng + LSTM) | Có code; LSTM đã huấn luyện/đánh giá trên dữ liệu CAMS công khai, chưa triển khai (README 2.4e, 2.4g) |
 | Cảnh báo nắng/mưa kèm ảnh camera (`aiot/weather.py`, `/photo`, menu lệnh bot) | Có code, chưa thử thật (README 2.4h) |
+| Nhận diện nguồn bụi AI (`aiot/source_*.py`, `training/train_source.py`): 4 nhãn, mẫu 1 giây, dự đoán mỗi 5 s, quạt + còi theo nhãn | Có code và mô hình huấn luyện trên dữ liệu mô phỏng (hiệu chỉnh theo nhang 23/11); code đã chép lên Pi 23/11/2026 nhưng chưa khởi động lại dịch vụ; chưa có sự kiện nấu ăn thật (`docs/nhan_dien_nguon_bui.md`) |
 | Nghiệm thu 7 ngày | Có `scripts/acceptance_report.py`; chưa đo, kết quả ghi ở `docs/nghiem_thu.md` |
 
 Việc còn lại theo thứ tự nằm ở mục "Việc cần làm trên Pi" trong `README.md`.
@@ -35,13 +37,12 @@ Raspberry Pi 4 Model B 4GB. Số chân là số vật lý trên header 40 chân.
 | DHT11 | Nhiệt độ, độ ẩm | OUT → pin 11 (GPIO17) |
 | BH1750 | Ánh sáng (lux) | I2C pin 3, 5; địa chỉ `0x23` |
 | PMS7003 | PM1.0, PM2.5, PM10 | UART pin 8, 10 (`/dev/serial0`); 5V |
-| MQ135 | 1 bit vượt ngưỡng | DO qua cầu chia áp 10 kΩ / 20 kΩ → pin 37 (GPIO26); 5V từ pin 4, GND pin 20 |
 | Relay + quạt 5V | Mô phỏng máy lọc | IN → pin 16 (GPIO23); tải nối COM/NO |
+| Còi chủ động (module 3 chân, kích mức thấp) | Báo vượt ngưỡng tại chỗ | I/O → pin 29 (GPIO5); VCC pin 17 (3.3V), GND pin 25 |
 | Camera USB | Ảnh | /dev/video0 |
 
 Những điều dễ sai:
-- **MQ135 DO:** `0` = đèn DO sáng = vượt ngưỡng, `1` = chưa vượt. Không có giá trị nồng độ. Ngưỡng chỉnh bằng biến trở và chưa thử với khí thật.
-- **MQ135 mất GND vẫn đọc `1`:** DO bị kéo lên theo VCC, nên phải thấy đèn nguồn sáng mới tin được giá trị. Không nối DO hoặc AO thẳng vào GPIO, vì có thể lên gần 5V.
+- **Còi kích mức thấp:** GPIO5 LOW = kêu, HIGH = im. VCC phải lấy 3.3V (pin 17), cấp 5V thì mức HIGH của Pi không tắt được còi. Phải dùng GPIO 0–8 (mặc định kéo lên) để còi im lúc Pi khởi động; GPIO26 mặc định kéo xuống nên còi sẽ kêu.
 - **Relay kích mức HIGH:** GPIO23 HIGH = quạt quay, LOW = quạt dừng. GPIO23 mặc định kéo xuống, nên quạt tắt khi Pi khởi động. Nếu GPIO23 đọc cao khi đang là input, kiểm tra dây GND của relay.
 - **Rail breadboard có thể bị ngắt ở giữa:** dây nguồn DHT11 và BH1750 phải cùng đoạn rail trái; VCC của PMS7003 và VCC, COM của relay phải cùng đoạn rail phải.
 - **Đầu dây Dupont có thể tiếp xúc kém:** cắm lại chắc trước khi kết luận module hỏng.
@@ -64,13 +65,17 @@ Nguyên tắc **an toàn AI:** Gemini chỉ viết lời khuyên, không điều
 
 ## Chức năng dự kiến
 
-- **Thu thập:** gộp trung bình 5 phút, gắn cờ `valid`, loại giá trị lỗi. MQ135 là tín hiệu phụ, không gọi là đo CO₂.
+- **Thu thập:** gộp trung bình 5 phút, gắn cờ `valid`, loại giá trị lỗi.
 - **Báo cáo sáng (mặc định 06:30):** không khí 24 giờ qua, dự báo 6 giờ tới, lời khuyên từ Gemini, trạng thái quạt.
 - **Dự báo:** PM2.5 trung bình giờ cho 1–6 giờ tới, kèm nhãn AQI. Đầu vào gồm PM2.5, nhiệt độ, độ ẩm, sin/cos giờ trong ngày, và có thể thêm dự báo gió/mưa từ Open-Meteo.
 - **Cảnh báo:** gửi khi đổi nhóm AQI, tối đa 1 tin cùng loại mỗi 30 phút, có giờ yên lặng.
 - **Điều khiển:** tự bật quạt khi không khí xấu, tự tắt khi tốt lại, có ghi đè thủ công.
 
-### Logic điều khiển quạt
+### Nhận diện nguồn bụi (AI điều khiển quạt và còi)
+
+Nhãn và hành động cố định: bình thường → quạt tắt, còi im; nấu ăn → chỉ quạt; ô nhiễm từ ngoài vào (nền PM2.5 ≥ 55,5) → quạt + còi; khói thuốc/nhang → chỉ còi (kể cả khi PM2.5 rất cao, theo yêu cầu nhóm). Ghi đè thủ công, mất dữ liệu > 2 phút, `min_state_s` vẫn áp dụng. Không có mô hình / mẫu 1 giây cũ > 15 s / chưa đủ tin cậy (TB xác suất 3 lần < 0,6) thì dùng luật ngưỡng bên dưới. Sự kiện đốt nhang 21:07 ngày 23/11/2026 (đỉnh 805 và 1061 µg/m³) là dữ liệu thật duy nhất có nhãn `smoking`; nền ~160 tối 23/11 được gán `pollution` (giả định).
+
+### Logic điều khiển quạt (luật ngưỡng, dùng khi AI không có nhãn)
 
 Hai trạng thái: BÌNH THƯỜNG (quạt tắt) và BẢO VỆ (quạt bật). Đưa tham số vào `config.yaml`.
 
@@ -79,6 +84,7 @@ Hai trạng thái: BÌNH THƯỜNG (quạt tắt) và BẢO VỆ (quạt bật).
 | Vào BẢO VỆ | PM2.5 TB 10 phút > 55 µg/m³, liên tục ≥ 5 phút |
 | Thoát BẢO VỆ | PM2.5 TB 15 phút < 35 µg/m³, liên tục ≥ 15 phút, và đã giữ trạng thái ≥ 10 phút; không thoát khi còn dự báo mới (≤ 90 phút) với TB 3 giờ tới > 100 µg/m³ |
 | Khẩn cấp | Trung vị PM2.5 1 phút (cần ≥ 3 mẫu) ≥ 150 µg/m³: vào ngay, kèm cảnh báo mạnh. Không nhầm với nhóm AQI "Nguy hại" (≥ 225,5) |
+| Còi | Trung vị PM2.5 1 phút ≥ `buzzer.alarm_pm25` (mặc định 150): kêu 10 giây, lặp lại mỗi 5 phút khi còn vượt, tắt ngay khi hết; kêu cả giờ yên lặng; `/mute` tắt tiếng |
 | Chủ động | Dự báo TB 3 giờ tới > 100 µg/m³: bật quạt trước |
 | Chế độ demo | Rút ngắn thời gian chờ, ví dụ 20 giây |
 
@@ -90,7 +96,7 @@ An toàn:
 
 ### Telegram
 
-Lệnh: `/now`, `/forecast`, `/report`, `/status`, `/mode auto|manual`, `/fan on|off`, `/quiet 22 6`.
+Lệnh: `/now`, `/forecast`, `/report`, `/status`, `/mode auto|manual`, `/fan on|off`, `/quiet 22 6`, `/mute [phút]|off` (tắt tiếng còi).
 
 Chỉ phản hồi chat trong `ALLOWED_CHAT_IDS`, không in token vào log, và ghi mọi lệnh điều khiển vào nhật ký.
 
@@ -133,14 +139,12 @@ CREATE TABLE raw_readings (        -- mẫu thô 10 giây, xoá dần bằng pur
   ts INTEGER PRIMARY KEY,          -- trùng ts thì giữ bản ghi đầu
   pm1 REAL, pm25 REAL, pm10 REAL,
   temp REAL, hum REAL, lux REAL,   -- NULL khi đọc lỗi
-  mq135_do INTEGER,
   clock_synced INTEGER NOT NULL    -- 0 = đồng hồ chưa đồng bộ NTP
 );
 CREATE TABLE readings (            -- trung bình 5 phút; cửa sổ không có mẫu thì không có dòng
   ts INTEGER PRIMARY KEY,
   pm1 REAL, pm25 REAL, pm10 REAL,
   temp REAL, hum REAL, lux REAL,
-  mq135_do INTEGER,                -- 0 = vượt ngưỡng, 1 = chưa vượt; 0 nếu có mẫu nào bằng 0
   valid INTEGER DEFAULT 1          -- 1 khi >= nửa số mẫu PM2.5 hợp lệ và đồng hồ đã đồng bộ
 );
 CREATE TABLE forecasts (
@@ -152,6 +156,12 @@ CREATE TABLE events (              -- 'fan_on', 'fan_off', 'override', 'sensor_f
   ts INTEGER, kind TEXT, detail TEXT
 );                                 -- có chỉ mục theo ts
 CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE fast_readings (       -- mẫu 1 giây cho AI nguồn bụi, giữ 48 h (đoạn có nhãn giữ lại)
+  ts INTEGER PRIMARY KEY, pm1, pm25, pm10, n03, n05, n10, n25, n50, n100 REAL,
+  temp, hum, lux REAL, clock_synced INTEGER NOT NULL
+);
+CREATE TABLE source_labels (id, start_ts, end_ts, label, note);  -- scripts/label_event.py
+CREATE TABLE source_predictions (ts PRIMARY KEY, label, raw_label, proba, model);
 CREATE TABLE outbox (              -- tin Telegram chờ gửi, gửi bù khi có mạng
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -163,7 +173,7 @@ CREATE TABLE outbox (              -- tin Telegram chờ gửi, gửi bù khi c�
 
 Python 3 trong venv. Thư viện dự kiến: `pyserial`, `adafruit-circuitpython-dht`, `adafruit-circuitpython-bh1750`, `lgpio` hoặc `gpiozero`, `pandas`, `statsmodels`, `scikit-learn`, Keras (trên PC), TFLite/LiteRT (trên Pi), `requests` hoặc `python-telegram-bot`, `google-genai`.
 
-Dịch vụ dự kiến (systemd): `collector` chạy liên tục, `controller` lặp 15–30 giây, `bot` long polling, `forecast.timer` mỗi giờ, `morning.timer` 06:30. Bí mật để trong `.env`, không commit: `TELEGRAM_TOKEN`, `GEMINI_API_KEY`, `ALLOWED_CHAT_IDS`, `MQTT_PASSWORD` (mẫu ở `.env.example`).
+Dịch vụ dự kiến (systemd): `collector` chạy liên tục, `controller` lặp 5 giây (dự đoán nguồn bụi mỗi vòng), `bot` long polling, `forecast.timer` mỗi giờ, `morning.timer` 06:30. Bí mật để trong `.env`, không commit: `TELEGRAM_TOKEN`, `GEMINI_API_KEY`, `ALLOWED_CHAT_IDS`, `MQTT_PASSWORD` (mẫu ở `.env.example`).
 
 Cấu hình chung nằm trong `config.yaml`, đọc bằng `aiot.config.load_config()`; mọi script, kể cả `pi_*_client.py` và `server_app.py`, lấy IP broker từ đây và mật khẩu MQTT từ `.env`. Test trên laptop: tạo `.venv` trong repo, cài `requirements-dev.txt`, chạy `.venv/Scripts/python -m pytest`.
 
@@ -189,7 +199,6 @@ Các mục có ghi "tạm" đã có giá trị mặc định trong `config.yaml`
 - Thang AQI (US EPA hay VN_AQI) và ngưỡng điều khiển cuối cùng — tạm: US EPA 2024, ngưỡng như bảng trên (`control` trong `config.yaml`)
 - Vị trí đặt cảm biến, và một hay hai cảm biến PM
 - SQLite thay CSV hay dùng song song, và có giữ MQTT + dashboard + camera trong sản phẩm cuối không — tạm: SQLite và CSV song song, collector vẫn gửi MQTT
-- Có dùng bit MQ135 cho cảnh báo hay điều khiển không — tạm: không, chỉ ghi lại; quạt chỉ theo PM2.5
 - Model Gemini và số lần gọi mỗi ngày — tạm: `gemini-3.5-flash-lite`, tối đa 3 lần/ngày
 - Mốc nộp bài và phân công
 
@@ -201,7 +210,7 @@ Các mục có ghi "tạm" đã có giá trị mặc định trong `config.yaml`
 - Bảng kiểm tra: `venv/bin/python -m aiot.healthcheck` (không cần sudo); mã thoát 1 chỉ khi collector không chạy hoặc không có mẫu mới < 60 s. Các bước thủ công chuyển sang `docs/van_hanh_chi_tiet.md`.
 - Collector (`python -m aiot.collector`, dịch vụ `aiot-collector`) thay cho `pi_sensor_client.py`; không chạy cả hai cùng lúc vì dùng chung cảm biến.
 - `test_all.py` đã có trong repo. `test.py` trên Pi đã cũ, vẫn yêu cầu ADS1115. Thay đổi chưa commit của `pi_sensor_client.py` trên Pi (đường dẫn CSV) đã đưa vào repo; Pi cần cập nhật code từ repo và tạo `.env` có `MQTT_PASSWORD`.
-- Chạy kiểm tra: `ssh -t admin@10.157.117.41 "cd ~/BTL_IOT && source venv/bin/activate && python test_all.py"`. Phần quạt và đèn MQ135 cần người đứng cạnh mạch trả lời; không có TTY thì script bỏ qua, không đụng relay, và mã thoát là 1.
+- Chạy kiểm tra: `ssh -t admin@10.157.117.41 "cd ~/BTL_IOT && source venv/bin/activate && python test_all.py"`. Phần quạt và còi cần người đứng cạnh mạch trả lời; không có TTY thì script bỏ qua, không đụng relay và còi, và mã thoát là 1. Phải dừng dịch vụ trước (`bash scripts/pi_up.sh --stop`), nếu không script tự thoát và nhắc.
 - Tắt Pi và rút cáp nguồn trước khi đổi dây. Không nối hay tháo dây khi Pi đang có điện.
 - Khi đổi cách nối, cập nhật `so_do_noi_day_raspberry_pi.md` và file này.
 - Không ghi mật khẩu, token hay API key vào file này hoặc tài liệu.

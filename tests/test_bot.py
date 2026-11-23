@@ -58,8 +58,8 @@ def command_events(conn):
         "SELECT detail FROM events WHERE kind = 'command' ORDER BY rowid")]
 
 
-def add_sample(conn, ts, pm25=20.0, mq=1):
-    insert_raw(conn, RawSample(ts, 12.0, pm25, 30.0, 27.5, 70.0, 150.0, mq, True))
+def add_sample(conn, ts, pm25=20.0):
+    insert_raw(conn, RawSample(ts, 12.0, pm25, 30.0, 27.5, 70.0, 150.0, True))
 
 
 # ---------------- allowlist ----------------
@@ -189,18 +189,17 @@ def test_now_reports_old_data_with_age(conn):
 
 def test_now_reports_latest_sample(conn):
     add_sample(conn, NOW - 100, pm25=40.0)
-    add_sample(conn, NOW - 30, pm25=60.0, mq=0)
+    add_sample(conn, NOW - 30, pm25=60.0)
     reply = handle(conn, "/now")
     assert "60,0" in reply and "Xấu" in reply           # PM2.5 và nhãn AQI
     assert "12,0" in reply and "30,0" in reply           # PM1, PM10
     assert "27,5" in reply and "70" in reply and "150" in reply
-    assert "vượt ngưỡng" in reply.lower()
-    assert "co2" not in reply.lower() and "co₂" not in reply.lower()
+    assert "mq135" not in reply.lower()
     assert "30 giây" in reply
 
 
 def test_now_handles_missing_values(conn):
-    insert_raw(conn, RawSample(NOW - 10, None, None, None, 26.0, None, None, None, True))
+    insert_raw(conn, RawSample(NOW - 10, None, None, None, 26.0, None, None, True))
     reply = handle(conn, "/now")
     assert "26,0" in reply
     assert "PM2.5" in reply
@@ -770,7 +769,7 @@ def test_set_my_commands_payload():
     assert call["url"].endswith("/setMyCommands")
     commands = call["json"]["commands"]
     assert [c["command"] for c in commands] == [
-        "now", "status", "forecast", "report", "photo", "fan", "mode", "quiet", "clear", "help"]
+        "now", "status", "forecast", "report", "photo", "fan", "mode", "quiet", "mute", "clear", "help"]
     for c in commands:
         assert set(c) == {"command", "description"}
         assert 1 <= len(c["description"]) <= 256 and not c["command"].startswith("/")
@@ -1184,3 +1183,30 @@ def test_clear_refused_while_clock_untrusted(conn):
     bot.poll_once(conn, client, CFG, NOW, clock_synced=lambda: False)
     assert client.deleted == []
     assert "đồng hồ của Pi chưa đồng bộ" in client.sent[0][1]
+
+
+# ---------------- /mute (còi) ----------------
+def test_mute_default_writes_until_and_logs(conn):
+    reply = handle(conn, "/mute")
+    assert int(get_state(conn, "buzzer_mute_until")) == NOW + CFG.buzzer.mute_s
+    assert "tắt tiếng còi" in reply
+    assert command_events(conn) == [f"/mute chat={CHAT}"]
+
+
+def test_mute_minutes_and_off(conn):
+    handle(conn, "/mute 10")
+    assert int(get_state(conn, "buzzer_mute_until")) == NOW + 600
+    handle(conn, "/mute off", uid=1001)
+    assert get_state(conn, "buzzer_mute_until") == "0"
+
+
+@pytest.mark.parametrize("text", ["/mute 0", "/mute -5", "/mute abc", "/mute 99999", "/mute 1 2"])
+def test_mute_validates_input(conn, text):
+    assert handle(conn, text) == bot.USAGE_MUTE
+    assert get_state(conn, "buzzer_mute_until") is None
+
+
+def test_status_shows_buzzer(conn):
+    assert "Còi: sẵn sàng" in handle(conn, "/status")
+    handle(conn, "/mute 10", uid=1001)
+    assert "Còi: tắt tiếng tới" in handle(conn, "/status", uid=1002)

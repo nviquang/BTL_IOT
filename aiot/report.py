@@ -147,9 +147,9 @@ def summarize(conn, now, forecast_max_age_s=DEFAULT_FORECAST_MAX_AGE_S) -> dict:
     now = int(now)
     start = now - DAY_S
     rows = conn.execute(
-        "SELECT ts, pm25, temp, hum, mq135_do FROM readings "
+        "SELECT ts, pm25, temp, hum FROM readings "
         "WHERE valid = 1 AND ts >= ? AND ts < ? ORDER BY ts", (start, now)).fetchall()
-    pm = [(int(ts), float(v)) for ts, v, _, _, _ in rows if v is not None]
+    pm = [(int(ts), float(v)) for ts, v, _, _ in rows if v is not None]
     temps = [float(r[2]) for r in rows if r[2] is not None]
     hums = [float(r[3]) for r in rows if r[3] is not None]
 
@@ -196,7 +196,6 @@ def summarize(conn, now, forecast_max_age_s=DEFAULT_FORECAST_MAX_AGE_S) -> dict:
         "aqi_hours": aqi_hours,
         "temp_mean": _round(sum(temps) / len(temps)) if temps else None,
         "hum_mean": _round(sum(hums) / len(hums), 0) if hums else None,
-        "mq135_exceeded_windows": sum(1 for r in rows if r[4] == 0),
         "fan_on_now": fan_now,
         "control_mode": mode,
         "manual_override": manual,
@@ -284,9 +283,6 @@ def build_report(conn, now, cfg, client=None, *, morning=False) -> str:
                f"(luật tự động: {s['control_mode']}"
                + (", đang ghi đè thủ công" if s["manual_override"] else "") + ")")
     lines.append(f"{fan}; bật khoảng {s['fan_on_minutes_24h']} phút trong 24 giờ qua.")
-    if s["mq135_exceeded_windows"]:
-        lines.append(f"MQ135 (chỉ báo khí, không phải nồng độ CO₂): vượt ngưỡng ở "
-                     f"{s['mq135_exceeded_windows']} cửa sổ 5 phút.")
     return "\n".join(lines)
 
 

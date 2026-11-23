@@ -4,14 +4,13 @@
 - DHT11: chân 11 (GPIO17), thử lại 3 lần cách 2,5 giây như pi_sensor_client.py.
 - BH1750: I2C chân 3, 5, địa chỉ 0x23.
 - PMS7003: UART /dev/serial0, đọc qua aiot.pms7003.PmsReader.
-- MQ135: chân DO qua cầu chia áp vào pin 37 (GPIO26), lgpio chip 0, kéo xuống.
-  0 = vượt ngưỡng, 1 = chưa vượt.
 
 Thư viện phần cứng chỉ import khi mở thiết bị, để laptop chạy test không cần cài.
 Mọi hàm read_* trả None khi lỗi, không raise. Thiết bị mở lỗi (thiếu cổng, console
 đang chiếm UART, thiếu thư viện) thì thử mở lại sau REOPEN_S giây.
 """
 import logging
+import threading
 import time
 
 from aiot.pms7003 import BAUDRATE, DEFAULT_PORT, MAX_READ_WAIT_S, PmsReader, PmsReading
@@ -21,8 +20,6 @@ log = logging.getLogger(__name__)
 DHT_RETRIES = 3                 # số lần thử đọc lại DHT11
 DHT_RETRY_DELAY = 2.5           # giây nghỉ giữa 2 lần thử (DHT cần >= 2s)
 BH1750_ADDRESS = 0x23           # 0x5C nếu kéo chân ADDR lên cao
-GPIO_CHIP = 0
-MQ135_DO_GPIO = 26              # pin 37
 PMS_TIMEOUT_S = 3.0
 REOPEN_S = 60                   # thử mở lại thiết bị lỗi sau chừng này giây
 
@@ -39,8 +36,7 @@ class PiSensors:
         self._i2c = None
         self._pms = None
         self._pms_serial = None
-        self._chip = None
-        self._next_open = {"dht": 0.0, "lux": 0.0, "pms": 0.0, "mq135": 0.0}
+        self._next_open = {"dht": 0.0, "lux": 0.0, "pms": 0.0}
 
     # ---------- mở thiết bị ----------
     def _may_open(self, name: str) -> bool:
@@ -101,21 +97,6 @@ class PiSensors:
                 self._open_failed("pms", "PMS7003", e)
         return self._pms
 
-    def _ensure_chip(self):
-        if self._chip is None and self._may_open("mq135"):
-            chip = None
-            try:
-                import lgpio
-
-                chip = lgpio.gpiochip_open(GPIO_CHIP)
-                lgpio.gpio_claim_input(chip, MQ135_DO_GPIO, lgpio.SET_PULL_DOWN)
-                self._chip = chip
-            except Exception as e:
-                if chip is not None:
-                    _quiet(lambda: lgpio.gpiochip_close(chip))
-                self._open_failed("mq135", "MQ135 (lgpio)", e)
-        return self._chip
-
     # ---------- đọc ----------
     def read_dht(self) -> tuple[float, float] | None:
         """Đọc DHT11, thử lại tối đa DHT_RETRIES lần. Trả về (temp, hum) hoặc None."""
@@ -162,20 +143,6 @@ class PiSensors:
             self._open_failed("pms", "PMS7003 (lỗi đọc)", e)
             return None
 
-    def read_mq135(self) -> int | None:
-        """Đọc bit DO của MQ135: 0 = vượt ngưỡng, 1 = chưa vượt, None nếu lỗi."""
-        chip = self._ensure_chip()
-        if chip is None:
-            return None
-        try:
-            import lgpio
-
-            return int(lgpio.gpio_read(chip, MQ135_DO_GPIO))
-        except Exception as e:
-            self._close_chip()
-            self._open_failed("mq135", "MQ135 (lỗi đọc)", e)
-            return None
-
     # ---------- dọn dẹp ----------
     def _close_pms(self):
         if self._pms_serial is not None:
@@ -183,19 +150,8 @@ class PiSensors:
         self._pms = None
         self._pms_serial = None
 
-    def _close_chip(self):
-        if self._chip is not None:
-            chip = self._chip
-
-            def close():
-                import lgpio
-                lgpio.gpiochip_close(chip)
-
-            _quiet(close)
-        self._chip = None
-
     def close(self) -> None:
-        """Dọn tiến trình libgpiod_pulsein của DHT, giải phóng bus I2C, đóng UART và chip GPIO."""
+        """Dọn tiến trình libgpiod_pulsein của DHT, giải phóng bus I2C và đóng UART."""
         if self._dht is not None:
             _quiet(self._dht.exit)
             self._dht = None
@@ -204,7 +160,6 @@ class PiSensors:
             _quiet(self._i2c.deinit)
             self._i2c = None
         self._close_pms()
-        self._close_chip()
 
 
 def _quiet(fn):
@@ -212,3 +167,94 @@ def _quiet(fn):
         fn()
     except Exception:
         pass
+
+
+class SensorHub:
+    """Đọc cảm biến ở nhịp nhanh cho bộ nhận diện nguồn bụi (mẫu 1 giây).
+
+    Mỗi cảm biến chạy trong một luồng riêng và giữ giá trị mới nhất kèm thời điểm đọc:
+    PMS7003 ~1 khung/giây, BH1750 mỗi giây, DHT11 mỗi ~2 giây (thử lại chặn tới 5 giây,
+    không được làm trễ PM). snapshot() trả giá trị còn mới (<= max_age), cũ hơn thì None.
+
+    Cũng có read_dht/read_lux/read_pm trả giá trị mới nhất, để collect_once (mẫu 10 giây)
+    dùng chung mà không đọc phần cứng lần thứ hai.
+    """
+
+    MAX_AGE_S = {"pm": 3.0, "lux": 3.0, "dht": 10.0}
+    PERIOD_S = {"pm": 0.0, "lux": 1.0, "dht": 2.0}
+
+    def __init__(self, sensors, clock=time.monotonic):
+        self._sensors = sensors
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._latest = {"pm": (None, None), "lux": (None, None), "dht": (None, None)}
+        self._stop = threading.Event()
+        self._threads = []
+
+    def _reader(self, key):
+        return {"pm": self._sensors.read_pm, "lux": self._sensors.read_lux,
+                "dht": self._sensors.read_dht}[key]
+
+    def poll(self, key) -> None:
+        """Đọc một lần cảm biến key và lưu kết quả (luồng gọi lặp lại; test gọi trực tiếp)."""
+        try:
+            value = self._reader(key)()
+        except Exception as e:
+            log.warning("Lỗi đọc %s: %s", key, e)
+            value = None
+        if value is not None:
+            with self._lock:
+                self._latest[key] = (value, self._clock())
+
+    def _loop(self, key):
+        period = self.PERIOD_S[key]
+        while not self._stop.is_set():
+            start = self._clock()
+            self.poll(key)
+            wait = period - (self._clock() - start)
+            if wait > 0:
+                self._stop.wait(wait)
+            elif key == "pm" and self._latest["pm"][0] is None:
+                self._stop.wait(0.5)        # PMS chưa mở được: tránh vòng lặp bận
+
+    def start(self) -> None:
+        for key in ("pm", "lux", "dht"):
+            t = threading.Thread(target=self._loop, args=(key,), name=f"sensor-{key}", daemon=True)
+            t.start()
+            self._threads.append(t)
+
+    def stop(self) -> None:
+        self._stop.set()
+        for t in self._threads:
+            t.join(timeout=6)
+
+    def _fresh(self, key):
+        with self._lock:
+            value, at = self._latest[key]
+        if value is None or at is None or self._clock() - at > self.MAX_AGE_S[key]:
+            return None
+        return value
+
+    def read_pm(self):
+        return self._fresh("pm")
+
+    def read_lux(self):
+        return self._fresh("lux")
+
+    def read_dht(self):
+        return self._fresh("dht")
+
+    def snapshot(self) -> dict:
+        """{cột fast_readings: giá trị hoặc None} từ giá trị còn mới của mỗi cảm biến."""
+        pm, lux, dht = self.read_pm(), self.read_lux(), self.read_dht()
+        out = {c: None for c in ("pm1", "pm25", "pm10", "n03", "n05", "n10", "n25", "n50",
+                                 "n100", "temp", "hum", "lux")}
+        if pm is not None:
+            for name in ("pm1", "pm25", "pm10", "n03", "n05", "n10", "n25", "n50", "n100"):
+                v = getattr(pm, name, None)
+                out[name] = float(v) if v is not None else None
+        if lux is not None:
+            out["lux"] = float(lux)
+        if dht is not None:
+            out["temp"], out["hum"] = float(dht[0]), float(dht[1])
+        return out

@@ -37,7 +37,9 @@ $VenvPy = Join-Path $RepoDir ".venv\Scripts\python.exe"
 $DashboardUrl = "http://localhost:8501"
 $RemoteTar = "/tmp/btl_iot_deploy.tar"
 $DeployPaths = @("aiot", "deploy", "scripts", "config.yaml", "requirements-pi.txt",
-    "test_all.py", "README.md", "docs")
+    "test_all.py", "README.md", "docs", "training/__init__.py", "training/simulate_sources.py")
+# Mô hình đã huấn luyện (models/ không commit): chép riêng nếu có trên laptop
+$ModelFiles = @("source_rf.json", "source_summary.json", "pm25_lstm.tflite", "scaler.json")
 $DashboardModules = "import streamlit, paho.mqtt, yaml, pandas, matplotlib"
 $DashboardPackages = @("streamlit", "paho-mqtt", "PyYAML", "pandas", "matplotlib")
 
@@ -186,6 +188,15 @@ function Deploy-ToPi([string]$PiTarget) {
     & scp @SshOpts -q (Join-Path $RepoDir ".env") "${PiTarget}:BTL_IOT/.env"
     if ($LASTEXITCODE -ne 0) { Stop-WithError "scp .env lỗi" }
     Remove-Item $tar -Force
+    $models = @($ModelFiles | ForEach-Object { Join-Path $RepoDir "models\$_" } | Where-Object { Test-Path $_ })
+    if ($models.Count -gt 0) {
+        if ((Invoke-Ssh $PiTarget "mkdir -p ~/BTL_IOT/models") -ne 0) { Stop-WithError "không tạo được ~/BTL_IOT/models" }
+        & scp @SshOpts -q @models "${PiTarget}:BTL_IOT/models/"
+        if ($LASTEXITCODE -ne 0) { Stop-WithError "scp mô hình lỗi" }
+        Write-Ok "đã chép $($models.Count) file mô hình lên ~/BTL_IOT/models"
+    } else {
+        Write-Warn "không có models/source_rf.json: controller dùng luật ngưỡng PM2.5 (chạy training/train_source.py)"
+    }
 
     $remote = "cd ~/BTL_IOT && tar -xmf $RemoteTar && rm -f $RemoteTar && chmod 600 .env && chmod +x scripts/pi_up.sh"
     if ((Invoke-Ssh $PiTarget $remote) -ne 0) { Stop-WithError "giải nén code trên Pi lỗi" }

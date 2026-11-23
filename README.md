@@ -91,7 +91,7 @@ Gõ `/` trong Telegram để thấy menu. Bot chỉ trả lời chat có trong `
 
 | Lệnh                          | Việc                                                             |
 | ----------------------------- | ---------------------------------------------------------------- |
-| `/now`                        | số liệu cảm biến mới nhất (PM, nhiệt độ, độ ẩm, ánh sáng, MQ135) |
+| `/now`                        | số liệu cảm biến mới nhất (PM, nhiệt độ, độ ẩm, ánh sáng)        |
 | `/status`                     | chế độ, quạt, ghi đè, lỗi cảm biến, tuổi dữ liệu, giờ yên lặng   |
 | `/forecast`                   | dự báo PM2.5 6 giờ tới kèm nhãn AQI                              |
 | `/report`                     | báo cáo 24 giờ qua (tính vào 3 lượt Gemini/ngày)                 |
@@ -99,6 +99,7 @@ Gõ `/` trong Telegram để thấy menu. Bot chỉ trả lời chat có trong `
 | `/fan on` / `/fan off`        | bật/tắt quạt thủ công trong 2 giờ                                |
 | `/mode auto` / `/mode manual` | quạt theo PM2.5 / giữ quạt như hiện tại trong 2 giờ              |
 | `/quiet 22 6`                 | giờ yên lặng 22h → 6h (chỉ cảnh báo khẩn cấp được gửi)           |
+| `/mute`, `/mute 10`, `/mute off` | tắt tiếng còi tại chỗ 30 phút / 10 phút / bật lại             |
 | `/clear`                      | xoá tin của bot và của bạn trong 48 giờ qua                      |
 | `/help`                       | danh sách lệnh                                                   |
 
@@ -117,7 +118,7 @@ Cuối `pi_up.sh` (và `--status`, `up.ps1 -Status`) in bảng do `python -m aio
 | ➖       | bỏ qua có chủ ý (`--no-fan`, thiếu token Telegram, client camera cũ đang giữ camera)                     |
 
 Các dòng: `.env` (chỉ in tên khoá thiếu, không in giá trị), trạng thái 6 unit systemd, tuổi
-mẫu mới nhất, cảm biến không có số (MQ135 trống trong 3 phút sấy đầu là bình thường), nhịp của
+mẫu mới nhất, cảm biến không có số, nhịp của
 controller, Telegram `getMe`, chụp thử camera, đồng hồ đã đồng bộ NTP chưa.
 Có ❌ thì xem `journalctl -u aiot-collector -n 30` và
 [bảng xử lý sự cố](docs/van_hanh_chi_tiet.md#10-xử-lý-sự-cố).
@@ -128,13 +129,13 @@ Có ❌ thì xem `journalctl -u aiot-collector -n 30` và
 
 ```
                          RASPBERRY PI (chạy liên tục, không cần Internet)
- DHT11, BH1750,  ──► aiot-collector (10 s) ──► SQLite ~/iot_data/aiot.db ◄── aiot-forecast (mỗi giờ :02)
- PMS7003, MQ135        │                          │      ▲                  dự báo PM2.5 1–6 giờ
+ DHT11, BH1750,  ──► aiot-collector (1 s + 10 s) ► SQLite ~/iot_data/aiot.db ◄── aiot-forecast (mỗi giờ :02)
+ PMS7003               │                          │      ▲                  dự báo PM2.5 1–6 giờ
                        ├─► sensors.csv            │      │
                        └─► MQTT ──────────────────┼──────┼─────────► Laptop: Mosquitto + server_app.py
                                                   ▼      │                 (dashboard, tuỳ chọn)
-                       aiot-controller (20 s) ────┘      │
-                       luật tất định ──► GPIO23 ──► relay ──► quạt
+                       aiot-controller (5 s) ─────┘      │
+                       AI nguồn bụi + luật ──► GPIO23 relay (quạt), GPIO5 (còi)
                                                          │
                        aiot-bot (Telegram) ◄─────────────┘ gửi tin chờ trong outbox, nhận lệnh
                        aiot-morning (06:30) ──► Gemini (số liệu tổng hợp) ──► báo cáo sáng
@@ -143,15 +144,41 @@ Có ❌ thì xem `journalctl -u aiot-collector -n 30` và
 
 - **Local-first:** đo, lưu, dự báo và điều khiển chạy trên Pi. Mất mạng vẫn đo, vẫn điều khiển;
   tin Telegram được gửi bù khi có mạng.
-- **An toàn AI:** Gemini chỉ viết lời khuyên. Bật/tắt quạt là luật cố định trong `aiot/control.py`.
+- **An toàn AI:** Gemini chỉ viết lời khuyên. Quạt và còi theo nhãn của bộ nhận diện nguồn bụi
+  chạy cục bộ (bảng hành động cố định), thiếu mô hình/dữ liệu thì theo luật ngưỡng trong `aiot/control.py`.
 
 | Dịch vụ (systemd)     | Chạy             | Việc                                                               |
 | --------------------- | ---------------- | ------------------------------------------------------------------ |
-| `aiot-collector`      | liên tục         | đọc cảm biến mỗi 10 s → SQLite + CSV + MQTT, gộp trung bình 5 phút |
-| `aiot-controller`     | liên tục         | luật quạt mỗi 20 s, lệnh `/fan`, `/mode`                           |
+| `aiot-collector`      | liên tục         | mẫu 1 s → `fast_readings`; mỗi 10 s → SQLite + CSV + MQTT, gộp 5 phút |
+| `aiot-controller`     | liên tục         | mỗi 5 s: AI nguồn bụi → quạt + còi, lệnh `/fan`, `/mode`             |
 | `aiot-bot`            | liên tục         | bot Telegram, gửi cảnh báo và báo cáo                              |
 | `aiot-forecast.timer` | mỗi giờ, phút 02 | dự báo PM2.5 6 giờ tới                                             |
 | `aiot-morning.timer`  | 06:30 hằng ngày  | báo cáo sáng + lời khuyên Gemini                                   |
 | `aiot-weather.timer`  | mỗi 5 phút       | luật nắng/mưa, chụp ảnh khi cảnh báo                               |
 
 Test trên laptop: `.venv\Scripts\python -m pytest`. **Tắt Pi và rút cáp nguồn trước khi đổi dây.**
+
+## Nhận diện nguồn bụi (AI)
+
+Mỗi 5 giây controller dự đoán nguồn bụi từ mẫu 1 giây của 30 phút qua (RandomForest,
+`models/source_rf.json`) và điều khiển theo bảng cố định:
+
+| Nhãn                  | Quạt | Còi |
+| --------------------- | ---- | --- |
+| bình thường           | tắt  | im  |
+| nấu ăn                | bật  | im  |
+| ô nhiễm từ ngoài vào  | bật  | kêu |
+| khói thuốc lá / nhang | tắt  | kêu |
+
+Ghi đè `/fan`, `/mute` vẫn thắng. Không có mô hình, mẫu 1 giây cũ hơn 15 s hoặc chưa đủ tin
+cậy thì quay về luật ngưỡng PM2.5. Chi tiết, kết quả và cách thu thêm dữ liệu thật:
+`docs/nhan_dien_nguon_bui.md`.
+
+```powershell
+.venv\Scripts\python -m training.export_fast --host admin@172.29.23.41   # kéo dữ liệu Pi
+.venv\Scripts\python -m training.train_source                            # huấn luyện + đánh giá
+```
+
+Gán nhãn sự kiện thật trên Pi: `venv/bin/python scripts/label_event.py --label cooking --start 18:05 --end 18:25 --note "rán trứng"`.
+Demo trên DB thử: `venv/bin/python scripts/inject_pm.py --db ~/iot_data/demo.db --scenario smoking`
+(chạy kèm `venv/bin/python -m aiot.controller --config <file cấu hình có db_path trỏ tới demo.db>`).

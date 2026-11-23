@@ -10,3 +10,8 @@ venv/
 
 # Mô hình đã huấn luyện (training/train_lstm.py): chưa commit, nhóm quyết định sau
 models/
+
+# Bộ đệm đặc trưng và DB kéo từ Pi (training/train_source.py, training/export_fast.py)
+training/data/_source_features_*.npz
+training/data/sim_sources.npz
+training/data/sim_meta.json

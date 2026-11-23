@@ -37,7 +37,6 @@ SENSOR_COLUMNS = (
     ("PMS7003", ("pm1", "pm25", "pm10")),
     ("DHT11", ("temp", "hum")),
     ("BH1750", ("lux",)),
-    ("MQ135", ("mq135_do",)),
 )
 
 
@@ -129,9 +128,8 @@ def check_latest_data(db_path, now) -> tuple[Check, Check]:
     missing = [sensor for sensor, cols in SENSOR_COLUMNS
                if any(values[c] is None for c in cols)]
     if not missing:
-        return fresh, Check("cảm biến", True, "PMS7003, DHT11, BH1750, MQ135 đều có số")
-    note = " (MQ135 cần sấy 3 phút sau khi collector khởi động)" if "MQ135" in missing else ""
-    return fresh, Check("cảm biến", False, "không có số: " + ", ".join(missing) + note)
+        return fresh, Check("cảm biến", True, "PMS7003, DHT11, BH1750 đều có số")
+    return fresh, Check("cảm biến", False, "không có số: " + ", ".join(missing))
 
 
 def check_heartbeat(db_path, now, loop_s, skipped=False) -> Check:

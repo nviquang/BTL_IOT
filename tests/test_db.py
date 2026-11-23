@@ -18,7 +18,7 @@ from aiot.db import (
 
 def sample(ts, pm25=10.0, clock_synced=True, **kw):
     """Mẫu thô mặc định hợp lệ; ghi đè từng trường qua kw."""
-    vals = dict(pm1=5.0, pm10=15.0, temp=25.0, hum=60.0, lux=100.0, mq135_do=1)
+    vals = dict(pm1=5.0, pm10=15.0, temp=25.0, hum=60.0, lux=100.0)
     vals.update(kw)
     return RawSample(ts=ts, pm25=pm25, clock_synced=clock_synced, **vals)
 
@@ -94,9 +94,33 @@ def test_duplicate_ts_ignored(tmp_path):
 
 def test_raw_stores_none_and_clock_flag(tmp_path):
     conn = open_db(tmp_path / "aiot.db")
-    insert_raw(conn, sample(1000, pm25=None, temp=None, mq135_do=None, clock_synced=False))
-    row = conn.execute("SELECT pm25, temp, mq135_do, clock_synced FROM raw_readings").fetchone()
-    assert row == (None, None, None, 0)
+    insert_raw(conn, sample(1000, pm25=None, temp=None, clock_synced=False))
+    row = conn.execute("SELECT pm25, temp, clock_synced FROM raw_readings").fetchone()
+    assert row == (None, None, 0)
+
+
+def test_init_schema_drops_old_mq135_columns(tmp_path):
+    """DB tạo khi còn MQ135: init_schema xoá cột mq135_do, giữ dữ liệu khác."""
+    import sqlite3
+    path = tmp_path / "aiot.db"
+    old = sqlite3.connect(path)
+    old.executescript(
+        "CREATE TABLE raw_readings (ts INTEGER PRIMARY KEY, pm1 REAL, pm25 REAL, pm10 REAL, "
+        "temp REAL, hum REAL, lux REAL, mq135_do INTEGER, clock_synced INTEGER NOT NULL);"
+        "CREATE TABLE readings (ts INTEGER PRIMARY KEY, pm1 REAL, pm25 REAL, pm10 REAL, "
+        "temp REAL, hum REAL, lux REAL, mq135_do INTEGER, valid INTEGER DEFAULT 1);"
+        "INSERT INTO raw_readings VALUES (1000, 1, 2, 3, 25, 70, 100, 0, 1);"
+        "INSERT INTO readings VALUES (900, 1, 2, 3, 25, 70, 100, 0, 1);")
+    old.commit()
+    old.close()
+    conn = open_db(path)
+    init_schema(conn)       # chạy lần hai không lỗi
+    for table in ("raw_readings", "readings"):
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+        assert "mq135_do" not in cols
+    assert conn.execute("SELECT pm25 FROM raw_readings").fetchall() == [(2.0,)]
+    insert_raw(conn, sample(1010))
+    assert conn.execute("SELECT COUNT(*) FROM raw_readings").fetchone() == (2,)
 
 
 def test_pm25_series_includes_unsynced_skips_null(tmp_path):

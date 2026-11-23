@@ -6,13 +6,13 @@ import pytest
 from aiot.pms7003 import PmsReader, PmsReading, parse_frame
 
 
-def make_frame(pm1, pm25, pm10, cf1=(1, 2, 3)):
+def make_frame(pm1, pm25, pm10, cf1=(1, 2, 3), counts=(0, 0, 0, 0, 0, 0)):
     """Dựng khung 32 byte: 0x42 0x4D, độ dài 28, 13 giá trị uint16 big-endian, checksum.
 
     Giá trị CF=1 (byte 4–9) cố ý khác giá trị atmospheric (byte 10–15)
     để test bắt được nếu đọc nhầm vị trí.
     """
-    data = list(cf1) + [pm1, pm25, pm10] + [0] * 7
+    data = list(cf1) + [pm1, pm25, pm10] + list(counts) + [0]
     body = b"\x42\x4d" + struct.pack(">H", 28) + struct.pack(">13H", *data)
     return body + struct.pack(">H", sum(body))
 
@@ -69,7 +69,7 @@ def make_reader(**kwargs):
 
 def test_parse_reads_atmospheric_fields():
     reading = parse_frame(make_frame(12, 34, 56, cf1=(90, 91, 92)))
-    assert reading == PmsReading(pm1=12, pm25=34, pm10=56)
+    assert reading[:3] == PmsReading(pm1=12, pm25=34, pm10=56)[:3]
 
 
 def test_bad_checksum_raises():
@@ -103,14 +103,14 @@ def test_short_frame_raises():
 
 def test_read_fresh_resyncs_after_garbage():
     reader, _, _ = make_reader(incoming=b"\x00\x42" + make_frame(7, 8, 9))
-    assert reader.read_fresh(timeout_s=3.0) == PmsReading(7, 8, 9)
+    assert reader.read_fresh(timeout_s=3.0)[:3] == (7, 8, 9)
 
 
 def test_read_fresh_skips_corrupt_frame():
     bad = bytearray(make_frame(1, 1, 1))
     bad[-1] ^= 0xFF
     reader, _, _ = make_reader(incoming=bytes(bad) + make_frame(4, 5, 6))
-    assert reader.read_fresh(timeout_s=3.0) == PmsReading(4, 5, 6)
+    assert reader.read_fresh(timeout_s=3.0)[:3] == (4, 5, 6)
 
 
 def test_read_fresh_discards_buffered_frames():
@@ -131,3 +131,15 @@ def test_read_fresh_respects_deadline_with_endless_garbage():
     reader, _, clock = make_reader(endless=b"\x42\x00" * 32)
     assert reader.read_fresh(timeout_s=3.0) is None
     assert clock.now <= 3.0 + 0.02
+
+
+def test_parse_frame_reads_particle_counts():
+    frame = make_frame(12, 34, 56, counts=(3000, 900, 200, 40, 6, 1))
+    r = parse_frame(frame)
+    assert (r.n03, r.n05, r.n10, r.n25, r.n50, r.n100) == (3000, 900, 200, 40, 6, 1)
+    assert r[:3] == (12, 34, 56)
+
+
+def test_reading_without_counts_defaults_none():
+    r = PmsReading(1, 2, 3)
+    assert r.n03 is None and r.n100 is None

@@ -7,7 +7,7 @@ Chính sách cảnh báo và hàng đợi tin Telegram (bảng outbox).
   telegram.quiet_start/quiet_end. Giờ địa phương theo datetime.fromtimestamp(now).
   start == end nghĩa là không có giờ yên lặng.
 - Tối đa 1 tin cùng loại mỗi telegram.alert_cooldown_s (khoá 'alert_last:<kind>').
-  urgent=True (chỉ dùng cho 'danger', 'gas') bỏ qua giờ yên lặng nhưng không bỏ qua giới hạn này.
+  urgent=True (chỉ dùng cho 'danger') bỏ qua giờ yên lặng nhưng không bỏ qua giới hạn này.
 - Lỗi cảm biến bị chặn được gửi bù khi hết chặn nếu vẫn còn lỗi (resend_suppressed).
 - Mọi hàm ghi có commit=False để gộp vào transaction của người gọi (controller).
 - Văn bản tin là tiếng Việt dạng chữ thường, không Markdown.
@@ -25,12 +25,14 @@ from aiot.db import delete_state, get_state, set_state
 log = logging.getLogger("aiot.notifier")
 
 ALERT_KINDS = frozenset({
-    "aqi_change", "danger", "gas", "sensor_fault", "sensor_recovered",
+    "aqi_change", "danger", "sensor_fault", "sensor_recovered",
     "fan_on", "fan_off", "override_expired", "relay_error", "alert_summary",
     # Nắng/mưa (aiot.weather): tin cũ hơn 1 giờ không còn đúng nên cũng bị gộp (bỏ ảnh)
     "weather_sunny", "weather_rain",
+    # Bộ nhận diện nguồn bụi đổi nhãn (controller): mỗi nhãn một loại để giới hạn riêng
+    "source_normal", "source_cooking", "source_pollution", "source_smoking",
 })
-URGENT_KINDS = frozenset({"danger", "gas"})
+URGENT_KINDS = frozenset({"danger"})
 # Không bao giờ gộp: 'morning_report', 'reply' (và mọi loại không thuộc ALERT_KINDS)
 
 QUIET_KEY = "quiet_hours"
@@ -233,8 +235,15 @@ def check_aqi_change(conn, pm25_15min, now, cfg, *, commit=True):
 _FAN_ON_REASONS = {
     "enter": "bụi mịn PM2.5 trung bình cao kéo dài",
     "danger": "bụi mịn ở mức khẩn cấp",
-    "gas": "cảm biến khí MQ135 báo vượt ngưỡng",
     "proactive": "dự báo 3 giờ tới bụi mịn tăng cao",
+    "ai_cooking": "AI nhận diện đang nấu ăn",
+    "ai_pollution": "AI nhận diện ô nhiễm từ ngoài vào",
+}
+_SOURCE_TEXT = {
+    "normal": ("không còn nguồn bụi", "quạt tắt, còi im"),
+    "cooking": ("nấu ăn", "bật quạt lọc, không kêu còi"),
+    "pollution": ("ô nhiễm từ ngoài vào", "bật quạt lọc và kêu còi; nên đóng cửa sổ"),
+    "smoking": ("khói thuốc lá / nhang", "kêu còi, không bật quạt; hãy dập thuốc/nhang hoặc ra ngoài"),
 }
 
 
@@ -258,18 +267,10 @@ def event_message(ev, st, inp, now):
         if manual:
             text += f"Quạt lọc đang {_on_off(on)} theo ghi đè thủ công{until}"
             text += "; gửi /mode auto để quạt tự bật." if not on else "."
-        else:
+        elif on:
             text += "Quạt lọc được bật tự động."
-        return text, True
-
-    if ev.kind == "gas":
-        text = ("CẢNH BÁO KHÍ: cảm biến MQ135 báo vượt ngưỡng. "
-                "Mở cửa cho thoáng và kiểm tra nguồn khói, khí gas trong nhà. ")
-        if manual:
-            text += f"Quạt lọc đang {_on_off(on)} theo ghi đè thủ công{until}"
-            text += "; gửi /mode auto để quạt tự bật." if not on else "."
         else:
-            text += "Quạt lọc được bật tự động."
+            text += "AI nhận diện khói thuốc/nhang nên không bật quạt, còi báo tại chỗ."
         return text, True
 
     if ev.kind == "fan_on":
@@ -281,9 +282,27 @@ def event_message(ev, st, inp, now):
                     f"đang giữ quạt {_on_off(on)}{until}. Gửi /mode auto để về tự động."), False
         return f"Đã bật quạt lọc: {reason}.", False
 
+    if ev.kind == "source_change":
+        label, _, conf = (ev.detail or "").partition(" ")
+        if label not in _SOURCE_TEXT:
+            return None
+        name, action = _SOURCE_TEXT[label]
+        conf = conf.replace("p=", "")
+        extra = f" (độ tin cậy {conf.replace('.', ',')})" if conf else ""
+        if label == "normal":
+            return f"AI: {name}{extra}. Hành động: {action}.", False
+        return f"AI nhận diện nguồn bụi: {name}{extra}. Hành động: {action}.", False
+
+    if ev.kind == "fan_off" and ev.detail.startswith("ai_"):
+        label = ev.detail[3:]
+        name = _SOURCE_TEXT.get(label, (label, ""))[0]
+        if manual:
+            return (f"AI nhận diện {name}: luật tự động tắt quạt, nhưng ghi đè thủ công "
+                    f"đang giữ quạt {_on_off(on)}{until}."), False
+        return f"Đã tắt quạt lọc: AI nhận diện {name}.", False
+
     if ev.kind == "fan_off":
-        head = ("Cảm biến khí MQ135 đã hết báo vượt ngưỡng" if ev.detail == "exit_gas"
-                else "Không khí đã tốt lại")
+        head = "Không khí đã tốt lại"
         value = (f" (PM2.5 trung bình {_fmt_pm(inp.mean_exit)} µg/m³)"
                  if inp is not None and inp.mean_exit is not None else "")
         if manual:

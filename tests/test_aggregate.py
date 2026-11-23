@@ -1,4 +1,4 @@
-"""Test gộp trung bình 5 phút: lọc giá trị lỗi, MQ135, cờ valid, gộp bù idempotent."""
+"""Test gộp trung bình 5 phút: lọc giá trị lỗi, cờ valid, gộp bù idempotent."""
 import pytest
 
 from aiot.aggregate import aggregate_pending, aggregate_window
@@ -6,7 +6,7 @@ from aiot.db import RawSample, connect, init_schema, insert_raw
 
 
 def sample(ts, pm25=10.0, clock_synced=True, **kw):
-    vals = dict(pm1=5.0, pm10=15.0, temp=25.0, hum=60.0, lux=100.0, mq135_do=1)
+    vals = dict(pm1=5.0, pm10=15.0, temp=25.0, hum=60.0, lux=100.0)
     vals.update(kw)
     return RawSample(ts=ts, pm25=pm25, clock_synced=clock_synced, **vals)
 
@@ -41,15 +41,6 @@ def test_out_of_range_dropped():
     assert r["temp"] == pytest.approx(25.0)
     assert r["hum"] == pytest.approx(60.0)
     assert r["lux"] == pytest.approx(100.0)
-
-
-def test_mq135_any_zero_gives_zero():
-    samples = [sample(i * 10, mq135_do=v) for i, v in enumerate([1, 1, 0, 1])]
-    assert aggregate_window(samples, 0)["mq135_do"] == 0
-    samples = [sample(i * 10, mq135_do=v) for i, v in enumerate([1, None, 1])]
-    assert aggregate_window(samples, 0)["mq135_do"] == 1
-    samples = [sample(i * 10, mq135_do=None) for i in range(3)]
-    assert aggregate_window(samples, 0)["mq135_do"] is None
 
 
 def test_valid_needs_half_of_pm_samples():

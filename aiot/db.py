@@ -17,14 +17,12 @@ CREATE TABLE IF NOT EXISTS raw_readings (      -- mẫu thô mỗi 10 giây
   ts INTEGER PRIMARY KEY,
   pm1 REAL, pm25 REAL, pm10 REAL,
   temp REAL, hum REAL, lux REAL,
-  mq135_do INTEGER,                            -- 0 = vượt ngưỡng, 1 = chưa vượt
   clock_synced INTEGER NOT NULL                -- 0 = đồng hồ chưa đồng bộ NTP
 );
 CREATE TABLE IF NOT EXISTS readings (          -- trung bình 5 phút, ts = đầu cửa sổ
   ts INTEGER PRIMARY KEY,
   pm1 REAL, pm25 REAL, pm10 REAL,
   temp REAL, hum REAL, lux REAL,
-  mq135_do INTEGER,
   valid INTEGER DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS forecasts (
@@ -43,12 +41,35 @@ CREATE TABLE IF NOT EXISTS outbox (            -- tin Telegram chờ gửi (gử
   text TEXT NOT NULL, sent_at INTEGER,
   photo_path TEXT                              -- ảnh JPEG gửi kèm (NULL: chỉ chữ)
 );
+CREATE TABLE IF NOT EXISTS fast_readings (     -- mẫu 1 giây cho bộ nhận diện nguồn bụi
+  ts INTEGER PRIMARY KEY,
+  pm1 REAL, pm25 REAL, pm10 REAL,
+  n03 REAL, n05 REAL, n10 REAL, n25 REAL, n50 REAL, n100 REAL,   -- số hạt / 0,1 L
+  temp REAL, hum REAL, lux REAL,
+  clock_synced INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS source_labels (     -- nhãn sự kiện thật (scripts/label_event.py)
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  start_ts INTEGER NOT NULL, end_ts INTEGER NOT NULL,
+  label TEXT NOT NULL,                         -- normal | cooking | pollution | smoking
+  note TEXT
+);
+CREATE TABLE IF NOT EXISTS source_predictions (  -- dự đoán nguồn bụi mỗi 5 giây
+  ts INTEGER PRIMARY KEY,
+  label TEXT,                                  -- nhãn sau làm mượt (NULL: không đủ dữ liệu)
+  raw_label TEXT, proba TEXT,                  -- nhãn và xác suất của riêng lần này (JSON)
+  model TEXT
+);
 CREATE TABLE IF NOT EXISTS tg_messages (       -- message_id Telegram (nhận và gửi) cho /clear
   chat_id INTEGER, message_id INTEGER, ts INTEGER,
   PRIMARY KEY (chat_id, message_id)
 );
 """
 
+
+SOURCE_LABELS = ("normal", "cooking", "pollution", "smoking")
+FAST_COLUMNS = ("pm1", "pm25", "pm10", "n03", "n05", "n10", "n25", "n50", "n100",
+                "temp", "hum", "lux")
 
 # Khoảng đo hợp lệ của PMS7003 (µg/m³, gồm hai đầu); aggregate.RANGES dùng chung giá trị này
 PM_RANGE = (0.0, 1000.0)
@@ -64,7 +85,6 @@ class RawSample:
     temp: float | None
     hum: float | None
     lux: float | None
-    mq135_do: int | None
     clock_synced: bool
 
 
@@ -82,6 +102,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
     """Tạo bảng nếu chưa có và thêm cột mới vào DB cũ; chạy nhiều lần không sao."""
     conn.executescript(SCHEMA)
     _add_column(conn, "outbox", "photo_path", "TEXT")
+    # MQ135 đã bị loại khỏi hệ thống: xoá cột của DB tạo bởi phiên bản cũ
+    _drop_column(conn, "raw_readings", "mq135_do")
+    _drop_column(conn, "readings", "mq135_do")
     conn.commit()
 
 
@@ -98,23 +121,29 @@ def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) ->
             raise
 
 
+def _drop_column(conn: sqlite3.Connection, table: str, column: str) -> None:
+    """ALTER TABLE ... DROP COLUMN nếu bảng còn cột cũ (SQLite >= 3.35).
+    Hai dịch vụ cùng khởi động có thể cùng xoá: lỗi 'no such column' thì bỏ qua."""
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        return
+    try:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+    except sqlite3.OperationalError as e:
+        if "no such column" not in str(e).lower():
+            raise
+
+
 def insert_raw(conn: sqlite3.Connection, s: RawSample) -> None:
     """Ghi mẫu thô; trùng ts thì bỏ qua, giữ bản ghi đầu."""
     conn.execute(
         "INSERT OR IGNORE INTO raw_readings "
-        "(ts, pm1, pm25, pm10, temp, hum, lux, mq135_do, clock_synced) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (int(s.ts), s.pm1, s.pm25, s.pm10, s.temp, s.hum, s.lux, s.mq135_do,
+        "(ts, pm1, pm25, pm10, temp, hum, lux, clock_synced) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (int(s.ts), s.pm1, s.pm25, s.pm10, s.temp, s.hum, s.lux,
          1 if s.clock_synced else 0),
     )
     conn.commit()
-
-
-def mq135_alarm(conn: sqlite3.Connection, since_ts: int) -> bool:
-    """Có mẫu thô từ since_ts trở đi báo MQ135 vượt ngưỡng (mq135_do = 0) không."""
-    row = conn.execute("SELECT 1 FROM raw_readings WHERE ts >= ? AND mq135_do = 0 LIMIT 1",
-                       (int(since_ts),)).fetchone()
-    return row is not None
 
 
 def pm25_series(conn: sqlite3.Connection, since_ts: int) -> list[tuple[int, float]]:
@@ -203,5 +232,67 @@ def forget_messages(conn: sqlite3.Connection, chat_id: int, message_ids,
 def purge_messages(conn: sqlite3.Connection, older_than_ts: int, *, commit: bool = True) -> None:
     """Xoá hàng tg_messages có ts < older_than_ts (Telegram không cho xoá tin đó nữa)."""
     conn.execute("DELETE FROM tg_messages WHERE ts < ?", (int(older_than_ts),))
+    if commit:
+        conn.commit()
+
+
+# ---------------- mẫu 1 giây và nhãn nguồn bụi ----------------
+def insert_fast_many(conn: sqlite3.Connection, rows) -> None:
+    """Ghi nhiều mẫu 1 giây; rows: [(ts, {cột: giá trị}, clock_synced)]. Trùng ts thì bỏ qua."""
+    cols = ", ".join(FAST_COLUMNS)
+    marks = ", ".join("?" * (len(FAST_COLUMNS) + 2))
+    conn.executemany(
+        f"INSERT OR IGNORE INTO fast_readings (ts, {cols}, clock_synced) VALUES ({marks})",
+        [(int(ts), *[vals.get(c) for c in FAST_COLUMNS], 1 if synced else 0)
+         for ts, vals, synced in rows])
+    conn.commit()
+
+
+def fast_rows(conn: sqlite3.Connection, since_ts: int, until_ts: int | None = None):
+    """[(ts, {cột: giá trị})] từ since_ts (tới until_ts nếu có), tăng dần theo ts.
+    PM ngoài PM_RANGE coi như không có (None)."""
+    cols = ", ".join(FAST_COLUMNS)
+    sql = f"SELECT ts, {cols} FROM fast_readings WHERE ts >= ?"
+    args = [int(since_ts)]
+    if until_ts is not None:
+        sql += " AND ts <= ?"
+        args.append(int(until_ts))
+    out = []
+    for r in conn.execute(sql + " ORDER BY ts", args):
+        vals = dict(zip(FAST_COLUMNS, r[1:]))
+        for c in ("pm1", "pm25", "pm10"):
+            v = vals[c]
+            if v is not None and not (PM_RANGE[0] <= v <= PM_RANGE[1]):
+                vals[c] = None
+        out.append((int(r[0]), vals))
+    return out
+
+
+def purge_fast(conn: sqlite3.Connection, older_than_ts: int, margin_s: int = 1800) -> None:
+    """Xoá mẫu 1 giây cũ, GIỮ các đoạn có nhãn (cộng thêm margin_s hai đầu) để huấn luyện."""
+    conn.execute(
+        "DELETE FROM fast_readings WHERE ts < ? AND NOT EXISTS ("
+        "SELECT 1 FROM source_labels l WHERE fast_readings.ts BETWEEN l.start_ts - ? "
+        "AND l.end_ts + ?)", (int(older_than_ts), int(margin_s), int(margin_s)))
+    conn.execute("DELETE FROM source_predictions WHERE ts < ?", (int(older_than_ts),))
+    conn.commit()
+
+
+def insert_label(conn: sqlite3.Connection, start_ts: int, end_ts: int, label: str,
+                 note: str | None = None) -> int:
+    if label not in SOURCE_LABELS:
+        raise ValueError(f"nhãn phải là một trong {', '.join(SOURCE_LABELS)}")
+    if int(end_ts) <= int(start_ts):
+        raise ValueError("end_ts phải sau start_ts")
+    cur = conn.execute("INSERT INTO source_labels (start_ts, end_ts, label, note) VALUES (?, ?, ?, ?)",
+                       (int(start_ts), int(end_ts), label, note))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def insert_prediction(conn: sqlite3.Connection, ts: int, label, raw_label, proba_json, model,
+                      *, commit: bool = True) -> None:
+    conn.execute("INSERT OR REPLACE INTO source_predictions (ts, label, raw_label, proba, model) "
+                 "VALUES (?, ?, ?, ?, ?)", (int(ts), label, raw_label, proba_json, model))
     if commit:
         conn.commit()

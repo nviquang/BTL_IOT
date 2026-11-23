@@ -1,12 +1,15 @@
 """
-Dịch vụ collector: đọc mọi cảm biến mỗi 10 giây, ghi SQLite + CSV, gửi MQTT.
+Dịch vụ collector: đọc cảm biến mỗi giây (fast_readings, cho bộ nhận diện nguồn bụi)
+và mỗi 10 giây ghi raw_readings + CSV, gửi MQTT như trước.
+
+- fast_readings (SQLite): mẫu 1 giây gồm PM, 6 kênh đếm hạt, nhiệt/ẩm (DHT11 ~2 giây),
+  lux; ghi gộp mỗi 5 giây, giữ 48 giờ (đoạn có nhãn trong source_labels giữ lại).
 
 - raw_readings (SQLite): mọi mẫu có ít nhất một giá trị đo, kể cả khi DHT11 lỗi
   hay đồng hồ chưa đồng bộ (clock_synced=0). ts là giây epoch kiểu số nguyên.
 - CSV: giữ đúng định dạng của pi_sensor_client.py, chỉ ghi khi có đủ DHT11 và lux và
   đồng hồ tin được (MQTT cũng vậy).
 - MQTT không bắt buộc: tắt trong config, thiếu mật khẩu hay mất broker thì vẫn thu thập.
-- MQ135 cần sấy: mq135_do = None trong 180 giây đầu sau khi dịch vụ chạy.
 - Gộp trung bình 5 phút mỗi phút (chỉ khi đồng hồ tin được: is_clock_trusted);
   xoá raw_readings cũ hơn 7 ngày mỗi ngày một lần.
 
@@ -27,16 +30,19 @@ from pathlib import Path
 
 from aiot.aggregate import aggregate_pending
 from aiot.control import ControlState, fan_on, override_active
-from aiot.db import RawSample, connect, get_state, init_schema, insert_raw, purge_raw
+from aiot.db import (RawSample, connect, get_state, init_schema, insert_fast_many, insert_raw,
+                     purge_fast, purge_raw)
 from aiot.payload import CSV_HEADER, build_csv_row, build_payload
 
 log = logging.getLogger("aiot.collector")
 
-INTERVAL = 10                   # giây giữa 2 lần đọc, như client cũ
+INTERVAL = 10                   # giây giữa 2 mẫu raw_readings/CSV/MQTT, như client cũ
+FAST_INTERVAL = 1               # giây giữa 2 mẫu fast_readings (bộ nhận diện nguồn bụi)
+FAST_FLUSH_S = 5
+FAST_KEEP_S = 2 * 86400         # giữ mẫu 1 giây 48 giờ (đoạn có nhãn giữ lâu hơn)
 AGGREGATE_EVERY_S = 60
 PURGE_EVERY_S = 86400
 RAW_KEEP_S = 7 * 86400          # giữ mẫu thô 7 ngày
-MQ135_WARMUP_S = 180
 TOPIC_SENSOR = "nha/pi01/sensor"
 TOPIC_STATUS = "nha/pi01/sensor_status"
 # Khoá state do controller ghi (trùng hằng số trong aiot/controller.py; không import
@@ -47,17 +53,6 @@ RELAY_FAULT_KEY = "relay_fault"
 
 
 # ---------------- Thành phần nhỏ ----------------
-class Warmup:
-    """Đếm thời gian sấy theo đồng hồ monotonic (không bị ảnh hưởng khi NTP chỉnh giờ)."""
-
-    def __init__(self, duration_s: float, clock=time.monotonic):
-        self._clock = clock
-        self._until = clock() + duration_s
-
-    def ready(self) -> bool:
-        return self._clock() >= self._until
-
-
 class CsvLog:
     """Ghi nối tiếp CSV định dạng cũ; header chỉ ghi khi file chưa có hoặc rỗng."""
 
@@ -211,8 +206,8 @@ def fan_status(conn, now: int) -> dict:
 
 
 # ---------------- Một lần thu thập ----------------
-def collect_once(sensors, conn, csv_writer, publisher, now: datetime, clock_synced: bool,
-                 *, mq135_ready: bool = True) -> RawSample:
+def collect_once(sensors, conn, csv_writer, publisher, now: datetime,
+                 clock_synced: bool) -> RawSample:
     """Đọc mọi cảm biến một lần, ghi raw_readings, CSV và gửi MQTT.
 
     now là giờ địa phương (naive datetime); ts trong SQLite là int(now.timestamp()).
@@ -221,15 +216,13 @@ def collect_once(sensors, conn, csv_writer, publisher, now: datetime, clock_sync
     dht = _safe_read("DHT11", sensors.read_dht)
     lux = _safe_read("BH1750", sensors.read_lux)
     pm = _safe_read("PMS7003", sensors.read_pm)
-    mq = _safe_read("MQ135", sensors.read_mq135) if mq135_ready else None
 
     temp, hum = (float(dht[0]), float(dht[1])) if dht is not None else (None, None)
     lux = float(lux) if lux is not None else None
     pm1, pm25, pm10 = (float(pm.pm1), float(pm.pm25), float(pm.pm10)) if pm is not None else (None, None, None)
-    mq = int(mq) if mq is not None else None
 
-    sample = RawSample(int(now.timestamp()), pm1, pm25, pm10, temp, hum, lux, mq, bool(clock_synced))
-    values = (pm1, pm25, pm10, temp, hum, lux, mq)
+    sample = RawSample(int(now.timestamp()), pm1, pm25, pm10, temp, hum, lux, bool(clock_synced))
+    values = (pm1, pm25, pm10, temp, hum, lux)
     if all(v is None for v in values):
         log.warning("Mọi cảm biến đều lỗi, bỏ qua mẫu")
         return sample
@@ -259,32 +252,62 @@ def collect_once(sensors, conn, csv_writer, publisher, now: datetime, clock_sync
     except OSError as e:
         log.error("Lỗi ghi CSV: %s", e)
     try:
-        payload = build_payload(row, pm1, pm25, pm10, mq)
+        payload = build_payload(row, pm1, pm25, pm10)
         payload.update(fan_status(conn, sample.ts))
         publisher.publish(payload)
     except Exception as e:
         log.warning("Lỗi gửi MQTT: %s", e)
-    log.info("T=%s H=%s Lux=%s PM2.5=%s MQ135=%s", row["temperature_c"], row["humidity_pct"],
-             row["lux"], pm25, mq)
+    log.info("T=%s H=%s Lux=%s PM2.5=%s", row["temperature_c"], row["humidity_pct"],
+             row["lux"], pm25)
     return sample
 
 
 # ---------------- Vòng lặp dịch vụ ----------------
+def _flush_fast(conn, buffer) -> None:
+    """Ghi các mẫu 1 giây đang chờ (gộp một commit mỗi FAST_FLUSH_S để đỡ mòn thẻ nhớ)."""
+    if not buffer:
+        return
+    try:
+        insert_fast_many(conn, buffer)
+    except sqlite3.Error as e:
+        log.error("Lỗi ghi fast_readings: %s", e)
+        _rollback(conn)
+    buffer.clear()
+
+
 def run(sensors, conn, csv_writer, publisher, stop: threading.Event,
-        *, clock=time.monotonic, synced=is_clock_trusted) -> None:
-    """Thu thập mỗi INTERVAL giây tới khi stop được đặt (SIGTERM/SIGINT)."""
-    warmup = Warmup(MQ135_WARMUP_S, clock=clock)
+        *, clock=time.monotonic, synced=is_clock_trusted, wall=datetime.now) -> None:
+    """Thu thập tới khi stop được đặt (SIGTERM/SIGINT).
+
+    sensors có snapshot() (SensorHub): nhịp FAST_INTERVAL giây ghi fast_readings, mỗi
+    INTERVAL giây ghi raw_readings/CSV/MQTT như cũ. Không có snapshot(): chỉ nhịp 10 giây."""
+    fast = hasattr(sensors, "snapshot")
+    tick = FAST_INTERVAL if fast else INTERVAL
     next_time = clock()
+    next_slow = clock()
+    next_flush = clock() + FAST_FLUSH_S
     next_aggregate = clock() + AGGREGATE_EVERY_S
     next_purge = clock() + AGGREGATE_EVERY_S       # xoá lần đầu sau khi chạy 1 phút
+    buffer = []
     clock_ok = synced()
     if not clock_ok:
         log.warning("Đồng hồ chưa tin được (chưa đồng bộ NTP lần nào từ lúc khởi động): mẫu được "
                     "đánh dấu clock_synced=0, chưa gộp, không ghi CSV/MQTT")
 
     while not stop.is_set():
-        collect_once(sensors, conn, csv_writer, publisher, datetime.now(), clock_ok,
-                     mq135_ready=warmup.ready())
+        now_dt = wall()
+        if fast:
+            snap = sensors.snapshot()
+            if any(v is not None for v in snap.values()):
+                buffer.append((int(now_dt.timestamp()), snap, clock_ok))
+            if clock() >= next_flush:
+                next_flush = clock() + FAST_FLUSH_S
+                _flush_fast(conn, buffer)
+        if clock() >= next_slow:
+            next_slow += INTERVAL
+            if next_slow <= clock():
+                next_slow = clock() + INTERVAL
+            collect_once(sensors, conn, csv_writer, publisher, now_dt, clock_ok)
 
         if clock() >= next_aggregate:
             next_aggregate = clock() + AGGREGATE_EVERY_S
@@ -299,17 +322,20 @@ def run(sensors, conn, csv_writer, publisher, stop: threading.Event,
                     next_purge = clock() + PURGE_EVERY_S
                     try:
                         purge_raw(conn, int(time.time()) - RAW_KEEP_S)
+                        if fast:
+                            purge_fast(conn, int(time.time()) - FAST_KEEP_S)
                     except sqlite3.Error as e:
                         log.error("Lỗi xoá mẫu thô cũ: %s", e)
                         _rollback(conn)
 
-        # Giữ nhịp đều đúng INTERVAL giây
-        next_time += INTERVAL
+        # Giữ nhịp đều đúng tick giây
+        next_time += tick
         delay = next_time - clock()
         if delay > 0:
             stop.wait(delay)
         else:
             next_time = clock()
+    _flush_fast(conn, buffer)
 
 
 def install_signal_handlers(stop, importer=None) -> None:
@@ -339,7 +365,7 @@ def install_signal_handlers(stop, importer=None) -> None:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     from aiot.config import load_config
-    from aiot.sensors import PiSensors
+    from aiot.sensors import PiSensors, SensorHub
 
     root = Path(__file__).resolve().parent.parent
     cfg = load_config(root / "config.yaml", root / ".env")
@@ -363,11 +389,14 @@ def main() -> None:
             log.warning("Không khởi tạo được MQTT (%s), chỉ ghi SQLite và CSV", e)
 
     sensors = PiSensors()
-    log.info("Collector bắt đầu: db=%s csv=%s", cfg.db_path, cfg.csv_path)
+    hub = SensorHub(sensors)
+    hub.start()
+    log.info("Collector bắt đầu: db=%s csv=%s (mẫu 1 giây + mẫu 10 giây)", cfg.db_path, cfg.csv_path)
     try:
-        run(sensors, conn, csv_writer, publisher, stop)
+        run(hub, conn, csv_writer, publisher, stop)
     finally:
         publisher.close()
+        hub.stop()
         sensors.close()
         conn.close()
         log.info("Collector đã dừng")

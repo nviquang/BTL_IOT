@@ -47,12 +47,12 @@ def conn(tmp_path):
     c.close()
 
 
-def fill(conn, start, end, pm25=20.0, temp=27.0, hum=70.0, mq=1, valid=1):
+def fill(conn, start, end, pm25=20.0, temp=27.0, hum=70.0, valid=1):
     """Một dòng readings mỗi 5 phút, ts trong [start, end)."""
     conn.executemany(
-        "INSERT OR REPLACE INTO readings (ts, pm1, pm25, pm10, temp, hum, lux, mq135_do, valid) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [(ts, pm25, pm25, pm25, temp, hum, 100.0, mq, valid) for ts in range(start, end, 300)])
+        "INSERT OR REPLACE INTO readings (ts, pm1, pm25, pm10, temp, hum, lux, valid) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [(ts, pm25, pm25, pm25, temp, hum, 100.0, valid) for ts in range(start, end, 300)])
     conn.commit()
 
 
@@ -73,7 +73,7 @@ def test_summarize_aggregates(conn):
     start = NOW - DAY
     fill(conn, start, start + 12 * 3600, pm25=5.0)                  # 12 giờ Tốt
     fill(conn, start + 12 * 3600, NOW - 3600, pm25=40.0)            # 11 giờ Kém
-    fill(conn, NOW - 3600, NOW, pm25=60.0, mq=0)                    # giờ cuối Xấu, MQ135 vượt
+    fill(conn, NOW - 3600, NOW, pm25=60.0)                          # giờ cuối Xấu
     fill(conn, NOW - 2 * DAY, NOW - DAY, pm25=500.0)                # ngoài 24 giờ: bỏ
     fill(conn, NOW, NOW + 3600, pm25=500.0)                         # "tương lai": bỏ
     conn.execute("UPDATE readings SET valid = 0, pm25 = 999 WHERE ts = ?", (start,))
@@ -87,7 +87,7 @@ def test_summarize_aggregates(conn):
     assert s["aqi_hours"]["Tốt"] == 12 and s["aqi_hours"]["Kém"] == 11
     assert s["aqi_hours"]["Xấu"] == 1 and sum(s["aqi_hours"].values()) == 24
     assert s["temp_mean"] == 27.0 and s["hum_mean"] == 70.0
-    assert s["mq135_exceeded_windows"] == 12
+    assert "mq135_exceeded_windows" not in s
     assert s["forecast"] is None
     assert s["fan_on_now"] is False and s["control_mode"] == "BÌNH THƯỜNG"
 
@@ -178,15 +178,6 @@ def test_report_names_forecast_model(conn):
     text = build_report(conn, NOW, CFG, client=FakeClient())
     assert "seasonal_naive" in text and "cùng giờ hôm qua" in text
     assert "26,0 µg/m³" in text
-
-
-def test_report_mentions_mq135_only_when_exceeded(conn):
-    full_day(conn)
-    assert "MQ135" not in build_report(conn, NOW, CFG, client=FakeClient())
-    conn.execute("UPDATE readings SET mq135_do = 0 WHERE ts >= ?", (NOW - 900,))
-    conn.commit()
-    text = build_report(conn, NOW, CFG, client=FakeClient())
-    assert "MQ135" in text and "3" in text
 
 
 def test_morning_report_sent_once_per_day(conn):
