@@ -15,3 +15,6 @@ models/
 training/data/_source_features_*.npz
 training/data/sim_sources.npz
 training/data/sim_meta.json
+
+# DB thử của web cloud khi chạy cục bộ
+cloud_dev*.db

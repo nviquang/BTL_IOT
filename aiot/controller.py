@@ -35,6 +35,9 @@ và bật/tắt quạt qua relay GPIO23.
 - Còi (aiot/alarm.py, aiot/buzzer.py, GPIO5): trung vị PM2.5 1 phút >= buzzer.alarm_pm25
   thì kêu một hồi, lặp lại mỗi buzzer.repeat_s giây khi còn vượt, tắt ngay khi hết. Khoá 'buzzer_mute_until' (bot ghi bằng /mute) tắt tiếng tới mốc đó. Trạng
   thái còi lưu ở khoá 'alarm_state'. Lỗi còi chỉ ghi log, không ảnh hưởng quạt.
+  Lệnh còi thủ công (bot /buzzer, web qua aiot.uplink) nằm ở khoá 'pending_buzzer'; controller
+  kiểm tra tuổi lệnh như pending_override rồi ghi 'buzzer_override' {"on", "until", "at"}
+  trong cùng transaction của bước (bật tối đa buzzer.manual_max_s; null = xoá ghi đè).
 - Nhận diện nguồn bụi (aiot/source_model.py, mục source trong config.yaml): mỗi bước đọc
   fast_readings 30 phút, tính đặc trưng, dự đoán, làm mượt (khoá 'source_state') và ghi
   source_predictions cùng transaction của bước. Có nhãn: quạt và còi theo nhãn (nấu ăn:
@@ -57,7 +60,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from aiot.alarm import BURST, SILENCE, AlarmState, alarm_reason, is_muted, plan
+from aiot.alarm import BURST, SILENCE, AlarmState, alarm_reason, is_muted, plan, plan_manual
+from aiot.commands import BUZZER_OVERRIDE_KEY, BUZZER_PENDING_KEY, buzzer_override
 from aiot.config import BuzzerCfg, SourceCfg, TelegramCfg
 from aiot.control import ControlState, Event, apply_override, decide, fan_on, inputs_from_series
 from aiot.db import (connect, delete_state, fast_rows, get_state, init_schema, insert_prediction,
@@ -141,6 +145,40 @@ def _apply_pending(st: ControlState, text: str, cfg, now: int, max_age_s: int):
                   f"({_fmt_ts(st.override_until)})")
     log.info("Ghi đè thủ công: %s", detail)
     return st, [Event("override", detail)]
+
+
+_KEEP = object()    # lệnh còi bị bỏ: không đổi khoá buzzer_override
+
+
+def _apply_buzzer_pending(text: str, now: int, max_age_s: int, max_on_s: int):
+    """Lệnh còi trong 'pending_buzzer' -> (giá trị mới của 'buzzer_override': JSON, None =
+    xoá, _KEEP = giữ nguyên; [Event]). Lệnh sai định dạng hoặc cũ bị bỏ kèm sự kiện."""
+    try:
+        data = json.loads(text)
+        if not isinstance(data, dict) or "on" not in data:
+            raise ValueError("thiếu khoá 'on'")
+        on = data["on"]
+        if on is not None and not isinstance(on, bool):
+            raise ValueError("'on' phải là true/false/null")
+        ttl_s = data.get("ttl_s")
+        if on is not None and (not isinstance(ttl_s, int) or isinstance(ttl_s, bool) or ttl_s <= 0):
+            raise ValueError("'ttl_s' phải là số nguyên dương")
+    except ValueError as e:
+        log.warning("Bỏ qua pending_buzzer sai định dạng: %s", e)
+        return _KEEP, [Event("buzzer_override_invalid", f"{e}: {text[:200]}")]
+    at = data.get("at")
+    if not isinstance(at, int) or isinstance(at, bool) or abs(now - at) > max_age_s:
+        log.warning("Bỏ lệnh còi cũ hoặc sai giờ: %s", text[:200])
+        return _KEEP, [Event("buzzer_override_stale", text[:200])]
+    if on is None:
+        return None, [Event("buzzer_override", "cleared (auto)")]
+    if on:
+        ttl_s = min(ttl_s, max_on_s)
+    until = now + ttl_s
+    value = json.dumps({"on": on, "until": until, "at": now}, sort_keys=True)
+    detail = f"set buzzer={'on' if on else 'off'} until={until} ({_fmt_ts(until)})"
+    log.info("Ghi đè còi: %s", detail)
+    return value, [Event("buzzer_override", detail)]
 
 
 def _notify(conn, now: int, st: ControlState, inp, events, tcfg) -> None:
@@ -314,8 +352,19 @@ def _sound_alarm(conn, buzzer, bcfg: BuzzerCfg, inp, now: int) -> None:
     vòng điều khiển quạt."""
     try:
         st = AlarmState.from_json(get_state(conn, ALARM_KEY))
+        ov = buzzer_override(conn, now)
+        if ov is not None and ov[0]:
+            new, duration = plan_manual(st, ov[2], ov[1], now, bcfg.manual_max_s)
+            if new != st:
+                set_state(conn, ALARM_KEY, new.to_json(), commit=False)
+                log.info("Còi thủ công: kêu %d giây", duration)
+                log_event(conn, now, "buzzer", f"manual {duration}s", commit=False)
+                conn.commit()
+            if duration:
+                buzzer.burst(bcfg.beep_on_s, bcfg.beep_off_s, duration)
+            return
         reason = alarm_reason(inp.danger_level, bcfg, source=inp.source)
-        muted = is_muted(get_state(conn, MUTE_KEY), now)
+        muted = is_muted(get_state(conn, MUTE_KEY), now) or ov is not None
         new, action = plan(st, reason, now, bcfg, muted)
         if new != st:
             set_state(conn, ALARM_KEY, new.to_json(), commit=False)
@@ -400,6 +449,13 @@ def step(conn, relay, cfg, now: int, *, tcfg: TelegramCfg | None = None,
         max_age_s = tcfg.stale_command_s + cfg.loop_s
         st, pending_events = _apply_pending(st, pending_text, cfg, now, max_age_s)
         events += pending_events
+    bcfg = bcfg if bcfg is not None else BuzzerCfg()
+    buzzer_text = get_state(conn, BUZZER_PENDING_KEY)
+    buzzer_value = _KEEP
+    if buzzer_text is not None:
+        buzzer_value, buzzer_events = _apply_buzzer_pending(
+            buzzer_text, now, tcfg.stale_command_s + cfg.loop_s, bcfg.manual_max_s)
+        events += buzzer_events
 
     uptime = monotonic()
     boot_wall = int(now - uptime)       # giờ khởi động theo đồng hồ hiện tại
@@ -420,14 +476,24 @@ def step(conn, relay, cfg, now: int, *, tcfg: TelegramCfg | None = None,
     events += decide_events
     events += source_events
 
+    def extra():
+        if source_write is not None:
+            source_write()
+        if buzzer_text is not None:
+            if buzzer_value is None:
+                delete_state(conn, BUZZER_OVERRIDE_KEY, commit=False)
+            elif buzzer_value is not _KEEP:
+                set_state(conn, BUZZER_OVERRIDE_KEY, buzzer_value, commit=False)
+            delete_state(conn, BUZZER_PENDING_KEY, value=buzzer_text, commit=False)
+
     # Lưu trạng thái logic trước khi ghi relay: relay lỗi không làm mất quyết định
     _persist(conn, now, st, events, pending_text,
-             notify=lambda: _notify(conn, now, st, inp, events, tcfg), extra=source_write)
+             notify=lambda: _notify(conn, now, st, inp, events, tcfg), extra=extra)
     level = fan_on(st, now)
     if not _drive(conn, relay, level, now, tcfg):
         _flag_unconfirmed_fan_messages(conn, now, events, level)
     if buzzer is not None:
-        _sound_alarm(conn, buzzer, bcfg if bcfg is not None else BuzzerCfg(), inp, now)
+        _sound_alarm(conn, buzzer, bcfg, inp, now)
     return st
 
 

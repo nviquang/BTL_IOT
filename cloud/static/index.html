@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trạm không khí AIoT</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>Trạm quan trắc không khí AIoT</h1>
+  <div id="conn" class="pill">Đang tải…</div>
+</header>
+
+<div id="offline" class="banner hidden"></div>
+
+<main>
+  <section class="card source" id="sourceCard">
+    <div class="muted small">Nguồn bụi (AI nhận diện)</div>
+    <div id="sourceLabel" class="big">—</div>
+    <div id="sourceAction" class="muted"></div>
+    <div id="proba" class="proba"></div>
+    <div id="sourceNote" class="muted small"></div>
+  </section>
+
+  <section class="grid" id="metrics">
+    <div class="card metric"><div class="muted small">PM2.5</div><div id="pm25" class="val">—</div><div id="aqi" class="aqi"></div></div>
+    <div class="card metric"><div class="muted small">PM10 / PM1.0</div><div id="pm10" class="val">—</div></div>
+    <div class="card metric"><div class="muted small">Nhiệt độ</div><div id="temp" class="val">—</div></div>
+    <div class="card metric"><div class="muted small">Độ ẩm</div><div id="hum" class="val">—</div></div>
+    <div class="card metric"><div class="muted small">Ánh sáng</div><div id="lux" class="val">—</div></div>
+  </section>
+
+  <section class="card" id="controlCard">
+    <div class="row between">
+      <h2>Điều khiển</h2>
+      <div id="authBox">
+        <form id="loginForm" class="row">
+          <input type="password" id="password" placeholder="Mật khẩu nhóm" autocomplete="current-password" required>
+          <button type="submit">Đăng nhập</button>
+        </form>
+        <button id="logoutBtn" class="ghost hidden">Đăng xuất</button>
+      </div>
+    </div>
+    <div class="ctrl-grid">
+      <div>
+        <div class="muted small">Chế độ</div>
+        <div class="seg" id="modeSeg">
+          <button data-kind="mode" data-value="auto">Tự động</button>
+          <button data-kind="mode" data-value="manual">Thủ công</button>
+        </div>
+        <div id="modeNote" class="muted small"></div>
+      </div>
+      <div>
+        <div class="muted small">Quạt lọc</div>
+        <div class="state" id="fanState">—</div>
+        <div class="seg">
+          <button data-kind="fan" data-value="on" class="manual-only">Bật</button>
+          <button data-kind="fan" data-value="off" class="manual-only">Tắt</button>
+        </div>
+        <div id="fanNote" class="muted small"></div>
+      </div>
+      <div>
+        <div class="muted small">Còi</div>
+        <div class="state" id="buzzerState">—</div>
+        <div class="seg">
+          <button data-kind="buzzer" data-value="on" class="manual-only">Kêu</button>
+          <button data-kind="buzzer" data-value="off" class="manual-only">Im</button>
+        </div>
+        <div id="buzzerNote" class="muted small"></div>
+      </div>
+    </div>
+    <div id="cmdMsg" class="small"></div>
+    <ul id="cmdList" class="list small"></ul>
+  </section>
+
+  <section class="card">
+    <div class="row between"><h2>PM2.5 6 giờ qua</h2>
+      <div class="legend small" id="legend"></div></div>
+    <div class="chart"><canvas id="histChart"></canvas></div>
+  </section>
+
+  <section class="card">
+    <h2>Dự báo PM2.5 6 giờ tới</h2>
+    <div id="fcMeta" class="muted small"></div>
+    <div class="chart short"><canvas id="fcChart"></canvas></div>
+  </section>
+
+  <section class="card">
+    <h2>Nhật ký</h2>
+    <ul id="events" class="list small"></ul>
+  </section>
+
+  <p class="muted small foot">Mô hình proof of concept của bài tập nhóm môn IoT: quạt mini mô phỏng máy lọc
+    không khí. AI chỉ nhận diện nguồn bụi và dự báo; bật/tắt quạt là luật chạy trên Raspberry Pi.</p>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

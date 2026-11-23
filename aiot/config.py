@@ -103,6 +103,7 @@ class BuzzerCfg:
     burst_s: float = 10.0           # một hồi còi dài bao lâu
     repeat_s: int = 300             # còn vượt ngưỡng thì kêu lại sau chừng này giây
     mute_s: int = 1800              # /mute không kèm số phút thì tắt tiếng chừng này giây
+    manual_max_s: int = 60          # bật còi thủ công (/buzzer on, web) tối đa chừng này giây
 
 
 @dataclass(frozen=True)
@@ -121,11 +122,23 @@ class SourceCfg:
 
 
 @dataclass(frozen=True)
+class CloudCfg:
+    """Đẩy dữ liệu lên web trên cloud và nhận lệnh từ web (aiot/uplink.py, thư mục cloud/)."""
+    enabled: bool = False
+    url: str = ""                   # ví dụ https://aiot-tram.onrender.com (không có / cuối)
+    interval_s: int = 5             # mỗi lần gửi /api/ingest
+    timeout_s: int = 10
+    history_step_s: int = 60        # history gửi lên là trung bình theo bước này
+    command_max_age_s: int = 60     # lệnh web cũ hơn thì bỏ
+
+
+@dataclass(frozen=True)
 class Secrets:
     telegram_token: str | None = None
     gemini_api_key: str | None = None
     allowed_chat_ids: frozenset[int] = frozenset()
     mqtt_password: str | None = None
+    ingest_token: str | None = None
 
     def __repr__(self):
         # Chỉ cho biết đã có hay chưa, không bao giờ in giá trị
@@ -134,7 +147,8 @@ class Secrets:
         return (f"Secrets(telegram_token={state(self.telegram_token)}, "
                 f"gemini_api_key={state(self.gemini_api_key)}, "
                 f"allowed_chat_ids={len(self.allowed_chat_ids)} chat, "
-                f"mqtt_password={state(self.mqtt_password)})")
+                f"mqtt_password={state(self.mqtt_password)}, "
+                f"ingest_token={state(self.ingest_token)})")
 
     __str__ = __repr__
 
@@ -153,6 +167,7 @@ class Config:
     weather: WeatherCfg = field(default_factory=WeatherCfg)
     buzzer: BuzzerCfg = field(default_factory=BuzzerCfg)
     source: SourceCfg = field(default_factory=SourceCfg)
+    cloud: CloudCfg = field(default_factory=CloudCfg)
     secrets: Secrets = field(default_factory=Secrets)
 
 
@@ -167,6 +182,7 @@ SECTIONS = {
     "weather": WeatherCfg,
     "buzzer": BuzzerCfg,
     "source": SourceCfg,
+    "cloud": CloudCfg,
 }
 TOP_LEVEL_KEYS = ("db_path", "csv_path", "device_id")
 
@@ -239,6 +255,7 @@ def load_secrets(env_path):
         gemini_api_key=get("GEMINI_API_KEY"),
         allowed_chat_ids=parse_chat_ids(get("ALLOWED_CHAT_IDS")),
         mqtt_password=get("MQTT_PASSWORD"),
+        ingest_token=get("INGEST_TOKEN"),
     )
 
 

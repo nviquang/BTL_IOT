@@ -23,11 +23,13 @@ from pathlib import Path
 from aiot.config import load_config, read_env_file
 
 ENV_KEYS = ("TELEGRAM_TOKEN", "GEMINI_API_KEY", "ALLOWED_CHAT_IDS", "MQTT_PASSWORD")
-UNITS = ("aiot-collector", "aiot-controller", "aiot-bot",
+UNITS = ("aiot-collector", "aiot-controller", "aiot-bot", "aiot-uplink",
          "aiot-forecast.timer", "aiot-morning.timer", "aiot-weather.timer")
 CRITICAL_UNITS = frozenset({"aiot-collector"})
 FRESH_S = 60                         # mẫu thô mới hơn mức này mới coi là đang thu thập
 HEARTBEAT_KEY = "controller_heartbeat"
+UPLINK_KEY = "uplink_last_ok"          # aiot.uplink ghi sau mỗi lần cloud nhận
+UPLINK_FRESH_S = 60
 HEARTBEAT_STALE_LOOPS = 3            # như bot: cũ hơn 3 vòng loop_s là controller không chạy
 TELEGRAM_TIMEOUT_S = 10
 LEGACY_CAMERA_PATTERN = r"pi_(camera|detection)_client\.py"
@@ -157,6 +159,35 @@ def check_heartbeat(db_path, now, loop_s, skipped=False) -> Check:
     return Check(name, age <= HEARTBEAT_STALE_LOOPS * loop_s, f"cách đây {_fmt_age(age)}")
 
 
+def uplink_wanted(cfg) -> bool:
+    return bool(cfg.cloud.enabled and cfg.cloud.url.strip() and cfg.secrets.ingest_token)
+
+
+def check_uplink(db_path, now, cfg) -> Check:
+    name = "web cloud"
+    if not uplink_wanted(cfg):
+        return Check(name, None, "bỏ qua (cloud.enabled false, thiếu url hoặc INGEST_TOKEN)")
+    try:
+        conn = _connect_ro(db_path)
+        if conn is None:
+            return Check(name, False, "chưa có DB")
+        try:
+            row = conn.execute("SELECT value FROM state WHERE key = ?", (UPLINK_KEY,)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        return Check(name, False, f"lỗi đọc DB: {e}")
+    try:
+        last = int(row[0]) if row else None
+    except ValueError:
+        last = None
+    if last is None:
+        return Check(name, False, f"chưa gửi được lần nào lên {cfg.cloud.url}")
+    age = now - last
+    return Check(name, age <= UPLINK_FRESH_S,
+                 f"gửi thành công cách đây {_fmt_age(age)} ({cfg.cloud.url})")
+
+
 def _telegram_client(token):
     from aiot.telegram_api import TelegramClient
     return TelegramClient(token)
@@ -260,11 +291,14 @@ def run_checks(cfg, env_path=".env", now=None, runner=systemctl_is_active,
     secrets = cfg.secrets
     if not secrets.telegram_token or not secrets.allowed_chat_ids:
         skip.add("aiot-bot")       # bot tự thoát mã 2 khi thiếu token/chat id
+    if not uplink_wanted(cfg):
+        skip.add("aiot-uplink")    # web cloud chưa bật
     checks = [check_env(env_path)]
     checks += check_units(UNITS, runner=runner, skip=skip)
     checks += list(check_latest_data(cfg.db_path, now))
     checks.append(check_heartbeat(cfg.db_path, now, cfg.control.loop_s,
                                   skipped="aiot-controller" in skip))
+    checks.append(check_uplink(cfg.db_path, now, cfg))
     checks.append(check_telegram(secrets.telegram_token, client_factory=client_factory))
     checks.append(check_camera(capture, legacy_running, index=cfg.weather.camera_index))
     checks.append(check_clock(clock_trusted))

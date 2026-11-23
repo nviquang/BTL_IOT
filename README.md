@@ -100,6 +100,8 @@ Gõ `/` trong Telegram để thấy menu. Bot chỉ trả lời chat có trong `
 | `/mode auto` / `/mode manual` | quạt theo PM2.5 / giữ quạt như hiện tại trong 2 giờ              |
 | `/quiet 22 6`                 | giờ yên lặng 22h → 6h (chỉ cảnh báo khẩn cấp được gửi)           |
 | `/mute`, `/mute 10`, `/mute off` | tắt tiếng còi tại chỗ 30 phút / 10 phút / bật lại             |
+| `/buzzer on` / `/buzzer off`  | còi thủ công: kêu tối đa 1 phút / giữ im 2 giờ (`/mode auto` xoá) |
+| `/web`                        | đường dẫn trang web của trạm                                     |
 | `/clear`                      | xoá tin của bot và của bạn trong 48 giờ qua                      |
 | `/help`                       | danh sách lệnh                                                   |
 
@@ -117,9 +119,9 @@ Cuối `pi_up.sh` (và `--status`, `up.ps1 -Status`) in bảng do `python -m aio
 | ⚠️      | cảnh báo, trạm vẫn đo được (ví dụ timer chưa bật, thiếu khoá `.env`, camera không chụp được)             |
 | ➖       | bỏ qua có chủ ý (`--no-fan`, thiếu token Telegram, client camera cũ đang giữ camera)                     |
 
-Các dòng: `.env` (chỉ in tên khoá thiếu, không in giá trị), trạng thái 6 unit systemd, tuổi
+Các dòng: `.env` (chỉ in tên khoá thiếu, không in giá trị), trạng thái 7 unit systemd, tuổi
 mẫu mới nhất, cảm biến không có số, nhịp của
-controller, Telegram `getMe`, chụp thử camera, đồng hồ đã đồng bộ NTP chưa.
+controller, lần gửi lên web cloud gần nhất, Telegram `getMe`, chụp thử camera, đồng hồ đã đồng bộ NTP chưa.
 Có ❌ thì xem `journalctl -u aiot-collector -n 30` và
 [bảng xử lý sự cố](docs/van_hanh_chi_tiet.md#10-xử-lý-sự-cố).
 
@@ -182,3 +184,61 @@ cậy thì quay về luật ngưỡng PM2.5. Chi tiết, kết quả và cách t
 Gán nhãn sự kiện thật trên Pi: `venv/bin/python scripts/label_event.py --label cooking --start 18:05 --end 18:25 --note "rán trứng"`.
 Demo trên DB thử: `venv/bin/python scripts/inject_pm.py --db ~/iot_data/demo.db --scenario smoking`
 (chạy kèm `venv/bin/python -m aiot.controller --config <file cấu hình có db_path trỏ tới demo.db>`).
+
+## Web trên cloud
+
+Trang web công khai: xem số liệu, nhãn nguồn bụi AI kèm xác suất, biểu đồ 6 giờ tô màu theo
+nhãn, dự báo 6 giờ, nhật ký; đăng nhập bằng mật khẩu nhóm để chuyển Tự động/Thủ công và bật/tắt
+quạt, còi. Kế hoạch và lý do chọn dịch vụ: `docs/ke_hoach_web.md`.
+
+```
+Pi: aiot-uplink ──HTTPS, 5 s/lần──► Render: cloud/app.py (FastAPI) ◄── trình duyệt
+     ▲  ghi lệnh vào khoá state          │
+     └── controller áp dụng ≤ 5 s        ▼ Neon Postgres
+```
+
+- Pi chỉ kết nối ra ngoài, không mở port. Web không chạm GPIO: lệnh web đi qua đúng đường
+  của lệnh Telegram (`aiot/commands.py` → `pending_override`/`pending_buzzer` → controller).
+- Lệnh web quá 60 giây chưa được Pi nhận thì hết hạn, không áp dụng muộn. Mỗi lệnh chỉ áp
+  dụng một lần. Còi bật thủ công tối đa `buzzer.manual_max_s` (60 s).
+- Cloud chỉ nhận số liệu tổng hợp (TB 1 phút), không nhận ảnh, chat id Telegram hay IP.
+- Mất Internet: trạm vẫn đo và điều khiển như cũ; web hiện "Pi mất kết nối" và số liệu cuối.
+
+### Chạy thử trên laptop (không cần Pi, Render, Neon)
+
+```powershell
+.venv\Scripts\python -m pip install -r requirements-dev.txt
+.venv\Scripts\python scripts\cloud_demo.py
+```
+
+Mở http://127.0.0.1:8000, mật khẩu thử `demo-local-123`. Script tạo DB giả lập 6 giờ và chạy
+uplink + controller với quạt/còi giả (in ra màn hình), nên bấm nút sẽ thấy phản hồi sau vài giây.
+
+### Deploy (một lần, người trong nhóm làm)
+
+1. **Neon** (neon.tech, gói free): tạo project, region gần nhất (Singapore), chép chuỗi kết nối
+   `postgresql://...?sslmode=require`.
+2. **Tạo bí mật** trên laptop:
+   ```powershell
+   .venv\Scripts\python -c "import secrets; print(secrets.token_urlsafe(32))"
+   ```
+   ```powershell
+   .venv\Scripts\python -m cloud.security
+   ```
+   Lệnh đầu cho `INGEST_TOKEN`, lệnh sau hỏi mật khẩu web và in `WEB_PASSWORD_HASH`.
+3. **Render** (render.com, gói free): New → Blueprint → chọn repo GitHub này (đọc `render.yaml`).
+   Điền `DATABASE_URL`, `INGEST_TOKEN`, `WEB_PASSWORD_HASH` khi được hỏi; `SESSION_SECRET` tự
+   sinh. Đợi build xong, mở `https://<tên>.onrender.com/healthz` thấy `{"ok":true}`.
+4. **Pi**: thêm `INGEST_TOKEN=<cùng giá trị>` vào `.env`; trong `config.yaml` đặt
+   `cloud.enabled: true` và `cloud.url: https://<tên>.onrender.com`; chạy
+   `powershell -ExecutionPolicy Bypass -File scripts\up.ps1`. `pi_up.sh` tự bật `aiot-uplink`,
+   bảng kiểm tra có dòng "web cloud".
+5. **Kiểm tra**: mở URL bằng 4G trên điện thoại; đăng nhập, bấm Thủ công → Bật quạt, Kêu còi;
+   mạch phản hồi trong ≤ 10 giây (cần người đứng cạnh mạch).
+
+Thu hồi: đổi `WEB_PASSWORD_HASH` trên Render (mật khẩu cũ hết tác dụng), đổi `SESSION_SECRET`
+(đăng xuất mọi người), đổi `INGEST_TOKEN` cả hai nơi.
+
+Giới hạn gói free (kiểm tra lại trước khi tạo): Render free ngủ sau 15 phút không có request,
+đánh thức mất khoảng 1 phút — khi Pi online thì lượt gửi 5 giây/lần giữ nó thức, khi Pi offline
+lâu thì người mở trang đầu tiên phải đợi. Postgres free của Render hết hạn sau 30 ngày nên dùng Neon.

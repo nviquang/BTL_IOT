@@ -66,6 +66,7 @@ from aiot.aqi import classify
 from aiot.camera import capture_subprocess as capture_photo
 from aiot.control import ControlState, fan_on, override_active
 from aiot.collector import is_clock_trusted
+from aiot import commands
 from aiot.db import (connect, forget_messages, get_state, init_schema, log_event,
                      purge_messages, recent_message_ids, record_message, set_state)
 from aiot.forecast import MODEL_NAMES, latest_rows
@@ -107,6 +108,8 @@ HELP = ("Các lệnh:\n"
         "/mode manual - giữ quạt như hiện tại (có thời hạn)\n"
         "/quiet 22 6 - đặt giờ yên lặng từ 22h tới 6h\n"
         "/mute [phút] | /mute off - tắt tiếng còi tại chỗ / bật lại\n"
+        "/buzzer on | /buzzer off - bật còi thủ công (tối đa 1 phút) / giữ còi im\n"
+        "/web - đường dẫn trang web của trạm\n"
         "/clear - xoá tin của bot và của bạn trong 48 giờ qua\n"
         "/help - xem lại danh sách lệnh này\n"
         "\n"
@@ -123,11 +126,14 @@ BOT_COMMANDS = [
     {"command": "mode", "description": "Chế độ quạt: /mode auto hoặc /mode manual"},
     {"command": "quiet", "description": "Đặt giờ yên lặng, ví dụ /quiet 22 6"},
     {"command": "mute", "description": "Tắt tiếng còi: /mute, /mute 10 (phút), /mute off"},
+    {"command": "buzzer", "description": "Còi thủ công: /buzzer on (kêu tối đa 1 phút) hoặc /buzzer off"},
+    {"command": "web", "description": "Đường dẫn trang web của trạm"},
     {"command": "clear", "description": "Xoá lịch sử chat trong 48 giờ qua"},
     {"command": "help", "description": "Danh sách lệnh"},
 ]
 USAGE_FAN = "Cách dùng: /fan on hoặc /fan off"
-USAGE_MODE = "Cách dùng: /mode auto hoặc /mode manual"
+USAGE_BUZZER = "Cách dùng: /buzzer on hoặc /buzzer off"
+USAGE_MODE ="Cách dùng: /mode auto hoặc /mode manual"
 USAGE_QUIET = ("Cách dùng: /quiet <giờ bắt đầu> <giờ kết thúc>, mỗi giờ từ 0 tới 23, "
                "ví dụ /quiet 22 6. Gửi /quiet 0 0 để tắt giờ yên lặng.")
 USAGE_MUTE = (f"Cách dùng: /mute (tắt tiếng còi theo mặc định), /mute <số phút từ 1 tới "
@@ -288,6 +294,9 @@ def cmd_status(conn, cfg, now, args):
         lines.append(source)
     if not cfg.buzzer.enabled:
         lines.append("- Còi: tắt trong config.yaml")
+    elif (ov := commands.buzzer_override(conn, now)) is not None:
+        lines.append(f"- Còi: thủ công, {'đang kêu' if ov[0] else 'giữ im'} tới "
+                     f"{_fmt_time(ov[1])} (gửi /mode auto để về tự động)")
     else:
         until = _mute_until(conn)
         lines.append(f"- Còi: tắt tiếng tới {_fmt_time(until)} (gửi /mute off để bật lại)"
@@ -373,38 +382,22 @@ def cmd_clear(conn, now, chat_id, message_id, *, commit=True):
 
 
 # ---------------- lệnh điều khiển ----------------
+def _detail(ctx):
+    return f"{ctx['text'].strip()[:200]} chat={ctx['chat_id']}"
+
+
 def _apply_control(conn, now, ctx, writes):
     """Ghi các khoá state và sự kiện 'command' trong MỘT transaction.
     ctx["commit"] False: người gọi (poll_once) commit cùng offset."""
-    try:
-        for key, value in writes:
-            set_state(conn, key, value, commit=False)
-        log_event(conn, now, "command", f"{ctx['text'].strip()[:200]} chat={ctx['chat_id']}",
-                  commit=False)
-        if ctx["commit"]:
-            conn.commit()
-    except BaseException:
-        if ctx["commit"]:
-            conn.rollback()
-        raise
-
-
-def _pending_json(fan, update_id, now, ttl_s=None):
-    data = {"fan": fan}
-    if fan is not None:
-        data["ttl_s"] = int(ttl_s)
-    data["id"] = update_id
-    data["at"] = int(now)
-    return json.dumps(data, sort_keys=True)
+    commands.apply_writes(conn, now, writes, _detail(ctx), commit=ctx["commit"])
 
 
 def cmd_fan(conn, cfg, now, args, ctx):
     if len(args) != 1 or args[0] not in ("on", "off"):
         return USAGE_FAN
     on = args[0] == "on"
-    ttl = cfg.control.override_ttl_s
-    _apply_control(conn, now, ctx,
-                   [(PENDING_KEY, _pending_json(on, ctx["update_id"], now, ttl))])
+    ttl = commands.set_fan(conn, cfg, now, on, cmd_id=ctx["update_id"], detail=_detail(ctx),
+                           commit=ctx["commit"])
     return _with_controller_warning(conn, cfg, now, (
         f"Đã gửi lệnh {_on_off(on)} quạt thủ công. Bộ điều khiển áp dụng trong khoảng "
         f"{cfg.control.loop_s} giây; ghi đè có hiệu lực {_fmt_age(ttl)} "
@@ -414,20 +407,40 @@ def cmd_fan(conn, cfg, now, args, ctx):
 def cmd_mode(conn, cfg, now, args, ctx):
     if len(args) != 1 or args[0] not in ("auto", "manual"):
         return USAGE_MODE
+    on = commands.set_mode(conn, cfg, now, args[0], cmd_id=ctx["update_id"],
+                           detail=_detail(ctx), commit=ctx["commit"])
     if args[0] == "auto":
-        _apply_control(conn, now, ctx,
-                       [(PENDING_KEY, _pending_json(None, ctx["update_id"], now))])
         return _with_controller_warning(conn, cfg, now, (
-            f"Đã gửi lệnh về chế độ tự động: quạt theo luật PM2.5 trong khoảng "
+            f"Đã gửi lệnh về chế độ tự động: quạt và còi theo AI và luật PM2.5 trong khoảng "
             f"{cfg.control.loop_s} giây."))
-    st, _ = _control_state(conn)
-    on = fan_on(st, now) if st is not None else False
     ttl = cfg.control.override_ttl_s
-    _apply_control(conn, now, ctx,
-                   [(PENDING_KEY, _pending_json(on, ctx["update_id"], now, ttl))])
     return _with_controller_warning(conn, cfg, now, (
         f"Đã chuyển sang thủ công: giữ quạt đang {_on_off(on)} trong {_fmt_age(ttl)} "
         f"(tới {_fmt_time(now + ttl)}). Gửi /fan on|off để đổi, /mode auto để về tự động."))
+
+
+def cmd_buzzer(conn, cfg, now, args, ctx):
+    if len(args) != 1 or args[0] not in ("on", "off"):
+        return USAGE_BUZZER
+    if not cfg.buzzer.enabled:
+        return "Còi đang tắt trong config.yaml (buzzer.enabled: false)."
+    on = args[0] == "on"
+    ttl = commands.set_buzzer(conn, cfg, now, on, cmd_id=ctx["update_id"], detail=_detail(ctx),
+                              commit=ctx["commit"])
+    if on:
+        text = (f"Đã gửi lệnh bật còi thủ công: kêu trong {_fmt_age(ttl)} rồi tự tắt. "
+                f"Gửi /buzzer off để tắt sớm.")
+    else:
+        text = (f"Đã gửi lệnh giữ còi im trong {_fmt_age(ttl)} (tới {_fmt_time(now + ttl)}), "
+                f"kể cả khi vượt ngưỡng. Gửi /mode auto để còi theo AI và luật ngưỡng.")
+    return _with_controller_warning(conn, cfg, now, text)
+
+
+def cmd_web(conn, cfg, now, args):
+    url = cfg.cloud.url.strip()
+    if not url:
+        return "Chưa cấu hình web (mục cloud.url trong config.yaml)."
+    return f"Trang web của trạm: {url}\nAi cũng xem được; điều khiển cần mật khẩu của nhóm."
 
 
 def cmd_quiet(conn, cfg, now, args, ctx):
@@ -481,6 +494,7 @@ READ_ONLY = {   # /clear xử lý riêng trong handle_update (cần chat và mes
     "/photo": cmd_photo,
     "/help": cmd_help,
     "/start": cmd_help,
+    "/web": cmd_web,
 }
 STALE_READ_ONLY = frozenset({"/report", "/photo", "/clear"})   # bỏ khi quá cũ
 CONTROL = {
@@ -488,6 +502,7 @@ CONTROL = {
     "/mode": cmd_mode,
     "/quiet": cmd_quiet,
     "/mute": cmd_mute,
+    "/buzzer": cmd_buzzer,
 }
 
 

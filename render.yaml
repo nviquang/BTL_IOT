@@ -1,0 +1,26 @@
+# Render Blueprint cho web trên cloud của trạm (thư mục cloud/).
+# Tạo: Render Dashboard > New > Blueprint > chọn repo này. Render hỏi giá trị cho các biến
+# sync: false (bí mật, không ghi vào repo). Xem README mục "Web trên cloud".
+services:
+  - type: web
+    name: aiot-tram
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r cloud/requirements.txt
+    startCommand: uvicorn cloud.app:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: DATABASE_URL          # chuỗi kết nối Neon Postgres (postgresql://...?sslmode=require)
+        sync: false
+      - key: INGEST_TOKEN          # cùng giá trị với INGEST_TOKEN trong .env trên Pi
+        sync: false
+      - key: WEB_PASSWORD_HASH     # tạo bằng: python -m cloud.security
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: COMMAND_TTL_S
+        value: "60"

@@ -87,6 +87,7 @@ buzzer:
   burst_s: 10.0             # một hồi còi 10 giây
   repeat_s: 300             # còn vượt thì kêu lại sau 5 phút; hết vượt thì tắt ngay
   mute_s: 1800              # /mute không kèm số phút: tắt tiếng 30 phút
+  manual_max_s: 60          # bật còi thủ công (/buzzer on, web) tối đa 60 giây rồi tự tắt
 
 # Bộ nhận diện nguồn bụi bằng AI (aiot/source_model.py, models/source_rf.json do
 # training/train_source.py tạo). Dự đoán mỗi control.loop_s giây từ mẫu 1 giây 30 phút qua.
@@ -100,3 +101,14 @@ source:
   min_confidence: 0.6
   max_gap_s: 30
   stale_s: 15
+
+# Web trên cloud (thư mục cloud/, deploy lên Render): aiot/uplink.py đẩy số liệu, nhãn AI,
+# dự báo, nhật ký lên url mỗi interval_s giây và nhận lệnh quạt/còi/chế độ từ web.
+# INGEST_TOKEN nằm trong .env (cùng giá trị với biến môi trường INGEST_TOKEN trên Render).
+cloud:
+  enabled: false            # bật sau khi đã deploy và đặt url
+  url: ""                   # ví dụ https://aiot-tram.onrender.com
+  interval_s: 5
+  timeout_s: 10
+  history_step_s: 60
+  command_max_age_s: 60

@@ -395,10 +395,13 @@ def test_demo_can_repeat_after_five_minutes(conn, demo):
 
 
 def test_demo_changes_only_weather(tmp_path, demo):
+    from aiot.config import Config
     real = load_config(ROOT / "config.yaml", tmp_path / "khong_co.env")
     assert demo.db_path == real.db_path
-    assert demo.control == real.control
-    assert demo.telegram == real.telegram
+    # File demo không có mục control/telegram nên lấy mặc định, bất kể config.yaml có đang
+    # bật chế độ demo 20 giây của quạt hay không
+    assert demo.control == Config().control
+    assert demo.telegram == Config().telegram
     assert demo.weather.photo_dir == real.weather.photo_dir
     assert demo.weather.camera_index == real.weather.camera_index
 

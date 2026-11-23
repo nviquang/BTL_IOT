@@ -49,7 +49,11 @@ def test_repo_config_yaml_loads(tmp_path):
     """config.yaml trong repo phải đọc được và giữ đúng ngưỡng của spec."""
     cfg = load_config(REPO_CONFIG, tmp_path / "khong_co.env")
     assert cfg.control.enter_pm25 == 55.0
-    assert cfg.control.demo is False
+    assert cfg.control.exit_pm25 == 35.0
+    assert cfg.control.danger_pm25 == 150.0
+    # Nhóm đang bật chế độ demo (commit dc0080f): chỉ thời gian chờ rút ngắn, ngưỡng giữ nguyên
+    if cfg.control.demo:
+        assert cfg.control.enter_hold_s == cfg.control.demo_wait_s
     assert cfg.mqtt.user == "pi01"
 
 

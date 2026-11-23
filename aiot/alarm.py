@@ -12,13 +12,16 @@ và plan() mỗi vòng rồi ra lệnh cho aiot.buzzer.Buzzer theo hành động
 - Mất dữ liệu PM: không có trung vị 1 phút nên không kêu theo PM (lỗi cảm biến đã có
   cảnh báo Telegram riêng).
 - Đang tắt tiếng (/mute): không kêu, nhưng vẫn theo dõi để kêu lại khi hết tắt tiếng.
+- Ghi đè thủ công (khoá 'buzzer_override', do controller ghi từ lệnh /buzzer hoặc web):
+  bật thì kêu liên tục tới hết hạn (tối đa buzzer.manual_max_s, plan_manual); tắt thì im
+  như /mute. /mode auto xoá ghi đè.
 - Còi kêu bất kể giờ yên lặng: đây là cảnh báo an toàn tại chỗ, vẫn chạy khi mất Internet.
 """
 import dataclasses
 import json
 from dataclasses import dataclass
 
-REASONS = ("pm25", "pollution", "smoking")
+REASONS = ("pm25", "pollution", "smoking", "manual")
 AI_BUZZER_SOURCES = frozenset({"pollution", "smoking"})
 BURST = "burst"
 SILENCE = "silence"
@@ -71,6 +74,19 @@ def plan(st, reason, now, cfg, muted=False):
     if due:
         return AlarmState(reason=reason, last_burst_at=now), BURST
     return st, None
+
+
+def plan_manual(st, set_at, until, now, max_s):
+    """Ghi đè bật còi (/buzzer on, web): kêu một hồi dài tới until (tối đa max_s giây), một
+    lần cho mỗi lệnh (set_at = giờ controller nhận lệnh). Trả về (trạng thái, số giây kêu
+    hoặc None). Hết hạn thì vòng sau plan() thấy lý do đổi và tắt/kêu theo luật."""
+    now = int(now)
+    if st.reason == "manual" and st.last_burst_at is not None and st.last_burst_at >= set_at:
+        return st, None
+    duration = max(0, min(int(until) - now, int(max_s)))
+    if duration <= 0:
+        return st, None
+    return AlarmState(reason="manual", last_burst_at=now), duration
 
 
 def is_muted(value, now):

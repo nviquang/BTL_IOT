@@ -9,3 +9,9 @@ numpy         # aiot/forecast.py
 pandas        # training/ (test_training_data, test_scaler_json_roundtrip): thiếu thì test bị bỏ qua
 scikit-learn  # training/ MinMaxScaler, Ridge
 # TensorFlow (test_real_tflite_export_and_load) nằm trong training/requirements.txt
+
+# Web trên cloud (tests/test_cloud.py; thiếu thì test bị bỏ qua)
+fastapi
+sqlalchemy
+httpx
+uvicorn

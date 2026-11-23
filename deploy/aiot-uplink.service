@@ -1,0 +1,24 @@
+# Dịch vụ đẩy dữ liệu trạm lên web trên cloud và nhận lệnh từ web (aiot/uplink.py).
+# Cài: scripts/pi_up.sh tự cài và chỉ bật khi config.yaml có cloud.enabled: true, cloud.url
+#      và .env có INGEST_TOKEN.
+# Không chạm GPIO: lệnh web chỉ ghi khoá state cho controller, như lệnh Telegram.
+[Unit]
+Description=AIoT air station cloud uplink (push readings, receive web commands)
+# Mất mạng thì tự thử lại, không phụ thuộc cứng vào mạng.
+After=aiot-collector.service aiot-controller.service
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/BTL_IOT
+ExecStart=/home/admin/BTL_IOT/venv/bin/python -m aiot.uplink
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+# Mã 2 = cloud chưa bật / thiếu url / thiếu INGEST_TOKEN: không khởi động lại liên tục
+RestartPreventExitStatus=2
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

@@ -846,3 +846,78 @@ def test_no_buzzer_no_alarm_state(conn):
     add_pm(conn, 940, 1000, 200.0)
     step(conn, FakeRelay(), CFG, 1000, monotonic=lambda: 10_000)
     assert get_state(conn, ALARM_KEY) is None
+
+
+# ---------------- còi thủ công (pending_buzzer -> buzzer_override) ----------------
+def _buzzer_cmd(conn, on, at, ttl_s=60):
+    from aiot.commands import BUZZER_PENDING_KEY, pending_buzzer_json
+    set_state(conn, BUZZER_PENDING_KEY, pending_buzzer_json(on, 1, at, ttl_s))
+
+
+def test_manual_buzzer_on_bursts_until_limit_then_expires(conn):
+    from aiot.commands import BUZZER_OVERRIDE_KEY, BUZZER_PENDING_KEY
+    from aiot.config import BuzzerCfg
+
+    bcfg = BuzzerCfg(manual_max_s=60)
+    buzzer = FakeBuzzer()
+    add_pm(conn, 940, 1000, 20.0)
+    _buzzer_cmd(conn, True, 1000, ttl_s=7200)     # ttl lớn bị cắt về manual_max_s
+    step(conn, FakeRelay(), CFG, 1000, monotonic=lambda: 10_000, buzzer=buzzer, bcfg=bcfg)
+    assert buzzer.bursts == [60]
+    assert get_state(conn, BUZZER_PENDING_KEY) is None
+    assert json.loads(get_state(conn, BUZZER_OVERRIDE_KEY))["until"] == 1060
+    # vòng sau vẫn trong hạn: không kêu lại từ đầu
+    add_pm(conn, 1010, 1020, 20.0)
+    step(conn, FakeRelay(), CFG, 1020, monotonic=lambda: 10_000, buzzer=buzzer, bcfg=bcfg)
+    assert buzzer.bursts == [60]
+    # hết hạn, không vượt ngưỡng: tắt còi
+    add_pm(conn, 1030, 1070, 20.0)
+    step(conn, FakeRelay(), CFG, 1070, monotonic=lambda: 10_000, buzzer=buzzer, bcfg=bcfg)
+    assert buzzer.silences == 1
+    assert "buzzer_override" in kinds(conn)
+
+
+def test_manual_buzzer_off_silences_alarm(conn):
+    buzzer = FakeBuzzer()
+    add_pm(conn, 940, 1000, 200.0)
+    _buzzer_cmd(conn, False, 1000, ttl_s=600)
+    step(conn, FakeRelay(), CFG, 1000, monotonic=lambda: 10_000, buzzer=buzzer)
+    assert buzzer.bursts == []
+    assert buzzer.silences == 1
+
+
+def test_mode_auto_clears_buzzer_override(conn):
+    from aiot.commands import BUZZER_OVERRIDE_KEY, BUZZER_PENDING_KEY, pending_buzzer_json
+
+    add_pm(conn, 940, 1000, 20.0)
+    _buzzer_cmd(conn, False, 1000, ttl_s=600)
+    step(conn, FakeRelay(), CFG, 1000, monotonic=lambda: 10_000, buzzer=FakeBuzzer())
+    assert get_state(conn, BUZZER_OVERRIDE_KEY) is not None
+    set_state(conn, BUZZER_PENDING_KEY, pending_buzzer_json(None, 2, 1010))
+    step(conn, FakeRelay(), CFG, 1010, monotonic=lambda: 10_000, buzzer=FakeBuzzer())
+    assert get_state(conn, BUZZER_OVERRIDE_KEY) is None
+
+
+@pytest.mark.parametrize("text", ["không phải json", '{"on": "yes", "at": 1000}',
+                                  '{"on": true, "at": 1000}'])
+def test_malformed_buzzer_command_dropped(conn, text):
+    from aiot.commands import BUZZER_OVERRIDE_KEY, BUZZER_PENDING_KEY
+
+    set_state(conn, BUZZER_PENDING_KEY, text)
+    add_pm(conn, 940, 1000, 20.0)
+    step(conn, FakeRelay(), CFG, 1000, monotonic=lambda: 10_000, buzzer=FakeBuzzer())
+    assert get_state(conn, BUZZER_PENDING_KEY) is None
+    assert get_state(conn, BUZZER_OVERRIDE_KEY) is None
+    assert "buzzer_override_invalid" in kinds(conn)
+
+
+def test_stale_buzzer_command_dropped(conn):
+    from aiot.commands import BUZZER_OVERRIDE_KEY
+
+    buzzer = FakeBuzzer()
+    add_pm(conn, 940, 1000, 20.0)
+    _buzzer_cmd(conn, True, 100)
+    step(conn, FakeRelay(), CFG, 1000, monotonic=lambda: 10_000, buzzer=buzzer)
+    assert buzzer.bursts == []
+    assert get_state(conn, BUZZER_OVERRIDE_KEY) is None
+    assert "buzzer_override_stale" in kinds(conn)

@@ -769,7 +769,8 @@ def test_set_my_commands_payload():
     assert call["url"].endswith("/setMyCommands")
     commands = call["json"]["commands"]
     assert [c["command"] for c in commands] == [
-        "now", "status", "forecast", "report", "photo", "fan", "mode", "quiet", "mute", "clear", "help"]
+        "now", "status", "forecast", "report", "photo", "fan", "mode", "quiet", "mute", "buzzer", "web",
+        "clear", "help"]
     for c in commands:
         assert set(c) == {"command", "description"}
         assert 1 <= len(c["description"]) <= 256 and not c["command"].startswith("/")
@@ -1210,3 +1211,28 @@ def test_status_shows_buzzer(conn):
     assert "Còi: sẵn sàng" in handle(conn, "/status")
     handle(conn, "/mute 10", uid=1001)
     assert "Còi: tắt tiếng tới" in handle(conn, "/status", uid=1002)
+
+
+# ---------------- /buzzer, /web ----------------
+def test_buzzer_on_writes_pending_buzzer(conn):
+    reply = handle(conn, "/buzzer on")
+    data = json.loads(get_state(conn, "pending_buzzer"))
+    assert data["on"] is True and data["ttl_s"] == CFG.buzzer.manual_max_s and data["at"] == NOW
+    assert "bật còi" in reply
+    assert command_events(conn) == [f"/buzzer on chat={CHAT}"]
+
+
+def test_buzzer_usage(conn):
+    assert handle(conn, "/buzzer") == bot.USAGE_BUZZER
+    assert get_state(conn, "pending_buzzer") is None
+
+
+def test_mode_auto_also_clears_buzzer(conn):
+    handle(conn, "/mode auto")
+    assert json.loads(get_state(conn, "pending_buzzer"))["on"] is None
+
+
+def test_web_command(conn):
+    assert "Chưa cấu hình" in handle(conn, "/web")
+    cfg = dataclasses.replace(CFG, cloud=dataclasses.replace(CFG.cloud, url="https://x.onrender.com"))
+    assert "https://x.onrender.com" in bot.handle_update(upd("/web"), conn, cfg, NOW)

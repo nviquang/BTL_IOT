@@ -24,6 +24,7 @@ Không thuộc hệ thống (đã loại khỏi thiết kế):
 | Dự báo PM2.5 mỗi giờ (đối chứng + LSTM) | Có code; LSTM đã huấn luyện/đánh giá trên dữ liệu CAMS công khai, chưa triển khai (README 2.4e, 2.4g) |
 | Cảnh báo nắng/mưa kèm ảnh camera (`aiot/weather.py`, `/photo`, menu lệnh bot) | Có code, chưa thử thật (README 2.4h) |
 | Nhận diện nguồn bụi AI (`aiot/source_*.py`, `training/train_source.py`): 4 nhãn, mẫu 1 giây, dự đoán mỗi 5 s, quạt + còi theo nhãn | Có code và mô hình huấn luyện trên dữ liệu mô phỏng (hiệu chỉnh theo nhang 23/11); code đã chép lên Pi 23/11/2026 nhưng chưa khởi động lại dịch vụ; chưa có sự kiện nấu ăn thật (`docs/nhan_dien_nguon_bui.md`) |
+| Web trên cloud (`cloud/`, `aiot/uplink.py`, `aiot/commands.py`): xem số liệu, nhãn AI, dự báo; Tự động/Thủ công, quạt, còi (cần mật khẩu) | Có code và test, chạy thử cục bộ đạt (`scripts/cloud_demo.py`) ngày 23/11/2026; chưa tạo tài khoản Render/Neon, chưa deploy, chưa thử trên mạch (README "Web trên cloud", `docs/ke_hoach_web.md`) |
 | Nghiệm thu 7 ngày | Có `scripts/acceptance_report.py`; chưa đo, kết quả ghi ở `docs/nghiem_thu.md` |
 
 Việc còn lại theo thứ tự nằm ở mục "Việc cần làm trên Pi" trong `README.md`.
@@ -96,7 +97,14 @@ An toàn:
 
 ### Telegram
 
-Lệnh: `/now`, `/forecast`, `/report`, `/status`, `/mode auto|manual`, `/fan on|off`, `/quiet 22 6`, `/mute [phút]|off` (tắt tiếng còi).
+Lệnh: `/now`, `/forecast`, `/report`, `/status`, `/mode auto|manual`, `/fan on|off`, `/quiet 22 6`, `/mute [phút]|off` (tắt tiếng còi), `/buzzer on|off` (còi thủ công, bật tối đa `buzzer.manual_max_s` = 60 s), `/web`. `/mode auto` xoá cả ghi đè quạt lẫn còi.
+
+### Web trên cloud
+
+- Web FastAPI trên Render (`cloud/app.py`, `render.yaml`), dữ liệu ở Neon Postgres. Pi chạy dịch vụ `aiot-uplink` gửi `POST /api/ingest` 5 giây/lần (Bearer `INGEST_TOKEN`) và nhận lệnh về; Pi không mở port.
+- Xem công khai; điều khiển cần mật khẩu chung (hash ở biến `WEB_PASSWORD_HASH` trên Render, tạo bằng `python -m cloud.security`).
+- Lệnh web và Telegram cùng đi qua `aiot/commands.py` → khoá `pending_override` / `pending_buzzer` → controller (`buzzer_override`). Lệnh quá 60 s chưa được nhận thì hết hạn; mỗi id chỉ áp dụng một lần (khoá `uplink_done`).
+- Không gửi lên cloud: ảnh, chat id, IP (uplink bỏ `chat=`, `ip=` khỏi chi tiết sự kiện).
 
 Chỉ phản hồi chat trong `ALLOWED_CHAT_IDS`, không in token vào log, và ghi mọi lệnh điều khiển vào nhật ký.
 
@@ -162,6 +170,8 @@ CREATE TABLE fast_readings (       -- mẫu 1 giây cho AI nguồn bụi, giữ 
 );
 CREATE TABLE source_labels (id, start_ts, end_ts, label, note);  -- scripts/label_event.py
 CREATE TABLE source_predictions (ts PRIMARY KEY, label, raw_label, proba, model);
+-- Khoá state cho lệnh: pending_override (quạt), pending_buzzer -> buzzer_override (còi),
+-- buzzer_mute_until (/mute); uplink: uplink_cursor, uplink_done, uplink_last_ok
 CREATE TABLE outbox (              -- tin Telegram chờ gửi, gửi bù khi có mạng
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -173,7 +183,7 @@ CREATE TABLE outbox (              -- tin Telegram chờ gửi, gửi bù khi c�
 
 Python 3 trong venv. Thư viện dự kiến: `pyserial`, `adafruit-circuitpython-dht`, `adafruit-circuitpython-bh1750`, `lgpio` hoặc `gpiozero`, `pandas`, `statsmodels`, `scikit-learn`, Keras (trên PC), TFLite/LiteRT (trên Pi), `requests` hoặc `python-telegram-bot`, `google-genai`.
 
-Dịch vụ dự kiến (systemd): `collector` chạy liên tục, `controller` lặp 5 giây (dự đoán nguồn bụi mỗi vòng), `bot` long polling, `forecast.timer` mỗi giờ, `morning.timer` 06:30. Bí mật để trong `.env`, không commit: `TELEGRAM_TOKEN`, `GEMINI_API_KEY`, `ALLOWED_CHAT_IDS`, `MQTT_PASSWORD` (mẫu ở `.env.example`).
+Dịch vụ dự kiến (systemd): `collector` chạy liên tục, `controller` lặp 5 giây (dự đoán nguồn bụi mỗi vòng), `bot` long polling, `uplink` (chỉ bật khi `cloud.enabled`, có `cloud.url` và `INGEST_TOKEN`), `forecast.timer` mỗi giờ, `morning.timer` 06:30. Bí mật để trong `.env`, không commit: `TELEGRAM_TOKEN`, `GEMINI_API_KEY`, `ALLOWED_CHAT_IDS`, `MQTT_PASSWORD`, `INGEST_TOKEN` (mẫu ở `.env.example`). Bí mật của web nằm trong biến môi trường Render: `DATABASE_URL`, `INGEST_TOKEN`, `WEB_PASSWORD_HASH`, `SESSION_SECRET`.
 
 Cấu hình chung nằm trong `config.yaml`, đọc bằng `aiot.config.load_config()`; mọi script, kể cả `pi_*_client.py` và `server_app.py`, lấy IP broker từ đây và mật khẩu MQTT từ `.env`. Test trên laptop: tạo `.venv` trong repo, cài `requirements-dev.txt`, chạy `.venv/Scripts/python -m pytest`.
 

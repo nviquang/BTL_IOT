@@ -60,7 +60,7 @@ def test_env_file_missing(tmp_path):
 
 # ---------------- systemd ----------------
 def test_units_states_and_criticality():
-    states = {"aiot-collector": "active", "aiot-controller": "failed", "aiot-bot": "active",
+    states = {"aiot-collector": "active", "aiot-controller": "failed", "aiot-bot": "active", "aiot-uplink": "active",
               "aiot-forecast.timer": "active", "aiot-morning.timer": "inactive",
               "aiot-weather.timer": "active"}
     checks = hc.check_units(hc.UNITS, runner=lambda unit: states[unit])
@@ -331,3 +331,22 @@ def test_camera_failure_appends_hint():
     ok = hc.check_camera(lambda p, i: open(p, "wb").write(b"x") > 0, legacy_running=lambda: False,
                          index=0, hint=lambda: pytest.fail("không cần gợi ý khi chụp được"))
     assert ok.ok is True
+
+
+def test_uplink_check(tmp_path):
+    import dataclasses
+    import sqlite3
+    from aiot.config import CloudCfg, Config, Secrets
+    db = tmp_path / "a.db"
+    off = Config()
+    assert hc.check_uplink(str(db), NOW, off).ok is None
+    cfg = dataclasses.replace(Config(), cloud=CloudCfg(enabled=True, url="https://x"),
+                              secrets=Secrets(ingest_token="t"))
+    assert hc.check_uplink(str(db), NOW, cfg).ok is False
+    c = sqlite3.connect(db)
+    c.execute("CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    c.execute("INSERT INTO state VALUES ('uplink_last_ok', ?)", (str(NOW - 10),))
+    c.commit()
+    c.close()
+    assert hc.check_uplink(str(db), NOW, cfg).ok is True
+    assert hc.check_uplink(str(db), NOW + 100, cfg).ok is False

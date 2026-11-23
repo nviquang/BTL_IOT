@@ -18,7 +18,7 @@ APT_PACKAGES=(i2c-tools python3-venv sqlite3)
 BUILD_PACKAGES=(build-essential python3-dev swig liblgpio-dev)
 GROUPS_NEEDED=(gpio i2c dialout video)
 TIMEZONE="Asia/Ho_Chi_Minh"
-SERVICES=(aiot-collector aiot-controller aiot-bot)
+SERVICES=(aiot-collector aiot-controller aiot-bot aiot-uplink)
 TIMERS=(aiot-forecast.timer aiot-morning.timer aiot-weather.timer)
 VENV_PY="$REPO_DIR/venv/bin/python"
 REQ_STAMP="$REPO_DIR/venv/.requirements-pi.sha256"
@@ -364,9 +364,16 @@ else
   ok "unit đã mới nhất"
 fi
 
+# Web trên cloud: chỉ chạy aiot-uplink khi config.yaml bật cloud, có url và .env có INGEST_TOKEN
+UPLINK_ENABLED=0
+if "$VENV_PY" -c "from aiot.config import load_config as l; from aiot.healthcheck import uplink_wanted as w; raise SystemExit(0 if w(l('config.yaml', '.env')) else 1)" 2>/dev/null; then
+  UPLINK_ENABLED=1
+fi
+
 wanted=(aiot-collector)
 if (( ! NO_FAN )); then wanted+=(aiot-controller); fi
 if (( BOT_ENABLED )); then wanted+=(aiot-bot); fi
+if (( UPLINK_ENABLED )); then wanted+=(aiot-uplink); fi
 
 was_active=()
 for unit in "${wanted[@]}"; do
@@ -380,6 +387,10 @@ fi
 if (( ! BOT_ENABLED )); then
   sudo systemctl stop aiot-bot >/dev/null 2>&1 || true
   warn "aiot-bot không chạy (thiếu token/chat id)"
+fi
+if (( ! UPLINK_ENABLED )); then
+  sudo systemctl disable --now aiot-uplink >/dev/null 2>&1 || true
+  info "aiot-uplink không chạy (web cloud chưa bật: cloud.enabled/cloud.url trong config.yaml, INGEST_TOKEN trong .env)"
 fi
 
 sudo systemctl enable --now "${wanted[@]}" "${TIMERS[@]}" \
