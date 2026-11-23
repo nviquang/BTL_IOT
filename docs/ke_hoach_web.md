@@ -2,7 +2,11 @@
 
 Thay cho bản kế hoạch trước (web chạy trên Pi + Cloudflare Tunnel, không mật khẩu).
 
-**Trạng thái 23/11/2026:** bước 1–4 và 6 đã làm xong (code, test, chạy thử cục bộ bằng `scripts/cloud_demo.py`; uplink đã chạy trên Pi thật đẩy số liệu thật về server thử qua đường hầm SSH, chưa gửi lệnh tới mạch). Bước 5 (deploy) cần nhóm tạo tài khoản Render và Neon theo README mục "Web trên cloud".
+**Trạng thái 23/11/2026:** bước 1–6 đã làm.
+- Web chạy tại https://aiot-tram.onrender.com (Render free, Neon `aiot-tram` ở Singapore).
+- Pi đã cập nhật bằng `up.ps1`; `aiot-uplink` chạy, healthcheck "web cloud" đạt.
+- Lệnh "Bật quạt" gửi từ web qua Internet tới controller trong khoảng 2 giây (22:49, sự kiện `override` trên Pi, không có `relay_error`).
+- Còn ghi nhận: người đứng cạnh mạch xác nhận quạt quay/còi kêu bằng mắt và tai, và thử còi thủ công từ web.
 
 ## Mục tiêu
 

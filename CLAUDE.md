@@ -24,7 +24,7 @@ Không thuộc hệ thống (đã loại khỏi thiết kế):
 | Dự báo PM2.5 mỗi giờ (đối chứng + LSTM) | Có code; LSTM đã huấn luyện/đánh giá trên dữ liệu CAMS công khai, chưa triển khai (README 2.4e, 2.4g) |
 | Cảnh báo nắng/mưa kèm ảnh camera (`aiot/weather.py`, `/photo`, menu lệnh bot) | Có code, chưa thử thật (README 2.4h) |
 | Nhận diện nguồn bụi AI (`aiot/source_*.py`, `training/train_source.py`): 4 nhãn, mẫu 1 giây, dự đoán mỗi 5 s, quạt + còi theo nhãn | Có code và mô hình huấn luyện trên dữ liệu mô phỏng (hiệu chỉnh theo nhang 23/11); code đã chép lên Pi 23/11/2026 nhưng chưa khởi động lại dịch vụ; chưa có sự kiện nấu ăn thật (`docs/nhan_dien_nguon_bui.md`) |
-| Web trên cloud (`cloud/`, `aiot/uplink.py`, `aiot/commands.py`): xem số liệu, nhãn AI, dự báo; Tự động/Thủ công, quạt, còi (cần mật khẩu) | Có code và test, chạy thử cục bộ đạt (`scripts/cloud_demo.py`) ngày 23/11/2026; chưa tạo tài khoản Render/Neon, chưa deploy, chưa thử trên mạch (README "Web trên cloud", `docs/ke_hoach_web.md`) |
+| Web trên cloud (`cloud/`, `aiot/uplink.py`, `aiot/commands.py`): xem số liệu, nhãn AI, dự báo; Tự động/Thủ công, quạt, còi (cần mật khẩu) | Đã deploy ngày 23/11/2026: https://aiot-tram.onrender.com (Render free + Neon Singapore); Pi chạy `aiot-uplink`, lệnh bật quạt từ web tới controller ~2 s. Chưa thử còi thủ công từ web (README "Web trên cloud", `docs/ke_hoach_web.md`) |
 | Nghiệm thu 7 ngày | Có `scripts/acceptance_report.py`; chưa đo, kết quả ghi ở `docs/nghiem_thu.md` |
 
 Việc còn lại theo thứ tự nằm ở mục "Việc cần làm trên Pi" trong `README.md`.
