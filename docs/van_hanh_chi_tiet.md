@@ -32,7 +32,7 @@ quy tắc dự án ở [CLAUDE.md](../CLAUDE.md), bảng nghiệm thu ở [nghie
 ```
                          RASPBERRY PI (chạy liên tục, không cần Internet)
  DHT11, BH1750,  ──► aiot-collector (10 s) ──► SQLite ~/iot_data/aiot.db ◄── aiot-forecast (mỗi giờ :02)
- PMS7003, MQ135        │                          │      ▲                  dự báo PM2.5 1–6 giờ
+ PMS7003               │                          │      ▲                  dự báo PM2.5 1–6 giờ
                        ├─► sensors.csv            │      │
                        └─► MQTT ──────────────────┼──────┼─────────► Laptop: Mosquitto + server_app.py
                                                   ▼      │                 (dashboard, tuỳ chọn)
@@ -58,7 +58,7 @@ quy tắc dự án ở [CLAUDE.md](../CLAUDE.md), bảng nghiệm thu ở [nghie
 | `aiot-bot` | liên tục | bot Telegram, gửi cảnh báo và báo cáo |
 | `aiot-forecast.timer` | mỗi giờ, phút 02 | dự báo PM2.5 6 giờ tới |
 | `aiot-morning.timer` | 06:30 hằng ngày | báo cáo sáng + lời khuyên Gemini |
-| `aiot-weather.timer` | mỗi 5 phút | luật nắng/mưa, chụp ảnh khi cảnh báo |
+| `aiot-weather.timer` | mỗi 20 giây | luật nắng/mưa, chụp ảnh khi cảnh báo |
 
 ### Phần cứng
 
@@ -69,8 +69,8 @@ Raspberry Pi 4 Model B 4 GB. Số chân là số vật lý trên header 40 chân
 | DHT11 | nhiệt độ, độ ẩm | OUT → pin 11 (GPIO17) |
 | BH1750 | ánh sáng (lux) | I2C pin 3, 5; địa chỉ `0x23` |
 | PMS7003 | PM1.0, PM2.5, PM10 | UART pin 8, 10 (`/dev/serial0`); 5V |
-| MQ135 | 1 bit vượt ngưỡng (`0` = vượt) | DO qua cầu chia áp 10 kΩ/20 kΩ → pin 37 (GPIO26) |
 | Relay + quạt 5V | mô phỏng máy lọc | IN → pin 16 (GPIO23); HIGH = quạt quay |
+| Còi chủ động | báo vượt ngưỡng tại chỗ | I/O → pin 29 (GPIO5), VCC pin 17 (3.3V), GND pin 25; LOW = kêu |
 | Camera USB | ảnh | `/dev/video0` |
 
 **Tắt Pi và rút cáp nguồn trước khi đổi dây.** Chi tiết dây, rail breadboard và các lỗi hay
@@ -153,7 +153,7 @@ Laptop Windows chỉ cần cho: dashboard MQTT (tuỳ chọn), chạy test, và 
 ### 2.1. Python
 
 ```powershell
-cd C:\Users\nviquang\Documents\University\FourthYear\IoT\BTL\Chapter12
+cd C:\Users\nviquang\Documents\University\FourthYear\IoT\BTL\WeatherMonitoringStation
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements-dev.txt     # test
 .venv\Scripts\python -m pip install -r requirements.txt         # dashboard (streamlit, paho-mqtt)
@@ -231,7 +231,8 @@ Sửa `config.yaml` xong thì khởi động lại dịch vụ liên quan (`sudo
 
 ## 4. Kiểm tra phần cứng
 
-Chạy trên Pi, có người đứng cạnh mạch (phần quạt và đèn MQ135 hỏi người trả lời):
+Chạy trên Pi, có người đứng cạnh mạch (phần quạt và còi hỏi người trả lời). Dừng dịch vụ trước
+bằng `bash scripts/pi_up.sh --stop`, test xong bật lại bằng `bash scripts/pi_up.sh`:
 
 ```bash
 ssh -t admin@<IP_PI> "cd ~/BTL_IOT && venv/bin/python test_all.py"
@@ -239,9 +240,10 @@ i2cdetect -y 1                                  # phải thấy 23 (BH1750)
 venv/bin/python -m aiot.camera /tmp/thu.jpg && echo "camera ok"
 ```
 
-`test_all.py` kiểm tra DHT11, PMS7003, BH1750, MQ135 DO và relay + quạt. Không có TTY thì
-script bỏ qua phần quạt, không đụng relay, mã thoát 1. Không chạy `test_all.py` cùng lúc với
-`aiot-collector` hoặc `aiot-controller` (dùng chung cảm biến và GPIO23).
+`test_all.py` kiểm tra DHT11, PMS7003, BH1750, relay + quạt và còi. Không có TTY thì
+script bỏ qua phần quạt và còi, không đụng relay, mã thoát 1. Khi `aiot-collector` hoặc
+`aiot-controller` đang chạy (dùng chung cảm biến, GPIO23, GPIO5), script tự thoát và nhắc dừng
+dịch vụ. Còi kêu không dứt sau khi thử: `pinctrl set 5 op dh` đưa GPIO5 về mức im.
 
 ---
 
@@ -263,8 +265,6 @@ sudo systemctl enable --now aiot-collector
 journalctl -u aiot-collector -f
 ```
 
-- MQ135 hiện `None` trong 3 phút đầu sau mỗi lần collector khởi động (cảm biến cần sấy), rồi
-  mới đọc `0` (vượt ngưỡng, đèn DO sáng) hoặc `1`.
 - Cửa sổ 5 phút đầu tiên thường `valid=0` vì collector bắt đầu giữa chừng.
 - Sau 1 giờ kiểm tra:
   `sqlite3 ~/iot_data/aiot.db "select count(*), sum(valid) from readings;"` (khoảng 12 dòng, phần lớn hợp lệ).
@@ -379,7 +379,7 @@ Gõ `/` trong Telegram để thấy menu lệnh.
 
 | Lệnh | Việc |
 | ---- | ---- |
-| `/now` | số liệu cảm biến mới nhất (PM, nhiệt độ, độ ẩm, ánh sáng, MQ135) |
+| `/now` | số liệu cảm biến mới nhất (PM, nhiệt độ, độ ẩm, ánh sáng) |
 | `/status` | chế độ, quạt, ghi đè, lỗi cảm biến, tuổi dữ liệu, giờ yên lặng |
 | `/forecast` | dự báo PM2.5 6 giờ tới kèm nhãn AQI |
 | `/report` | báo cáo 24 giờ qua (tính vào 3 lượt Gemini/ngày) |
@@ -400,7 +400,7 @@ báo cáo 06:30, cảnh báo nắng/sắp mưa kèm ảnh.
 ```bash
 systemctl --no-pager is-active aiot-collector aiot-controller aiot-bot aiot-forecast.timer aiot-morning.timer aiot-weather.timer
 journalctl -u aiot-collector -n 20              # đổi tên dịch vụ để xem log khác
-sqlite3 ~/iot_data/aiot.db "select datetime(ts,'unixepoch','localtime'), round(pm25,1), temp, hum, round(lux), mq135_do from raw_readings order by ts desc limit 5;"
+sqlite3 ~/iot_data/aiot.db "select datetime(ts,'unixepoch','localtime'), round(pm25,1), temp, hum, round(lux) from raw_readings order by ts desc limit 5;"
 sqlite3 ~/iot_data/aiot.db "select datetime(ts,'unixepoch','localtime'), kind, detail from events order by ts desc limit 10;"
 ```
 
@@ -425,7 +425,7 @@ sudo systemctl disable --now aiot-weather.timer # tắt cảnh báo nắng/mưa
 ## 7. Dashboard và camera trên laptop (tuỳ chọn)
 
 Dashboard Streamlit nhận dữ liệu qua MQTT, lưu thêm một bản CSV ở `C:\mqtt\data\sensors.csv`.
-Dashboard hiển thị PMS7003 (PM1.0/2.5/10 kèm nhóm AQI), DHT11, BH1750, bit MQ135 DO và trạng
+Dashboard hiển thị PMS7003 (PM1.0/2.5/10 kèm nhóm AQI), DHT11, BH1750 và trạng
 thái quạt (bật/tắt, tự động/thủ công, lỗi relay). Trạng thái quạt do collector đọc từ SQLite và
 gửi kèm mẫu; controller không chạy (nhịp cũ hơn 90 s) thì hiện "Không rõ". Dashboard không còn
 hiển thị ảnh camera.
@@ -503,9 +503,7 @@ có người trông; quạt mini là mô phỏng (proof of concept).
 | ----------- | ----------- | -------- |
 | `/fan on` mà quạt không quay | `aiot-controller` chưa cài hoặc đã dừng (`/status` cảnh báo controller không chạy) | cài/bật ở 5.3; gửi lại `/fan on` vì lệnh cũ hơn 2 phút bị bỏ |
 | `/fan on` bị trả lời "đồng hồ chưa đồng bộ" | Pi vừa khởi động, chưa có mạng (không có RTC) | chờ có mạng; `timedatectl` |
-| MQ135 hiện "chưa có" | 3 phút sấy sau khi collector khởi động | chờ 3 phút |
-| MQ135 luôn `0` | đèn DO sáng: ngưỡng biến trở quá thấp | vặn biến trở tới khi đèn vừa tắt trong không khí sạch |
-| MQ135 luôn `1` dù đèn DO sáng | mất GND của module | kiểm tra dây GND, đèn nguồn |
+| Còi kêu không dứt | GPIO5 bị để ở LOW (script thử còi dừng giữa chừng) | `pinctrl set 5 op dh`; controller chạy lại sẽ tự giữ GPIO5 ở HIGH |
 | `/photo` "Camera không phản hồi" | camera bận (client camera cũ đang chạy) hoặc rút cáp | tắt `pi_camera_client.py`/`pi_detection_client.py`; `ls /dev/video0` |
 | `/clear` không xoá tin cũ | Telegram chỉ cho bot xoá tin gửi chưa quá 48 giờ | dùng mục Xoá lịch sử của Telegram cho tin cũ hơn |
 | Bot không trả lời | `aiot-bot` dừng, thiếu token/chat id, hoặc chat không có trong `ALLOWED_CHAT_IDS` | `journalctl -u aiot-bot -n 30` |
@@ -535,11 +533,11 @@ có người trông; quạt mini là mô phỏng (proof of concept).
 ```json
 {"timestamp": "2026-11-05T08:00:00", "device_id": "pi01",
  "temperature_c": 28.5, "humidity_pct": 83.0, "lux": 170.8,
- "pm1": 26.0, "pm25": 39.0, "pm10": 47.0, "mq135_do": 1,
+ "pm1": 26.0, "pm25": 39.0, "pm10": 47.0,
  "fan_on": false, "fan_mode": "auto", "fan_state": "NORMAL", "fan_relay_fault": false}
 ```
 
-`pm*`, `mq135_do` là `null` khi đọc lỗi (MQ135 cũng `null` trong 180 s sấy). Các trường `fan_*`
+`pm*` là `null` khi đọc lỗi. Các trường `fan_*`
 là `null` khi controller không chạy hoặc nhịp cũ hơn 90 s; `fan_mode` là `manual` khi đang ghi đè
 thủ công.
 

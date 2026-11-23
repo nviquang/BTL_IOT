@@ -2,7 +2,7 @@
 Định dạng dòng cảm biến dùng chung giữa Pi (collector) và laptop (server_app.py).
 
 - CSV giữ đúng định dạng cũ: timestamp,device_id,temperature_c,humidity_pct,lux.
-- Payload MQTT là dòng CSV cộng thêm pm1, pm25, pm10, mq135_do (có thể là None).
+- Payload MQTT là dòng CSV cộng thêm pm1, pm25, pm10 (có thể là None).
 - Module này không import thư viện nặng, để server_app và test đều dùng được.
 """
 from datetime import datetime
@@ -40,8 +40,8 @@ def build_csv_row(now: datetime, device_id: str, temp: float, hum: float, lux: f
     }
 
 
-def build_payload(csv_row: dict, pm1, pm25, pm10, mq135_do) -> dict:
-    """Payload MQTT: dòng CSV cộng thêm bụi và bit MQ135 (None khi đọc lỗi)."""
+def build_payload(csv_row: dict, pm1, pm25, pm10) -> dict:
+    """Payload MQTT: dòng CSV cộng thêm bụi PMS7003 (None khi đọc lỗi)."""
     payload = dict(csv_row)
-    payload.update(pm1=pm1, pm25=pm25, pm10=pm10, mq135_do=mq135_do)
+    payload.update(pm1=pm1, pm25=pm25, pm10=pm10)
     return payload

@@ -26,7 +26,7 @@ control:
   forecast_max_age_s: 5400  # dự báo cũ hơn (giây) thì controller và /forecast bỏ qua
   stale_s: 120              # mất dữ liệu PM > 2 phút: giữ nguyên trạng thái, cảnh báo
   override_ttl_s: 7200      # ghi đè thủ công hết hạn sau 2 giờ
-  loop_s: 20
+  loop_s: 5                 # 5 giây: bộ nhận diện nguồn bụi dự đoán mỗi vòng
   demo: true                # true: mọi thời gian chờ và cửa sổ TB rút còn demo_wait_s
   demo_wait_s: 20
 
@@ -73,3 +73,30 @@ weather:
   photo_dir: /home/admin/iot_data/photos
   photo_keep_days: 7        # ảnh cũ hơn bị xoá
   camera_index: 0           # /dev/video0
+
+# Còi báo vượt ngưỡng tại chỗ (aiot/alarm.py, aiot/buzzer.py), chạy trong aiot-controller.
+# Module còi chủ động kích mức thấp: VCC pin 17 (3.3V), GND pin 25, I/O pin 29 (GPIO5).
+# Kêu bất kể giờ yên lặng và khi mất Internet; tắt tiếng bằng /mute trên Telegram.
+buzzer:
+  enabled: true
+  gpio: 5                   # GPIO5 mặc định kéo lên khi Pi khởi động nên còi im
+  active_low: true          # module ghi 低电平触发: I/O = LOW thì kêu
+  alarm_pm25: 150.0         # kêu khi trung vị PM2.5 1 phút >= ngưỡng
+  beep_on_s: 0.3
+  beep_off_s: 0.2
+  burst_s: 10.0             # một hồi còi 10 giây
+  repeat_s: 300             # còn vượt thì kêu lại sau 5 phút; hết vượt thì tắt ngay
+  mute_s: 1800              # /mute không kèm số phút: tắt tiếng 30 phút
+
+# Bộ nhận diện nguồn bụi bằng AI (aiot/source_model.py, models/source_rf.json do
+# training/train_source.py tạo). Dự đoán mỗi control.loop_s giây từ mẫu 1 giây 30 phút qua.
+# Bảng hành động cố định: bình thường -> quạt tắt, còi im; nấu ăn -> chỉ quạt;
+# ô nhiễm từ ngoài vào -> quạt + còi; khói thuốc/nhang -> chỉ còi.
+# Không có mô hình / thiếu dữ liệu / chưa đủ tin cậy: dùng luật ngưỡng PM2.5 ở trên.
+source:
+  enabled: true
+  model_path: /home/admin/BTL_IOT/models/source_rf.json
+  vote_n: 3
+  min_confidence: 0.6
+  max_gap_s: 30
+  stale_s: 15

@@ -3,7 +3,8 @@
 
 Khung 32 byte: 0x42 0x4D, độ dài 28 (uint16 big-endian), 13 giá trị uint16,
 checksum là tổng 30 byte đầu. Lấy giá trị atmospheric ở byte 10–15
-(giống test_all.py), không lấy giá trị CF=1 ở byte 4–9.
+(giống test_all.py), không lấy giá trị CF=1 ở byte 4–9. Byte 16–27 là 6 kênh đếm hạt
+(số hạt > 0,3/0,5/1,0/2,5/5,0/10 µm trong 0,1 lít khí), dùng cho bộ nhận diện nguồn bụi.
 
 Cảm biến gửi khoảng 1 khung/giây. Vòng thu thập có thể bị chặn vài giây
 (DHT11 thử lại), nên read_fresh() xoá bộ đệm trước rồi mới chờ khung mới,
@@ -22,10 +23,16 @@ MAX_READ_WAIT_S = 0.5   # mỗi lần read() chờ tối đa chừng này, để
 
 
 class PmsReading(NamedTuple):
-    """Nồng độ bụi (µg/m³), giá trị atmospheric."""
+    """Nồng độ bụi (µg/m³), giá trị atmospheric, và số hạt mỗi 0,1 lít (None khi không có)."""
     pm1: int
     pm25: int
     pm10: int
+    n03: int | None = None
+    n05: int | None = None
+    n10: int | None = None
+    n25: int | None = None
+    n50: int | None = None
+    n100: int | None = None
 
 
 def parse_frame(frame: bytes) -> PmsReading:
@@ -41,7 +48,8 @@ def parse_frame(frame: bytes) -> PmsReading:
     if sum(frame[:30]) != checksum:
         raise ValueError("sai checksum")
     pm1, pm25, pm10 = struct.unpack_from(">3H", frame, 10)
-    return PmsReading(pm1, pm25, pm10)
+    counts = struct.unpack_from(">6H", frame, 16)
+    return PmsReading(pm1, pm25, pm10, *counts)
 
 
 class PmsReader:

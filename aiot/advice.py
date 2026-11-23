@@ -30,7 +30,7 @@ ALLOWED_KEYS = frozenset({
     "period_hours", "has_data", "data_coverage",
     "pm25_mean", "pm25_min", "pm25_max", "aqi_24h",
     "pm25_last_1h_mean", "aqi_now", "aqi_hours",
-    "temp_mean", "hum_mean", "mq135_exceeded_windows",
+    "temp_mean", "hum_mean",
     "fan_on_now", "control_mode", "manual_override", "fan_on_minutes_24h",
     "forecast",
 })
@@ -39,8 +39,7 @@ FORECAST_KEYS = frozenset({"model", "made_at_local", "hours", "pm25_next_6h", "a
 SYSTEM_INSTRUCTION = """\
 Bạn viết lời khuyên ngắn bằng tiếng Việt cho bản tin chất lượng không khí trong nhà của một \
 hộ gia đình ở Hà Nội. Dữ liệu là JSON số liệu đã tổng hợp từ cảm biến trong nhà: PM2.5 \
-(µg/m³, nhãn AQI theo US EPA 2024), nhiệt độ, độ ẩm, số cửa sổ 5 phút cảm biến khí MQ135 \
-báo vượt ngưỡng (chỉ là tín hiệu phụ, không phải nồng độ CO2), trạng thái quạt lọc và dự báo \
+(µg/m³, nhãn AQI theo US EPA 2024), nhiệt độ, độ ẩm, trạng thái quạt lọc và dự báo \
 PM2.5 6 giờ tới (có thể là null).
 
 Quy tắc bắt buộc:

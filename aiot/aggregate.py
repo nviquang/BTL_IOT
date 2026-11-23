@@ -38,10 +38,6 @@ def aggregate_window(samples: list[RawSample], start_ts: int, window_s: int = 30
         valid_counts[f] = len(vals)
         row[f] = sum(vals) / len(vals) if vals else None
 
-    # MQ135: chỉ là 1 bit, 0 = vượt ngưỡng; có một lần vượt là cả cửa sổ vượt
-    do_vals = [s.mq135_do for s in samples if s.mq135_do is not None]
-    row["mq135_do"] = (0 if 0 in do_vals else 1) if do_vals else None
-
     expected = window_s // SAMPLE_PERIOD_S
     enough_pm = valid_counts["pm25"] * 2 >= expected
     clock_ok = all(s.clock_synced for s in samples)
@@ -50,8 +46,8 @@ def aggregate_window(samples: list[RawSample], start_ts: int, window_s: int = 30
 
 
 def _row_to_sample(r) -> RawSample:
-    ts, pm1, pm25, pm10, temp, hum, lux, do, synced = r
-    return RawSample(ts, pm1, pm25, pm10, temp, hum, lux, do, bool(synced))
+    ts, pm1, pm25, pm10, temp, hum, lux, synced = r
+    return RawSample(ts, pm1, pm25, pm10, temp, hum, lux, bool(synced))
 
 
 def aggregate_pending(conn: sqlite3.Connection, now: int, window_s: int = 300) -> None:
@@ -80,15 +76,15 @@ def aggregate_pending(conn: sqlite3.Connection, now: int, window_s: int = 300) -
             if end > now:
                 break  # cửa sổ chưa kết thúc
             rows = conn.execute(
-                "SELECT ts, pm1, pm25, pm10, temp, hum, lux, mq135_do, clock_synced "
+                "SELECT ts, pm1, pm25, pm10, temp, hum, lux, clock_synced "
                 "FROM raw_readings WHERE ts >= ? AND ts < ? ORDER BY ts",
                 (start, end),
             ).fetchall()
             agg = aggregate_window([_row_to_sample(x) for x in rows], start, window_s)
             conn.execute(
                 "INSERT OR IGNORE INTO readings "
-                "(ts, pm1, pm25, pm10, temp, hum, lux, mq135_do, valid) "
-                "VALUES (:ts, :pm1, :pm25, :pm10, :temp, :hum, :lux, :mq135_do, :valid)",
+                "(ts, pm1, pm25, pm10, temp, hum, lux, valid) "
+                "VALUES (:ts, :pm1, :pm25, :pm10, :temp, :hum, :lux, :valid)",
                 agg,
             )
             after = end  # nhảy tới mẫu thô kế tiếp, bỏ qua các cửa sổ trống

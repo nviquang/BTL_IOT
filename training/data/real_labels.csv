@@ -1,0 +1,4 @@
+start_ts,end_ts,label,note
+1795438077,1795442827,pollution,"nền PM2.5 ~160 cả tối 23/11, không có nguồn trong phòng (giả định của nhóm)"
+1795442832,1795442940,smoking,đốt nhang 21:07 ngày 23/11 (người dùng xác nhận); dùng thay khói thuốc
+1795442970,1795444257,pollution,nền PM2.5 ~160 sau khi tắt nhang (giả định của nhóm)

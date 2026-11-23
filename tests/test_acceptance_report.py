@@ -31,7 +31,7 @@ def add_reading(conn, ts, pm25, valid=1, hum=None):
 
 
 def add_raw(conn, ts, pm25):
-    insert_raw(conn, RawSample(ts, None, pm25, None, None, None, None, None, True))
+    insert_raw(conn, RawSample(ts, None, pm25, None, None, None, None, True))
 
 
 # ---------- ổn định ----------

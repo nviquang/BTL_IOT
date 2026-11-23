@@ -5,7 +5,7 @@ from datetime import datetime
 
 import pytest
 
-from aiot.collector import CsvLog, Warmup, collect_once, is_clock_trusted
+from aiot.collector import CsvLog, collect_once, is_clock_trusted
 from aiot.db import connect, init_schema
 from aiot.payload import valid_sensor_row
 from aiot.pms7003 import PmsReading
@@ -15,9 +15,8 @@ HEADER = b"timestamp,device_id,temperature_c,humidity_pct,lux\r\n"
 
 
 class FakeSensors:
-    def __init__(self, dht=(28.5, 83.0), lux=170.8, pm=PmsReading(12, 20, 25), mq135=1):
-        self.dht, self.lux, self.pm, self.mq135 = dht, lux, pm, mq135
-        self.mq135_calls = 0
+    def __init__(self, dht=(28.5, 83.0), lux=170.8, pm=PmsReading(12, 20, 25)):
+        self.dht, self.lux, self.pm = dht, lux, pm
 
     def read_dht(self):
         return self.dht
@@ -27,10 +26,6 @@ class FakeSensors:
 
     def read_pm(self):
         return self.pm
-
-    def read_mq135(self):
-        self.mq135_calls += 1
-        return self.mq135
 
 
 class RaisingSensors(FakeSensors):
@@ -43,9 +38,6 @@ class RaisingSensors(FakeSensors):
 
     def read_pm(self):
         raise OSError("UART hỏng")
-
-    def read_mq135(self):
-        raise OSError("lgpio hỏng")
 
 
 class RecordingPublisher:
@@ -76,7 +68,7 @@ def csv_path(tmp_path):
 
 def raw_rows(conn):
     return conn.execute(
-        "SELECT ts, pm1, pm25, pm10, temp, hum, lux, mq135_do, clock_synced FROM raw_readings"
+        "SELECT ts, pm1, pm25, pm10, temp, hum, lux, clock_synced FROM raw_readings"
     ).fetchall()
 
 
@@ -89,7 +81,7 @@ def test_dht_failure_still_stores_pm(conn, csv_path):
     s = run(FakeSensors(dht=None), conn, csv_path)
     assert s.pm25 == 20.0 and s.temp is None and s.hum is None
     rows = raw_rows(conn)
-    assert rows == [(int(NOW.timestamp()), 12.0, 20.0, 25.0, None, None, 170.8, 1, 1)]
+    assert rows == [(int(NOW.timestamp()), 12.0, 20.0, 25.0, None, None, 170.8, 1)]
 
 
 def test_csv_skipped_when_dht_or_lux_missing(conn, csv_path):
@@ -122,17 +114,17 @@ def test_mqtt_payload_accepted_by_server(conn, csv_path):
     assert len(pub.payloads) == 1
     p = pub.payloads[0]
     assert valid_sensor_row(p)
-    assert p["pm25"] == 20.0 and p["pm1"] == 12.0 and p["pm10"] == 25.0 and p["mq135_do"] == 1
+    assert p["pm25"] == 20.0 and p["pm1"] == 12.0 and p["pm10"] == 25.0 and "mq135_do" not in p
     assert p["timestamp"] == "2026-11-05T08:00:00" and p["device_id"] == "pi01"
     json.dumps(p)  # phải gửi được dạng JSON
 
 
 def test_mqtt_payload_allows_missing_pm(conn, csv_path):
     pub = RecordingPublisher()
-    run(FakeSensors(pm=None, mq135=None), conn, csv_path, publisher=pub)
+    run(FakeSensors(pm=None), conn, csv_path, publisher=pub)
     p = pub.payloads[0]
     assert valid_sensor_row(p)
-    assert p["pm25"] is None and p["mq135_do"] is None
+    assert p["pm25"] is None
 
 
 def test_no_publish_when_csv_fields_missing(conn, csv_path):
@@ -150,8 +142,8 @@ def test_broker_down_does_not_stop_collection(conn, csv_path):
 def test_all_sensors_fail_writes_nothing_and_survives(conn, csv_path):
     pub = RecordingPublisher()
     s = run(RaisingSensors(), conn, csv_path, publisher=pub)
-    assert (s.pm25, s.temp, s.lux, s.mq135_do) == (None, None, None, None)
-    s = run(FakeSensors(dht=None, lux=None, pm=None, mq135=None), conn, csv_path, publisher=pub,
+    assert (s.pm25, s.temp, s.lux) == (None, None, None)
+    s = run(FakeSensors(dht=None, lux=None, pm=None), conn, csv_path, publisher=pub,
             now=datetime(2026, 11, 5, 8, 0, 10))
     assert raw_rows(conn) == []
     assert not csv_path.exists() or csv_path.read_bytes() in (b"", HEADER)
@@ -168,22 +160,6 @@ def test_clock_unsynced_flag_stored(conn, csv_path):
     run(FakeSensors(), conn, csv_path, clock_synced=False)
     rows = raw_rows(conn)
     assert len(rows) == 1 and rows[0][-1] == 0
-
-
-def test_mq135_ignored_during_warmup(conn, csv_path):
-    t = [1000.0]
-    warm = Warmup(180, clock=lambda: t[0])
-    sensors = FakeSensors(mq135=0)
-
-    s = run(sensors, conn, csv_path, mq135_ready=warm.ready())
-    assert s.mq135_do is None and sensors.mq135_calls == 0
-    t[0] += 179.9
-    s = run(sensors, conn, csv_path, now=datetime(2026, 11, 5, 8, 0, 10), mq135_ready=warm.ready())
-    assert s.mq135_do is None
-    t[0] += 0.1
-    s = run(sensors, conn, csv_path, now=datetime(2026, 11, 5, 8, 0, 20), mq135_ready=warm.ready())
-    assert s.mq135_do == 0
-    assert [r[7] for r in raw_rows(conn)] == [None, None, 0]
 
 
 def test_is_clock_trusted(monkeypatch, tmp_path):
@@ -245,7 +221,7 @@ def test_missing_hardware_libs_return_none():
     s = PiSensors(pms_port="COM_KHONG_CO", sleep=lambda _: None)
     assert s.read_dht() is None
     assert s.read_lux() is None
-    assert s.read_mq135() is None
+    assert not hasattr(s, "read_mq135")
     s.close()
 
 

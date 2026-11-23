@@ -46,7 +46,7 @@ def conn(tmp_path):
 
 def add_pm(conn, t_from, t_to, value, step_s=10):
     for t in range(t_from, t_to + 1, step_s):
-        insert_raw(conn, RawSample(t, None, value, None, None, None, None, None, True))
+        insert_raw(conn, RawSample(t, None, value, None, None, None, None, True))
 
 
 def events(conn, kind=None):
@@ -781,93 +781,68 @@ def test_relay_failure_on_restore_enqueues_alert(conn):
     assert [k for k, _ in outbox(conn)] == ["relay_error"]
 
 
-# ---------- MQ135 vượt ngưỡng ----------
-UP = lambda: 10 ** 6                    # Pi đã chạy lâu
+# ---------- còi báo vượt ngưỡng ----------
+
+class FakeBuzzer:
+    def __init__(self, fail=False):
+        self.bursts = []
+        self.silences = 0
+        self.fail = fail
+
+    def burst(self, on_s, off_s, duration_s):
+        if self.fail:
+            raise OSError("gpio busy")
+        self.bursts.append(duration_s)
+
+    def silence(self):
+        self.silences += 1
 
 
-def add_mq(conn, ts, mq):
-    insert_raw(conn, RawSample(ts, None, 20.0, None, None, None, None, mq, True))
+def test_buzzer_bursts_once_when_pm_crosses_alarm_level(conn):
+    from aiot.config import BuzzerCfg
+    from aiot.controller import ALARM_KEY
+
+    relay, buzzer, bcfg = FakeRelay(), FakeBuzzer(), BuzzerCfg()
+    add_pm(conn, 940, 1000, 200.0)
+    step(conn, relay, CFG, 1000, monotonic=lambda: 10_000, buzzer=buzzer, bcfg=bcfg)
+    assert buzzer.bursts == [bcfg.burst_s]
+    assert [d for _, k, d in events(conn) if k == "buzzer"] == ["pm25 pm25_1m=200"]
+    assert json.loads(get_state(conn, ALARM_KEY))["reason"] == "pm25"
+
+    # 20 giây sau vẫn vượt: chưa kêu lại (chờ repeat_s)
+    add_pm(conn, 1010, 1020, 200.0)
+    step(conn, relay, CFG, 1020, monotonic=lambda: 10_000, buzzer=buzzer, bcfg=bcfg)
+    assert len(buzzer.bursts) == 1
+
+    # PM về thấp: tắt còi ngay
+    add_pm(conn, 1030, 1100, 20.0)
+    step(conn, relay, CFG, 1100, monotonic=lambda: 10_000, buzzer=buzzer, bcfg=bcfg)
+    assert buzzer.silences == 1
+    assert json.loads(get_state(conn, ALARM_KEY))["reason"] is None
 
 
-def test_mq135_over_threshold_turns_fan_on_and_alerts(conn):
-    relay = FakeRelay()
-    add_mq(conn, 995, 0)
-    st = step(conn, relay, CFG, 1000, tcfg=TCFG, monotonic=UP)
-    assert st.mode == "PROTECT" and relay.calls == [True]
-    assert kinds(conn) == ["gas", "fan_on"]
-    msgs = dict(outbox(conn))
-    assert "MQ135" in msgs["gas"] and "MQ135" in msgs["fan_on"]
+def test_buzzer_respects_mute(conn):
+    from aiot.controller import MUTE_KEY
+
+    buzzer = FakeBuzzer()
+    set_state(conn, MUTE_KEY, "5000")
+    add_pm(conn, 940, 1000, 200.0)
+    step(conn, FakeRelay(), CFG, 1000, monotonic=lambda: 10_000, buzzer=buzzer)
+    assert buzzer.bursts == []
+    assert buzzer.silences == 1
 
 
-def test_mq135_not_over_threshold_keeps_fan_off(conn):
-    relay = FakeRelay()
-    add_mq(conn, 995, 1)
-    assert step(conn, relay, CFG, 1000, tcfg=TCFG, monotonic=UP).mode == "NORMAL"
-    assert relay.calls == [False]
+def test_buzzer_error_does_not_break_fan_control(conn):
+    relay, buzzer = FakeRelay(), FakeBuzzer(fail=True)
+    add_pm(conn, 940, 1000, 200.0)
+    st = step(conn, relay, CFG, 1000, monotonic=lambda: 10_000, buzzer=buzzer)
+    assert st.mode == "PROTECT"         # khẩn cấp vẫn bật quạt
+    assert relay.calls[-1] is True
 
 
-def test_mq135_warming_up_null_is_not_an_alarm(conn):
-    add_mq(conn, 995, None)
-    assert step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG, monotonic=UP).mode == "NORMAL"
+def test_no_buzzer_no_alarm_state(conn):
+    from aiot.controller import ALARM_KEY
 
-
-def test_mq135_short_pulse_between_loops_is_caught(conn):
-    add_mq(conn, 975, 0)
-    add_mq(conn, 995, 1)
-    assert step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG, monotonic=UP).mode == "PROTECT"
-
-
-def test_mq135_old_alarm_is_ignored(conn):
-    add_mq(conn, 1000 - 2 * CFG.loop_s - 1, 0)
-    add_mq(conn, 995, 1)
-    assert step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG, monotonic=UP).mode == "NORMAL"
-
-
-def test_mq135_sample_from_before_boot_is_ignored(conn):
-    add_mq(conn, 985, 0)
-    add_mq(conn, 998, 1)
-    assert step(conn, FakeRelay(), CFG, 1000, tcfg=TCFG, monotonic=lambda: 5).mode == "NORMAL"
-
-
-def test_gas_message_is_urgent_and_does_not_claim_co2():
-    from aiot.control import Event
-    from aiot.notifier import event_message
-    text, urgent = event_message(Event("gas"), ControlState(mode="PROTECT"), None, 1000)
-    assert urgent is True and "MQ135" in text and "CO" not in text
-
-
-def test_gas_message_mentions_manual_override():
-    from aiot.control import Event
-    from aiot.notifier import event_message
-    st = ControlState(mode="PROTECT", override_fan=False, override_until=9000)
-    text, _ = event_message(Event("gas"), st, None, 1000)
-    assert "ghi đè" in text
-
-
-def test_gas_alert_kind_is_collapsible_when_stale():
-    from aiot.notifier import ALERT_KINDS
-    assert "gas" in ALERT_KINDS
-
-
-def test_fan_off_message_after_gas_names_mq135():
-    from aiot.control import Event, Inputs
-    from aiot.notifier import event_message
-    text, urgent = event_message(Event("fan_off", "exit_gas"), ControlState(),
-                                 Inputs(now=1000, mean_exit=23.0), 1000)
-    assert "MQ135" in text and "đã tắt quạt" in text and "23,0" in text and urgent is False
-
-
-def test_fan_off_message_after_pm_does_not_mention_mq135():
-    from aiot.control import Event, Inputs
-    from aiot.notifier import event_message
-    text, _ = event_message(Event("fan_off", "exit"), ControlState(),
-                            Inputs(now=1000, mean_exit=23.0), 1000)
-    assert "MQ135" not in text and "đã tắt quạt" in text
-
-
-def test_fan_off_message_after_gas_mentions_manual_override():
-    from aiot.control import Event
-    from aiot.notifier import event_message
-    st = ControlState(override_fan=True, override_until=9000)
-    text, _ = event_message(Event("fan_off", "exit_gas"), st, None, 1000)
-    assert "MQ135" in text and "ghi đè" in text
+    add_pm(conn, 940, 1000, 200.0)
+    step(conn, FakeRelay(), CFG, 1000, monotonic=lambda: 10_000)
+    assert get_state(conn, ALARM_KEY) is None

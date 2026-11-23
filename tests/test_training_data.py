@@ -150,8 +150,8 @@ BASE = 1_793_000_000 // H * H
 def add_hour(conn, start, n, pm25, valid=1, offset=0):
     for i in range(n):
         conn.execute(
-            "INSERT INTO readings (ts, pm1, pm25, pm10, temp, hum, lux, mq135_do, valid) "
-            "VALUES (?, 1, ?, ?, 25, 70, 100, 1, ?)",
+            "INSERT INTO readings (ts, pm1, pm25, pm10, temp, hum, lux, valid) "
+            "VALUES (?, 1, ?, ?, 25, 70, 100, ?)",
             (start + (offset + i) * 300, pm25, pm25 + 5, valid))
     conn.commit()
 

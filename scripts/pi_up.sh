@@ -114,7 +114,7 @@ apt_install() {
 
 # Băm mọi thứ dịch vụ đọc lúc khởi động: đổi thì phải khởi động lại để nạp
 code_hash() {
-  { find aiot deploy -type f ! -path '*/__pycache__/*' -print0
+  { find aiot deploy $( [[ -d models ]] && echo models ) -type f ! -path '*/__pycache__/*' -print0
     printf '%s\0' config.yaml requirements-pi.txt .env
   } | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
 }

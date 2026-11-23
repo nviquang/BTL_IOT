@@ -11,7 +11,8 @@ Dịch vụ bot Telegram: long polling nhận lệnh, gửi tin trong outbox (g�
 - /status và trả lời /fan, /mode cảnh báo khi khoá 'controller_heartbeat' (controller ghi
   mỗi vòng) thiếu hoặc cũ hơn CONTROLLER_STALE_LOOPS vòng loop_s.
 - /quiet ghi khoá 'quiet_hours' ("start,end") mà notifier dùng.
-- Mọi lệnh điều khiển (/fan, /mode, /quiet) được ghi vào events (kind 'command',
+- /mute ghi khoá 'buzzer_mute_until' (giây epoch) mà controller dùng để tắt tiếng còi.
+- Mọi lệnh điều khiển (/fan, /mode, /quiet, /mute) được ghi vào events (kind 'command',
   detail = văn bản lệnh + chat id), cùng transaction với lệnh ghi state.
 - Lệnh điều khiển lệch quá telegram.stale_command_s giây so với đồng hồ Pi (cũ hoặc "ở
   tương lai") bị bỏ. Pi không có RTC, nên khi đồng hồ chưa tin được (chưa đồng bộ NTP lần
@@ -79,6 +80,8 @@ QUIET_KEY = "quiet_hours"
 PENDING_KEY = "pending_override"       # cùng khoá với aiot.controller (không import để
 STATE_KEY = "control_state"            # bot không kéo theo module điều khiển GPIO)
 HEARTBEAT_KEY = "controller_heartbeat"
+MUTE_KEY = "buzzer_mute_until"         # cùng khoá với aiot.controller: giây epoch hết tắt tiếng
+MUTE_MAX_MIN = 24 * 60
 CONTROLLER_STALE_LOOPS = 3             # heartbeat cũ hơn 3 vòng loop_s: controller không chạy
 NOW_MAX_AGE_S = 300                    # /now: mẫu cũ hơn 5 phút coi như chưa có dữ liệu
 DELIVERY_INTERVAL_S = 5
@@ -103,6 +106,7 @@ HELP = ("Các lệnh:\n"
         "/mode auto - về tự động theo PM2.5\n"
         "/mode manual - giữ quạt như hiện tại (có thời hạn)\n"
         "/quiet 22 6 - đặt giờ yên lặng từ 22h tới 6h\n"
+        "/mute [phút] | /mute off - tắt tiếng còi tại chỗ / bật lại\n"
         "/clear - xoá tin của bot và của bạn trong 48 giờ qua\n"
         "/help - xem lại danh sách lệnh này\n"
         "\n"
@@ -118,6 +122,7 @@ BOT_COMMANDS = [
     {"command": "fan", "description": "Bật/tắt quạt thủ công: /fan on hoặc /fan off"},
     {"command": "mode", "description": "Chế độ quạt: /mode auto hoặc /mode manual"},
     {"command": "quiet", "description": "Đặt giờ yên lặng, ví dụ /quiet 22 6"},
+    {"command": "mute", "description": "Tắt tiếng còi: /mute, /mute 10 (phút), /mute off"},
     {"command": "clear", "description": "Xoá lịch sử chat trong 48 giờ qua"},
     {"command": "help", "description": "Danh sách lệnh"},
 ]
@@ -125,7 +130,10 @@ USAGE_FAN = "Cách dùng: /fan on hoặc /fan off"
 USAGE_MODE = "Cách dùng: /mode auto hoặc /mode manual"
 USAGE_QUIET = ("Cách dùng: /quiet <giờ bắt đầu> <giờ kết thúc>, mỗi giờ từ 0 tới 23, "
                "ví dụ /quiet 22 6. Gửi /quiet 0 0 để tắt giờ yên lặng.")
+USAGE_MUTE = (f"Cách dùng: /mute (tắt tiếng còi theo mặc định), /mute <số phút từ 1 tới "
+              f"{MUTE_MAX_MIN}>, hoặc /mute off để bật lại còi.")
 _HOUR_RE = re.compile(r"[0-9]{1,2}", re.ASCII)
+_MINUTES_RE = re.compile(r"[0-9]{1,4}", re.ASCII)
 
 
 # ---------------- định dạng ----------------
@@ -160,7 +168,7 @@ def _on_off(on):
 # ---------------- đọc DB ----------------
 def _latest_sample(conn):
     return conn.execute(
-        "SELECT ts, pm1, pm25, pm10, temp, hum, lux, mq135_do FROM raw_readings "
+        "SELECT ts, pm1, pm25, pm10, temp, hum, lux FROM raw_readings "
         "ORDER BY ts DESC LIMIT 1").fetchone()
 
 
@@ -173,6 +181,33 @@ def _control_state(conn):
         return ControlState.from_json(text), None
     except ValueError as e:
         return None, str(e)
+
+
+SOURCE_KEY = "source_state"              # controller ghi (aiot/source_model.SourceState)
+SOURCE_NAMES = {"normal": "bình thường", "cooking": "nấu ăn",
+                "pollution": "ô nhiễm từ ngoài vào", "smoking": "khói thuốc lá / nhang"}
+SOURCE_ACTIONS = {"normal": "quạt tắt, còi im", "cooking": "chỉ bật quạt",
+                  "pollution": "bật quạt và kêu còi", "smoking": "chỉ kêu còi"}
+
+
+def _source_line(conn, cfg, now):
+    """Một dòng mô tả nhãn AI hiện tại, hoặc None khi bộ nhận diện tắt."""
+    if not cfg.source.enabled:
+        return None
+    try:
+        data = json.loads(get_state(conn, SOURCE_KEY) or "null")
+    except ValueError:
+        data = None
+    if not isinstance(data, dict) or not isinstance(data.get("last_ts"), int):
+        return "- Nguồn bụi (AI): chưa có dự đoán (thiếu mô hình hoặc dữ liệu 1 giây), dùng luật ngưỡng PM2.5"
+    if now - data["last_ts"] > max(60, 6 * cfg.control.loop_s):
+        return f"- Nguồn bụi (AI): dự đoán cũ (lúc {_fmt_time(data['last_ts'])}), dùng luật ngưỡng PM2.5"
+    label = data.get("label")
+    if label not in SOURCE_NAMES:
+        return "- Nguồn bụi (AI): chưa đủ tin cậy, dùng luật ngưỡng PM2.5"
+    since = data.get("since")
+    when = f" từ {_fmt_time(since)}" if isinstance(since, int) else ""
+    return f"- Nguồn bụi (AI): {SOURCE_NAMES[label]}{when} ({SOURCE_ACTIONS[label]})"
 
 
 def _controller_warning(conn, cfg, now):
@@ -200,7 +235,7 @@ def cmd_now(conn, cfg, now, args):
     row = _latest_sample(conn)
     if row is None:
         return "Chưa có dữ liệu cảm biến."
-    ts, pm1, pm25, pm10, temp, hum, lux, mq = row
+    ts, pm1, pm25, pm10, temp, hum, lux = row
     age = now - ts
     if age > NOW_MAX_AGE_S:
         return (f"Chưa có dữ liệu mới: mẫu gần nhất cách đây {_fmt_age(age)} "
@@ -211,20 +246,14 @@ def cmd_now(conn, cfg, now, args):
             pm25_text += f" ({classify(pm25).label})"
         except ValueError:
             pass
-    if mq is None:
-        mq_text = "chưa có (đang sấy hoặc lỗi đọc)"
-    elif mq == 0:
-        mq_text = "vượt ngưỡng (đèn DO sáng)"
-    else:
-        mq_text = "chưa vượt ngưỡng"
     return (f"Số liệu lúc {_fmt_time(ts, seconds=True)} (cách đây {_fmt_age(age)}):\n"
             f"- PM2.5: {pm25_text}\n"
             f"- PM1.0: {_num(pm1, unit='µg/m³')}\n"
             f"- PM10: {_num(pm10, unit='µg/m³')}\n"
             f"- Nhiệt độ: {_num(temp, unit='°C')}\n"
             f"- Độ ẩm: {_num(hum, 0, '%')}\n"
-            f"- Ánh sáng: {_num(lux, 0, 'lux')}\n"
-            f"- MQ135 (chỉ báo khí, không phải nồng độ): {mq_text}")
+            f"- Ánh sáng: {_num(lux, 0, 'lux')}"
+            + (f"\n{line}" if (line := _source_line(conn, cfg, now)) else ""))
 
 
 def cmd_status(conn, cfg, now, args):
@@ -254,6 +283,16 @@ def cmd_status(conn, cfg, now, args):
     start, end = quiet_window(conn, cfg)
     lines.append(f"- Giờ yên lặng: từ {start}h tới {end}h" if start != end
                  else "- Giờ yên lặng: không có")
+    source = _source_line(conn, cfg, now)
+    if source is not None:
+        lines.append(source)
+    if not cfg.buzzer.enabled:
+        lines.append("- Còi: tắt trong config.yaml")
+    else:
+        until = _mute_until(conn)
+        lines.append(f"- Còi: tắt tiếng tới {_fmt_time(until)} (gửi /mute off để bật lại)"
+                     if until is not None and now < until
+                     else f"- Còi: sẵn sàng, kêu khi PM2.5 1 phút >= {cfg.buzzer.alarm_pm25:.0f}")
     return _with_controller_warning(conn, cfg, now, "\n".join(lines))
 
 
@@ -404,6 +443,36 @@ def cmd_quiet(conn, cfg, now, args, ctx):
             f"khẩn cấp được gửi ngay, các tin khác chờ hết giờ yên lặng.")
 
 
+def _mute_until(conn):
+    try:
+        value = get_state(conn, MUTE_KEY)
+        return int(value) if value is not None else None
+    except ValueError:
+        return None
+
+
+def cmd_mute(conn, cfg, now, args, ctx):
+    if len(args) > 1:
+        return USAGE_MUTE
+    if args and args[0] == "off":
+        _apply_control(conn, now, ctx, [(MUTE_KEY, "0")])
+        return "Đã bật lại còi: còi kêu khi vượt ngưỡng."
+    if args:
+        if not _MINUTES_RE.fullmatch(args[0]):
+            return USAGE_MUTE
+        minutes = int(args[0])
+        if not 1 <= minutes <= MUTE_MAX_MIN:
+            return USAGE_MUTE
+        seconds = minutes * 60
+    else:
+        seconds = cfg.buzzer.mute_s
+    until = int(now) + seconds
+    _apply_control(conn, now, ctx, [(MUTE_KEY, str(until))])
+    return _with_controller_warning(conn, cfg, now, (
+        f"Đã tắt tiếng còi trong {_fmt_age(seconds)} (tới {_fmt_time(until)}). Cảnh báo "
+        f"Telegram vẫn gửi bình thường. Gửi /mute off để bật lại."))
+
+
 READ_ONLY = {   # /clear xử lý riêng trong handle_update (cần chat và message_id)
     "/now": cmd_now,
     "/status": cmd_status,
@@ -418,6 +487,7 @@ CONTROL = {
     "/fan": cmd_fan,
     "/mode": cmd_mode,
     "/quiet": cmd_quiet,
+    "/mute": cmd_mute,
 }
 
 

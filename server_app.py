@@ -1,7 +1,7 @@
 """
 SERVER chạy trên laptop Windows: dashboard bộ cảm biến của trạm không khí
 - Kết nối broker MQTT (Mosquitto chạy cùng máy)
-- Nhận mẫu từ collector trên Pi (topic nha/+/sensor): DHT11, BH1750, PMS7003, MQ135 DO
+- Nhận mẫu từ collector trên Pi (topic nha/+/sensor): DHT11, BH1750, PMS7003
   và trạng thái quạt lọc (controller ghi trong SQLite, collector gửi kèm)
 - Lưu CSV định dạng cũ và vẽ biểu đồ
 
@@ -164,15 +164,6 @@ def aqi_label(pm25):
         return None
 
 
-def mq135_text(do):
-    """DO: 0 = đèn DO sáng = vượt ngưỡng; 1 = chưa vượt; None = đang sấy hoặc đọc lỗi."""
-    if do is None:
-        return "Đang sấy / lỗi", None
-    if int(do) == 0:
-        return "VƯỢT NGƯỠNG", "Đèn DO sáng (bit = 0)"
-    return "Bình thường", "Chưa vượt ngưỡng (bit = 1)"
-
-
 def fan_text(row):
     """Trạng thái quạt từ các trường fan_* collector gửi kèm."""
     if "fan_on" not in row:
@@ -237,15 +228,10 @@ def sensor_view():
     e2.metric("Độ ẩm (DHT11)", fmt(latest.get("humidity_pct"), "%"))
     e3.metric("Ánh sáng (BH1750)", fmt(latest.get("lux"), "lux"))
 
-    # MQ135 DO và quạt lọc
-    g1, g2 = st.columns(2)
-    mq_value, mq_note = mq135_text(latest.get("mq135_do"))
-    g1.metric("Khí MQ135 (chân DO)", mq_value, help="Chỉ là 1 bit vượt ngưỡng, không phải nồng độ")
-    if mq_note:
-        g1.caption(mq_note)
+    # Quạt lọc
     fan_value, fan_note = fan_text(latest)
-    g2.metric("Quạt lọc (relay GPIO23)", fan_value)
-    g2.caption(fan_note)
+    st.metric("Quạt lọc (relay GPIO23)", fan_value)
+    st.caption(fan_note)
 
     # Biểu đồ: history sắp từ mới -> cũ, đảo lại để vẽ đúng chiều thời gian
     rows = [{
@@ -256,7 +242,6 @@ def sensor_view():
         "temperature_c": r.get("temperature_c"),
         "humidity_pct": r.get("humidity_pct"),
         "lux": r.get("lux"),
-        "mq135_do": r.get("mq135_do"),
         "fan_on": r.get("fan_on"),
     } for t, r in history]
     df = pd.DataFrame(rows).iloc[::-1]
@@ -298,7 +283,7 @@ def sensor_view():
     table = df.tail(10).iloc[::-1].rename(columns={
         "timestamp": "Thời gian", "pm1": "PM1.0", "pm25": "PM2.5", "pm10": "PM10",
         "temperature_c": "Nhiệt độ", "humidity_pct": "Độ ẩm", "lux": "Lux",
-        "mq135_do": "MQ135 DO", "fan_on": "Quạt bật",
+        "fan_on": "Quạt bật",
     })
     st.dataframe(table, width="stretch")
 

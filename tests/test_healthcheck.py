@@ -23,7 +23,7 @@ def db_path(tmp_path):
 
 
 def add_raw(db_path, ts, **values):
-    fields = dict(pm1=10.0, pm25=20.0, pm10=30.0, temp=28.0, hum=70.0, lux=100.0, mq135_do=1)
+    fields = dict(pm1=10.0, pm25=20.0, pm10=30.0, temp=28.0, hum=70.0, lux=100.0)
     fields.update(values)
     conn = connect(db_path)
     insert_raw(conn, RawSample(ts=ts, clock_synced=True, **fields))
@@ -115,13 +115,12 @@ def test_stale_data_is_critical_failure(db_path):
 
 
 def test_data_reports_which_sensors_are_none(db_path):
-    add_raw(db_path, NOW - 5, pm1=None, pm25=None, pm10=None, lux=None, mq135_do=None)
+    add_raw(db_path, NOW - 5, pm1=None, pm25=None, pm10=None, lux=None)
     fresh, sensors = hc.check_latest_data(db_path, NOW)
     assert fresh.ok is True
     assert sensors.ok is False
     assert "PMS7003" in sensors.detail
     assert "BH1750" in sensors.detail
-    assert "MQ135" in sensors.detail
     assert "DHT11" not in sensors.detail
 
 
