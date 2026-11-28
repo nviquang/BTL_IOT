@@ -47,7 +47,6 @@ input { font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid 
 .banner { background: var(--bad); color: #fff; padding: 10px 20px; text-align: center; }
 .hidden { display: none !important; }
 .chart { position: relative; height: 280px; }
-.chart.short { height: 200px; }
 .list { list-style: none; padding: 0; margin: 8px 0 0; max-height: 320px; overflow: auto; }
 .list li { padding: 5px 0; border-bottom: 1px solid var(--line); }
 .legend span { display: inline-flex; align-items: center; gap: 4px; margin-left: 10px; }

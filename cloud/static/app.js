@@ -15,7 +15,7 @@ const CMD_TEXT = { "mode:auto": "Về tự động", "mode:manual": "Chuyển th
 
 const $ = (id) => document.getElementById(id);
 let state = { loggedIn: false, manual: false, online: false, snap: null };
-let histChart = null, fcChart = null;
+let histChart = null;
 
 function fmtTime(ts, sec) {
   if (ts == null) return "—";
@@ -250,24 +250,6 @@ function renderHistory(rows) {
   }
 }
 
-function renderForecast(fc) {
-  if (!fc.made_at) { setText("fcMeta", "Chưa có dự báo."); }
-  else setText("fcMeta", `Tạo lúc ${fmtDateTime(fc.made_at)} · mô hình ${fc.model || "?"}`);
-  if (typeof Chart === "undefined") return;
-  const values = fc.values || [];
-  const colors = values.map((v) => {
-    const p = v.pm25 ?? 0;
-    const i = p <= 9 ? 0 : p <= 35.4 ? 1 : p <= 55.4 ? 2 : p <= 125.4 ? 3 : p <= 225.4 ? 4 : 5;
-    return AQI_COLORS[i];
-  });
-  const data = { labels: values.map((v) => `+${v.horizon_h} giờ`),
-    datasets: [{ label: "PM2.5 dự báo", data: values.map((v) => v.pm25), backgroundColor: colors }] };
-  const opts = baseOptions();
-  opts.plugins.legend.display = false;
-  if (!fcChart) fcChart = new Chart($("fcChart"), { type: "bar", data, options: opts });
-  else { fcChart.data = data; fcChart.update(); }
-}
-
 const EVENT_TEXT = {
   fan_on: "Quạt bật", fan_off: "Quạt tắt", override: "Ghi đè quạt", override_expired: "Hết ghi đè quạt",
   buzzer: "Còi kêu", buzzer_override: "Ghi đè còi", source_change: "Đổi nguồn bụi", command: "Lệnh",
@@ -299,7 +281,6 @@ async function refreshSlow() {
     renderHistory(rows);
     if (!rows.length) setTimeout(refreshSlow, 5000);   // Pi chưa gửi: thử lại sớm
   } catch (_) {}
-  try { renderForecast(await api("/api/forecast")); } catch (_) {}
   try { renderEvents((await api("/api/events?limit=30")).rows); } catch (_) {}
 }
 
