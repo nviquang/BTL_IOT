@@ -8,7 +8,7 @@ Relay quạt lọc trên GPIO23 (pin 16), qua lgpio.
 - close() đưa chân về LOW rồi nhả chip: dịch vụ dừng thì không ai giám sát quạt nữa.
 
 lgpio được import trong __init__ để laptop chạy test không cần thư viện này
-(lỗi cài đặt trên Python 3.13: xem README Phụ lục C).
+(lỗi cài đặt trên Python 3.13: xem Phụ lục B trong docs/van_hanh_chi_tiet.md).
 """
 GPIO_CHIP = 0          # gpiochip của header 40 chân trên Pi 4
 RELAY_GPIO = 23

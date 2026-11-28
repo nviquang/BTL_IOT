@@ -339,6 +339,11 @@ def load_source_model(scfg: SourceCfg):
     try:
         from aiot.source_model import load_model
         model = load_model(scfg.model_path)
+        if not hasattr(model, "trees"):
+            # mô hình kNN theo sự kiện (aiot/source_event.py) cần profile demo, chưa nối vào đây
+            log.error("Mô hình %s là kNN theo sự kiện, controller chưa hỗ trợ; dùng luật ngưỡng",
+                      scfg.model_path)
+            return None
         log.info("Đã nạp mô hình nguồn bụi %s (%d cây)", scfg.model_path, len(model.trees))
         return model
     except Exception as e:

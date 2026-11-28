@@ -3,8 +3,7 @@ Chụp một ảnh JPEG từ camera USB (/dev/video0) bằng OpenCV, và xoá �
 
 - cv2 chỉ được import khi chụp: laptop chạy test không cần OpenCV, và bot/weather vẫn
   chạy (gửi chữ) khi venv trên Pi thiếu cv2.
-- Mở camera mỗi lần chụp rồi luôn giải phóng, để không giữ /dev/video0. Nếu
-  pi_camera_client.py đang chạy thì camera bận: capture_jpeg trả về False.
+- Mở camera mỗi lần chụp rồi luôn giải phóng /dev/video0.
 - Ghi file tạm rồi đổi tên, để bot không bao giờ gửi một ảnh đang ghi dở.
 - Mọi lỗi (không có cv2, không mở được camera, đọc/nén lỗi, ghi file lỗi) chỉ ghi log và
   trả về False; không bao giờ raise.

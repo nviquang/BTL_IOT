@@ -78,7 +78,7 @@ def test_run_fast_mode_writes_both_tables(conn, tmp_path, monkeypatch):
         hub.poll(key)
     # giữ giá trị luôn mới
     hub._clock = lambda: 0.0
-    run(hub, conn, CsvLog(str(tmp_path / "s.csv"), "pi01"), col.NullPublisher(), Stop(t, 25),
+    run(hub, conn, CsvLog(str(tmp_path / "s.csv"), "pi01"), Stop(t, 25),
         clock=lambda: t[0], synced=lambda: True, wall=lambda: base + timedelta(seconds=t[0]))
     n_fast = conn.execute("SELECT COUNT(*) FROM fast_readings").fetchone()[0]
     n_raw = conn.execute("SELECT COUNT(*) FROM raw_readings").fetchone()[0]

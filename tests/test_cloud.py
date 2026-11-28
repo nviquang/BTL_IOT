@@ -114,7 +114,7 @@ def test_history_forecast_events_stored(client, clock):
     body = {"history": [{"ts": t - 120, "pm25": 10, "label": "normal"},
                         {"ts": t - 60, "pm25": 20.5, "pm10": "x", "label": "cooking"},
                         {"pm25": 1}],
-            "forecast": {"made_at": t - 100, "model": "lstm", "values": [30, 31, 32, 33, 34, 35]},
+            "forecast": {"made_at": t - 100, "model": "seasonal_naive", "values": [30, 31, 32, 33, 34, 35]},
             "events": [{"id": 7, "ts": t - 50, "kind": "fan_on", "detail": "PM cao"}]}
     assert client.post("/api/ingest", json=body, headers=HDR).status_code == 200
     # gửi lại (Pi thử lại sau lỗi mạng) không nhân đôi
@@ -123,7 +123,7 @@ def test_history_forecast_events_stored(client, clock):
     assert [r["pm25"] for r in rows] == [10, 20.5]
     assert rows[1]["pm10"] is None and rows[1]["label"] == "cooking"
     fc = client.get("/api/forecast").json()
-    assert fc["model"] == "lstm" and [v["pm25"] for v in fc["values"]][:2] == [30, 31]
+    assert fc["model"] == "seasonal_naive" and [v["pm25"] for v in fc["values"]][:2] == [30, 31]
     ev = client.get("/api/events").json()["rows"]
     assert len(ev) == 1 and ev[0]["kind"] == "fan_on"
     assert client.get("/api/history?hours=999").status_code == 422

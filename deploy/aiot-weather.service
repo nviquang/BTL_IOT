@@ -3,7 +3,7 @@
 # Cài: sudo cp deploy/aiot-weather.service deploy/aiot-weather.timer /etc/systemd/system/
 #      sudo systemctl daemon-reload && sudo systemctl enable --now aiot-weather.timer
 # Tin được ghi vào outbox; aiot-bot gửi (ảnh bằng sendPhoto). Đồng hồ chưa đồng bộ NTP thì
-# bỏ qua lần chạy. Luôn thoát 0. Camera bận (pi_camera_client.py đang chạy) thì gửi chữ.
+# bỏ qua lần chạy. Luôn thoát 0. Nếu không chụp được ảnh thì gửi chữ.
 [Unit]
 Description=AIoT balcony sunny/rain alert with camera photo (one shot)
 After=aiot-collector.service

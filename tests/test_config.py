@@ -6,7 +6,7 @@ import pytest
 from aiot.config import load_config
 
 REPO_CONFIG = Path(__file__).resolve().parent.parent / "config.yaml"
-SECRET_VARS = ("TELEGRAM_TOKEN", "GEMINI_API_KEY", "ALLOWED_CHAT_IDS", "MQTT_PASSWORD")
+SECRET_VARS = ("TELEGRAM_TOKEN", "GEMINI_API_KEY", "ALLOWED_CHAT_IDS", "INGEST_TOKEN")
 
 
 @pytest.fixture(autouse=True)
@@ -54,7 +54,8 @@ def test_repo_config_yaml_loads(tmp_path):
     # Nhóm đang bật chế độ demo (commit dc0080f): chỉ thời gian chờ rút ngắn, ngưỡng giữ nguyên
     if cfg.control.demo:
         assert cfg.control.enter_hold_s == cfg.control.demo_wait_s
-    assert cfg.mqtt.user == "pi01"
+    assert cfg.cloud.enabled
+    assert cfg.cloud.url.startswith("https://")
 
 
 def test_demo_shortens_waits(tmp_path):
@@ -83,13 +84,21 @@ def test_unknown_key_rejected(tmp_path):
         load_config(*write(tmp_path, "control:\n  enter_pm2_5: 80\n"))
 
 
+def test_legacy_mqtt_section_does_not_block_cloud(tmp_path, caplog):
+    cfg = load_config(*write(tmp_path, "mqtt:\n  host: old-broker\ncloud:\n  enabled: true\n",
+                             env_text="INGEST_TOKEN=cloud_token\n"))
+    assert cfg.cloud.enabled
+    assert cfg.secrets.ingest_token == "cloud_token"
+    assert "Mục mqtt đã được gỡ" in caplog.text
+
+
 def test_forecast_max_age_owned_by_control_only(tmp_path):
     """Tuổi tối đa của dự báo chỉ đặt ở control.forecast_max_age_s (một nơi duy nhất)."""
     cfg = load_config(*write(tmp_path, "control:\n  forecast_max_age_s: 3600\n"))
     assert cfg.control.forecast_max_age_s == 3600
-    assert not hasattr(cfg.forecast, "max_age_s")
-    with pytest.raises(ValueError, match="max_age_s"):
-        load_config(*write(tmp_path, "forecast:\n  max_age_s: 5400\n"))
+    cfg = load_config(*write(tmp_path, "forecast:\n  obsolete_option: 1\n"))
+    assert not hasattr(cfg, "forecast")
+    assert cfg.control.forecast_max_age_s == 5400
 
 
 def test_secrets_come_from_env_not_yaml(tmp_path, monkeypatch):
@@ -97,11 +106,11 @@ def test_secrets_come_from_env_not_yaml(tmp_path, monkeypatch):
         "# bình luận\n"
         "TELEGRAM_TOKEN=tu_dotenv\n"
         "GEMINI_API_KEY=\"key_trong_ngoac\"\n"
-        "MQTT_PASSWORD=mat_khau_dotenv\n"
+        "INGEST_TOKEN=token_dotenv\n"
     )))
     assert cfg.secrets.telegram_token == "tu_dotenv"
     assert cfg.secrets.gemini_api_key == "key_trong_ngoac"
-    assert cfg.secrets.mqtt_password == "mat_khau_dotenv"
+    assert cfg.secrets.ingest_token == "token_dotenv"
 
     # Biến môi trường thật thắng giá trị trong .env
     monkeypatch.setenv("TELEGRAM_TOKEN", "tu_moi_truong")
@@ -109,9 +118,9 @@ def test_secrets_come_from_env_not_yaml(tmp_path, monkeypatch):
     assert cfg.secrets.telegram_token == "tu_moi_truong"
 
     # Biến môi trường rỗng không xoá giá trị trong .env
-    monkeypatch.setenv("MQTT_PASSWORD", "")
+    monkeypatch.setenv("INGEST_TOKEN", "")
     cfg = load_config(tmp_path / "config.yaml", tmp_path / ".env")
-    assert cfg.secrets.mqtt_password == "mat_khau_dotenv"
+    assert cfg.secrets.ingest_token == "token_dotenv"
 
 
 def test_secrets_in_yaml_rejected(tmp_path):
@@ -122,10 +131,10 @@ def test_secrets_in_yaml_rejected(tmp_path):
 
 def test_repr_hides_secrets(tmp_path):
     cfg = load_config(*write(tmp_path, env_text=(
-        "TELEGRAM_TOKEN=abc123\nGEMINI_API_KEY=gem456\nMQTT_PASSWORD=mq789\n"
+        "TELEGRAM_TOKEN=abc123\nGEMINI_API_KEY=gem456\nINGEST_TOKEN=tok789\n"
     )))
     text = repr(cfg) + str(cfg)
-    for secret in ("abc123", "gem456", "mq789"):
+    for secret in ("abc123", "gem456", "tok789"):
         assert secret not in text
 
 
@@ -160,7 +169,7 @@ def test_missing_telegram_token_does_not_raise(tmp_path):
     cfg = load_config(*write(tmp_path))
     assert cfg.secrets.telegram_token is None
     assert cfg.secrets.gemini_api_key is None
-    assert cfg.secrets.mqtt_password is None
+    assert cfg.secrets.ingest_token is None
     assert cfg.secrets.allowed_chat_ids == frozenset()
 
 

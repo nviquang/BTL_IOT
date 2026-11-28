@@ -1,6 +1,0 @@
-# Server MQTT + dashboard (server_app.py)
-paho-mqtt
-streamlit
-pandas
-matplotlib
-PyYAML          # aiot/config.py

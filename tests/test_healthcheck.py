@@ -33,7 +33,7 @@ def add_raw(db_path, ts, **values):
 # ---------------- .env ----------------
 def test_env_all_keys_present(tmp_path):
     env = tmp_path / ".env"
-    env.write_text("TELEGRAM_TOKEN=a\nGEMINI_API_KEY=b\nALLOWED_CHAT_IDS=1\nMQTT_PASSWORD=c\n",
+    env.write_text("TELEGRAM_TOKEN=a\nGEMINI_API_KEY=b\nALLOWED_CHAT_IDS=1\nINGEST_TOKEN=c\n",
                    encoding="utf-8")
     check = hc.check_env(env)
     assert check.ok is True
@@ -47,7 +47,7 @@ def test_env_reports_missing_and_empty_keys_without_values(tmp_path):
     check = hc.check_env(env)
     assert check.ok is False
     assert "GEMINI_API_KEY" in check.detail
-    assert "MQTT_PASSWORD" in check.detail
+    assert "INGEST_TOKEN" in check.detail
     assert "TELEGRAM_TOKEN" not in check.detail
     assert "supersecretvalue" not in check.detail
 
@@ -205,33 +205,16 @@ def test_camera_ok_and_temp_file_removed(tmp_path):
         open(path, "wb").write(b"jpeg")
         return True
 
-    check = hc.check_camera(capture, legacy_running=lambda: False, index=0, tmp_dir=tmp_path)
+    check = hc.check_camera(capture, index=0, tmp_dir=tmp_path)
     assert check.ok is True
     assert not (tmp_path / seen["path"]).exists()
 
 
 def test_camera_failure():
-    check = hc.check_camera(lambda path, index: False, legacy_running=lambda: False, index=0)
+    check = hc.check_camera(lambda path, index: False, index=0)
     assert check.ok is False and not check.critical
 
 
-def test_camera_skipped_when_legacy_client_runs():
-    check = hc.check_camera(lambda p, i: pytest.fail("không được chụp"),
-                            legacy_running=lambda: True, index=0)
-    assert check.ok is None
-    assert "pi_camera_client" in check.detail
-
-
-def test_legacy_camera_running_uses_pgrep(monkeypatch):
-    monkeypatch.setattr(hc.subprocess, "run",
-                        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="123\n"))
-    assert hc.legacy_camera_running() is True
-    monkeypatch.setattr(hc.subprocess, "run",
-                        lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout=""))
-    assert hc.legacy_camera_running() is False
-
-
-# ---------------- đồng hồ ----------------
 def test_clock():
     assert hc.check_clock(lambda: True).ok is True
     check = hc.check_clock(lambda: False)
@@ -267,7 +250,7 @@ def test_run_checks_skips_bot_without_chat_ids(db_path, tmp_path):
                               secrets=Secrets(telegram_token=TOKEN))
     checks = hc.run_checks(cfg, env_path=env, now=NOW, runner=lambda unit: "active",
                            client_factory=lambda token: FakeClient(result={"username": "x"}),
-                           capture=lambda p, i: False, legacy_running=lambda: False,
+                           capture=lambda p, i: False,
                            clock_trusted=lambda: True)
     by_name = {c.name: c for c in checks}
     assert by_name["aiot-bot"].ok is None
@@ -284,7 +267,7 @@ def test_run_checks_skip_controller(db_path, tmp_path):
 
     checks = hc.run_checks(cfg, env_path=tmp_path / ".env", now=NOW, runner=runner,
                            client_factory=lambda token: pytest.fail("không có token"),
-                           capture=lambda p, i: True, legacy_running=lambda: False,
+                           capture=lambda p, i: True,
                            clock_trusted=lambda: True, skip_units={"aiot-controller"})
     assert "aiot-controller" not in asked
     heartbeat = [c for c in checks if c.name == "controller heartbeat"][0]
@@ -324,11 +307,11 @@ def test_video_hint_no_group_module():
 
 
 def test_camera_failure_appends_hint():
-    check = hc.check_camera(lambda p, i: False, legacy_running=lambda: False, index=0,
+    check = hc.check_camera(lambda p, i: False, index=0,
                             hint=lambda: "đăng nhập lại SSH")
     assert check.ok is False
     assert "đăng nhập lại SSH" in check.detail
-    ok = hc.check_camera(lambda p, i: open(p, "wb").write(b"x") > 0, legacy_running=lambda: False,
+    ok = hc.check_camera(lambda p, i: open(p, "wb").write(b"x") > 0,
                          index=0, hint=lambda: pytest.fail("không cần gợi ý khi chụp được"))
     assert ok.ok is True
 

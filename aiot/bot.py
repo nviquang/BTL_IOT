@@ -17,13 +17,7 @@ Dịch vụ bot Telegram: long polling nhận lệnh, gửi tin trong outbox (g�
 - Lệnh điều khiển lệch quá telegram.stale_command_s giây so với đồng hồ Pi (cũ hoặc "ở
   tương lai") bị bỏ. Pi không có RTC, nên khi đồng hồ chưa tin được (chưa đồng bộ NTP lần
   nào từ lúc khởi động, xem aiot.collector.is_clock_trusted) thì lệnh điều khiển bị từ chối
-  hẳn. Lệnh chỉ đọc luôn được trả lời, trừ /report và /photo cũ hơn stale_command_s (tồn
-  đọng 24 giờ khi bot chạy lần đầu hay sau khi mất mạng): bỏ để không gọi Gemini hay chụp
-  ảnh cho từng tin cũ.
-- /photo chụp ảnh camera USB ngay và trả lời bằng ảnh, không qua outbox. Chụp trong tiến
-  trình con có timeout 20 s (aiot.camera.capture_subprocess), để camera treo không làm
-  đứng luồng long polling (mọi lệnh, kể cả /fan). Chụp lỗi/quá giờ (camera bận vì
-  pi_camera_client.py, không có camera/cv2) thì trả lời chữ.
+  hẳn. Lệnh /report cũ hơn stale_command_s bị bỏ để tránh gọi Gemini cho các yêu cầu tồn đọng.
 - Tin outbox có photo_path (cảnh báo nắng/mưa của aiot.weather) được gửi bằng sendPhoto,
   chữ làm chú thích; file ảnh không còn thì gửi chữ.
 - Luồng long polling đặt menu lệnh (setMyCommands) khi bắt đầu; lỗi chỉ ghi cảnh báo và
@@ -63,13 +57,11 @@ from pathlib import Path
 from typing import NamedTuple
 
 from aiot.aqi import classify
-from aiot.camera import capture_subprocess as capture_photo
 from aiot.control import ControlState, fan_on, override_active
 from aiot.collector import is_clock_trusted
 from aiot import commands
 from aiot.db import (connect, forget_messages, get_state, init_schema, log_event,
                      purge_messages, recent_message_ids, record_message, set_state)
-from aiot.forecast import MODEL_NAMES, latest_rows
 from aiot.notifier import collapse_stale_alerts, mark_sent, pending_messages, quiet_window
 from aiot.report import build_report
 from aiot.telegram_api import TelegramClient, TelegramError, install_log_redaction
@@ -100,9 +92,7 @@ CLEAR_DONE = ("Đã xoá lịch sử chat trong 48 giờ qua. "
 HELP = ("Các lệnh:\n"
         "/now - số liệu cảm biến mới nhất\n"
         "/status - chế độ, quạt, ghi đè, cảm biến, giờ yên lặng\n"
-        "/forecast - dự báo PM2.5 6 giờ tới\n"
         "/report - báo cáo 24 giờ qua\n"
-        "/photo - chụp ảnh ban công ngay\n"
         "/fan on | /fan off - bật/tắt quạt thủ công (có thời hạn)\n"
         "/mode auto - về tự động theo PM2.5\n"
         "/mode manual - giữ quạt như hiện tại (có thời hạn)\n"
@@ -119,9 +109,7 @@ HELP = ("Các lệnh:\n"
 BOT_COMMANDS = [
     {"command": "now", "description": "Số liệu cảm biến mới nhất"},
     {"command": "status", "description": "Chế độ, quạt, ghi đè, cảm biến, giờ yên lặng"},
-    {"command": "forecast", "description": "Dự báo PM2.5 6 giờ tới"},
     {"command": "report", "description": "Báo cáo không khí 24 giờ qua"},
-    {"command": "photo", "description": "Chụp ảnh ban công ngay"},
     {"command": "fan", "description": "Bật/tắt quạt thủ công: /fan on hoặc /fan off"},
     {"command": "mode", "description": "Chế độ quạt: /mode auto hoặc /mode manual"},
     {"command": "quiet", "description": "Đặt giờ yên lặng, ví dụ /quiet 22 6"},
@@ -305,29 +293,6 @@ def cmd_status(conn, cfg, now, args):
     return _with_controller_warning(conn, cfg, now, "\n".join(lines))
 
 
-def cmd_forecast(conn, cfg, now, args):
-    max_age = cfg.control.forecast_max_age_s
-    found = latest_rows(conn, now, max_age)
-    if found is None or not found[2]:
-        return (f"Chưa có dự báo (hoặc dự báo gần nhất cũ hơn {_fmt_age(max_age)}). "
-                f"Dự báo được lập mỗi giờ khi có đủ dữ liệu PM2.5 của 3 giờ gần đây.")
-    made_at, model, rows = found
-    name = MODEL_NAMES.get(model)
-    model_text = f"{model} ({name})" if name else model
-    lines = [f"Dự báo PM2.5 trung bình từng giờ (lập lúc {_fmt_time(made_at)}, "
-             f"cách đây {_fmt_age(now - made_at)}):"]
-    for horizon, value in rows:
-        start = made_at + (horizon - 1) * 3600
-        try:
-            label = f" ({classify(value).label})"
-        except ValueError:
-            label = ""
-        lines.append(f"- {datetime.fromtimestamp(start).strftime('%H:00')}: "
-                     f"{_num(value, unit='µg/m³')}{label}")
-    lines.append(f"Mô hình: {model_text}")
-    return "\n".join(lines)
-
-
 def cmd_report(conn, cfg, now, args):
     """Báo cáo 24 giờ qua, trả lời trực tiếp (không qua outbox, không đụng khoá báo cáo
     sáng). Có thể gọi Gemini (tối đa gemini.timeout_s giây, tính vào giới hạn mỗi ngày)."""
@@ -336,24 +301,6 @@ def cmd_report(conn, cfg, now, args):
     except Exception:
         log.exception("Lỗi khi lập báo cáo")
         return "Không lập được báo cáo lúc này. Gửi /now để xem số liệu hiện tại, thử lại sau."
-
-
-PHOTO_FAILED = "Camera không phản hồi, thử lại sau."
-
-
-class PhotoReply(NamedTuple):
-    """Trả lời bằng ảnh (poll_once gửi bằng sendPhoto)."""
-    path: str
-    caption: str
-
-
-def cmd_photo(conn, cfg, now, args):
-    """Chụp ảnh camera USB ngay. Ảnh lưu trong weather.photo_dir (aiot.weather xoá ảnh cũ)."""
-    w = cfg.weather
-    path = os.path.join(w.photo_dir, f"{datetime.fromtimestamp(now):%Y%m%d_%H%M%S}_photo.jpg")
-    if not capture_photo(path, index=w.camera_index):
-        return PHOTO_FAILED
-    return PhotoReply(path, f"Ảnh ban công lúc {_fmt_time(now, seconds=True)}.")
 
 
 def cmd_help(conn, cfg, now, args):
@@ -489,14 +436,12 @@ def cmd_mute(conn, cfg, now, args, ctx):
 READ_ONLY = {   # /clear xử lý riêng trong handle_update (cần chat và message_id)
     "/now": cmd_now,
     "/status": cmd_status,
-    "/forecast": cmd_forecast,
     "/report": cmd_report,
-    "/photo": cmd_photo,
     "/help": cmd_help,
     "/start": cmd_help,
     "/web": cmd_web,
 }
-STALE_READ_ONLY = frozenset({"/report", "/photo", "/clear"})   # bỏ khi quá cũ
+STALE_READ_ONLY = frozenset({"/report", "/clear"})   # bỏ khi quá cũ
 CONTROL = {
     "/fan": cmd_fan,
     "/mode": cmd_mode,
@@ -507,9 +452,9 @@ CONTROL = {
 
 
 def handle_update(update, conn, cfg, now, *, clock_synced=None, commit=True):
-    """Xử lý một update của Telegram. Trả về văn bản trả lời, PhotoReply (/photo),
-    ClearReply (/clear), hoặc None nếu không trả lời (chat không được phép, không phải tin
-    chữ). Tin từ chat được phép được ghi message_id vào tg_messages (cho /clear).
+    """Xử lý một update của Telegram. Trả về văn bản, ClearReply (/clear) hoặc None
+    nếu chat không được phép hoặc không phải tin chữ. Tin từ chat được phép được
+    ghi message_id vào tg_messages (cho /clear).
 
     clock_synced: hàm () -> bool, mặc định aiot.collector.is_clock_trusted. Pi không có
     RTC: khi đồng hồ chưa tin được thì không so được tuổi lệnh, nên lệnh điều khiển
@@ -568,8 +513,6 @@ def handle_update(update, conn, cfg, now, *, clock_synced=None, commit=True):
         date = message.get("date")
         stale_s = cfg.telegram.stale_command_s
         if isinstance(date, int) and not isinstance(date, bool) and now - date > stale_s:
-            # Tồn đọng sau khi bot dừng/mất mạng: mỗi /report cũ gọi Gemini một lần,
-            # mỗi /photo cũ chụp một ảnh
             log.info("Bỏ %s cũ từ chat %s (cách đây %s giây)", command, chat_id, now - date)
             return (f"Đã bỏ lệnh {command} gửi cách đây {_fmt_age(now - date)} (quá {stale_s} "
                     f"giây, có thể do bot dừng hoặc mất mạng). Gửi lại {command} nếu vẫn cần.")
@@ -671,17 +614,9 @@ def _track_sent(conn, chat_id, message_id, now):
 
 
 def _send_reply(client, chat_id, reply, *, conn=None, now=None):
-    """Gửi trả lời (chữ hoặc PhotoReply) và ghi message_id khi có conn. Lỗi chỉ ghi log."""
+    """Gửi văn bản trả lời và ghi message_id khi có conn. Lỗi chỉ ghi log."""
     try:
-        if isinstance(reply, PhotoReply):
-            try:
-                sent = client.send_photo(chat_id, reply.path, reply.caption)
-            except OSError as e:
-                log.warning("Không mở được ảnh vừa chụp: %s", e)
-                sent = client.send(chat_id, "Không gửi được ảnh vừa chụp (file ảnh bị mất). "
-                                            "Thử lại /photo.")
-        else:
-            sent = client.send(chat_id, reply)
+        sent = client.send(chat_id, reply)
     except TelegramError as e:
         log.warning("Không gửi được trả lời tới chat %s: %s", chat_id, e)
         return

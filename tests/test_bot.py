@@ -156,7 +156,7 @@ def test_stale_command_rejected(conn):
     assert pending(conn) is None
     assert get_state(conn, "quiet_hours") is None
     # lệnh chỉ đọc vẫn được trả lời
-    for text in ("/now", "/status", "/help", "/forecast", "/report"):
+    for text in ("/now", "/status", "/help"):
         assert handle(conn, text, date=old)
     # đúng ngưỡng thì vẫn áp dụng
     handle(conn, "/fan on", date=NOW - CFG.telegram.stale_command_s)
@@ -252,45 +252,18 @@ def test_report_without_gemini_uses_template(conn):
     assert get_state(conn, "morning_report_date") is None
 
 
-def put_forecast(conn, made_at, preds, model="seasonal_naive"):
-    conn.executemany("INSERT INTO forecasts VALUES (?, ?, ?, ?)",
-                     [(made_at, k + 1, v, model) for k, v in enumerate(preds)])
-    conn.commit()
-
-
-def test_forecast_none_yet(conn):
-    assert "chưa có dự báo" in handle(conn, "/forecast").lower()
-
-
-def test_forecast_shows_six_hours_with_aqi_and_model(conn):
-    made_at = NOW // 3600 * 3600
-    put_forecast(conn, made_at - 3600, [1.0] * 6, model="persistence")     # cũ hơn: không hiện
-    put_forecast(conn, made_at, [5.0, 12.34, 40.0, 60.0, 130.0, 230.0])
-    reply = handle(conn, "/forecast", now=made_at + 1200)
-    for k in range(6):
-        assert datetime.fromtimestamp(made_at + k * 3600).strftime("%H:00") in reply
-    for text in ("5,0", "12,3", "40,0", "60,0", "130,0", "230,0"):
-        assert text in reply
-    for label in ("Tốt", "Trung bình", "Kém", "Xấu", "Rất xấu", "Nguy hại"):
-        assert label in reply
-    assert "seasonal_naive" in reply and "persistence" not in reply
-    assert "20 phút" in reply                                               # tuổi dự báo
-    assert "12.3" not in reply
-
-
-def test_forecast_too_old_not_shown(conn):
-    made_at = NOW // 3600 * 3600
-    put_forecast(conn, made_at, [20.0] * 6)
-    reply = handle(conn, "/forecast", now=made_at + CFG.control.forecast_max_age_s + 1)
-    assert "chưa có dự báo" in reply.lower()
-    assert "20,0" not in reply
-
-
 def test_unknown_command_gives_help(conn):
     for text in ("/abc", "xin chào", "/help", "/start"):
         reply = handle(conn, text)
         for cmd in ("/now", "/status", "/fan", "/mode", "/quiet"):
             assert cmd in reply
+
+
+@pytest.mark.parametrize("command", ["/forecast", "/photo"])
+def test_removed_commands_are_unrecognized_and_unlisted(conn, command):
+    assert handle(conn, command).startswith("Không hiểu lệnh này.")
+    assert command not in handle(conn, "/help")
+    assert command[1:] not in {item["command"] for item in bot.BOT_COMMANDS}
 
 
 # ---------------- TelegramClient ----------------
@@ -527,7 +500,7 @@ def test_control_refused_while_clock_unsynced(conn, monkeypatch):
     assert pending(conn) is None
     assert get_state(conn, "quiet_hours") is None
     assert all("not synced" in d for d in command_events(conn))
-    for text in ("/now", "/status", "/help", "/forecast", "/report"):
+    for text in ("/now", "/status", "/help", "/report"):
         assert handle(conn, text)
     # injection trực tiếp cũng được tôn trọng
     reply = bot.handle_update(upd("/fan on"), conn, CFG, NOW, clock_synced=lambda: True)
@@ -715,7 +688,7 @@ def test_old_report_request_dropped_without_building_report(conn, monkeypatch):
     assert calls == [1]
 
 
-# ---------------- ảnh: sendPhoto, outbox có ảnh, /photo ----------------
+# ---------------- ảnh: sendPhoto và outbox có ảnh ----------------
 class MultipartSession:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -769,7 +742,7 @@ def test_set_my_commands_payload():
     assert call["url"].endswith("/setMyCommands")
     commands = call["json"]["commands"]
     assert [c["command"] for c in commands] == [
-        "now", "status", "forecast", "report", "photo", "fan", "mode", "quiet", "mute", "buzzer", "web",
+        "now", "status", "report", "fan", "mode", "quiet", "mute", "buzzer", "web",
         "clear", "help"]
     for c in commands:
         assert set(c) == {"command", "description"}
@@ -843,76 +816,6 @@ def test_outbox_photo_network_error_keeps_message(conn, tmp_path):
     assert len(pending_messages(conn)) == 1 and client.sent == []
     assert sender.deliver(conn, NOW) == 0
     assert client.photos == [(CHAT, str(photo), "Nắng")]
-
-
-def _cfg_photos(tmp_path):
-    return dataclasses.replace(
-        CFG, weather=dataclasses.replace(CFG.weather, photo_dir=str(tmp_path / "photos"),
-                                         camera_index=2))
-
-
-def test_photo_command_captures_and_returns_photo(conn, tmp_path, monkeypatch):
-    calls = []
-
-    def fake_capture(path, index=0, **kw):
-        calls.append((path, index))
-        return True
-    monkeypatch.setattr(bot, "capture_photo", fake_capture)
-    cfg = _cfg_photos(tmp_path)
-    reply = bot.handle_update(upd("/photo"), conn, cfg, NOW)
-    assert isinstance(reply, bot.PhotoReply)
-    assert reply.path == calls[0][0] and calls[0][1] == 2
-    assert reply.path.startswith(str(tmp_path / "photos"))
-    assert "14:00" in reply.caption
-    assert pending_messages(conn) == []                       # gửi trực tiếp, không qua outbox
-
-
-def test_photo_command_capture_failure_replies_text(conn, tmp_path, monkeypatch):
-    monkeypatch.setattr(bot, "capture_photo", lambda path, index=0, **kw: False)
-    reply = bot.handle_update(upd("/photo"), conn, _cfg_photos(tmp_path), NOW)
-    assert reply == "Camera không phản hồi, thử lại sau."
-
-
-def test_stale_photo_command_does_not_capture(conn, tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(bot, "capture_photo", lambda *a, **k: calls.append(a) or True)
-    reply = bot.handle_update(upd("/photo", date=NOW - 3600), conn, _cfg_photos(tmp_path), NOW)
-    assert calls == [] and isinstance(reply, str) and "/photo" in reply
-
-
-def test_photo_works_while_clock_unsynced(conn, tmp_path, monkeypatch):
-    monkeypatch.setattr(bot, "capture_photo", lambda path, index=0, **kw: True)
-    reply = bot.handle_update(upd("/photo"), conn, _cfg_photos(tmp_path), NOW,
-                              clock_synced=lambda: False)
-    assert isinstance(reply, bot.PhotoReply)
-
-
-def test_poll_once_sends_photo_reply(conn, tmp_path, monkeypatch):
-    monkeypatch.setattr(bot, "capture_photo", lambda path, index=0, **kw: True)
-    client = PhotoClient([[upd("/photo", uid=7)]])
-    bot.poll_once(conn, client, _cfg_photos(tmp_path), NOW)
-    assert len(client.photos) == 1 and client.photos[0][0] == CHAT
-    assert client.sent == []
-
-
-def test_poll_once_photo_send_failure_falls_back_or_logs(conn, tmp_path, monkeypatch):
-    monkeypatch.setattr(bot, "capture_photo", lambda path, index=0, **kw: True)
-    client = PhotoClient([[upd("/photo", uid=8)]], photo_errors=[FileNotFoundError("mất")])
-    bot.poll_once(conn, client, _cfg_photos(tmp_path), NOW)
-    assert len(client.sent) == 1 and "Không gửi được ảnh" in client.sent[0][1]
-    client = PhotoClient([[upd("/photo", uid=9)]], photo_errors=[TelegramError("mạng")])
-    bot.poll_once(conn, client, _cfg_photos(tmp_path), NOW)   # không raise
-    assert get_state(conn, "telegram_offset") == "10"
-
-
-def test_help_lists_photo(conn):
-    assert "/photo" in handle(conn, "/help")
-
-
-
-def test_bot_captures_in_subprocess():
-    from aiot import camera
-    assert bot.capture_photo is camera.capture_subprocess
 
 
 def test_polling_registers_commands_in_thread_and_retries(conn):

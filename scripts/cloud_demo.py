@@ -47,7 +47,7 @@ def seed(conn, now):
         labels.append(label)
     for i, v in enumerate([24, 27, 31, 36, 40, 38], start=1):
         conn.execute("INSERT INTO forecasts (made_at, horizon_h, pm25_pred, model) VALUES (?,?,?,?)",
-                     (now - 600, i, v, "lstm"))
+                     (now - 600, i, v, "seasonal_naive"))
     log_event(conn, now - 2 * 3600, "source_change", "cooking p=0.85", commit=False)
     log_event(conn, now - 2 * 3600, "fan_on", "AI: nấu ăn", commit=False)
     log_event(conn, now - 5400, "fan_off", "AI: bình thường", commit=False)

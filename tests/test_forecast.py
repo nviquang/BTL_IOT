@@ -1,7 +1,5 @@
 """Test dự báo đối chứng PM2.5: chuỗi giờ, nội suy, persistence, seasonal naive, ghi DB."""
 import logging
-import math
-import time
 
 import numpy as np
 import pytest
@@ -152,78 +150,6 @@ def test_no_forecast_from_old_data(conn, caplog):
     assert model == "persistence" and preds == [40.0] * 6
 
 
-def test_predictor_failure_falls_back(conn, caplog):
-    fill(conn, LAST - 23 * H, LAST, lambda t: 20.0)
-
-    def broken(x):
-        raise RuntimeError("tflite lỗi")
-
-    with caplog.at_level(logging.WARNING, logger="aiot.forecast"):
-        model, preds = run_forecast(conn, NOW, predictor=broken)
-    assert model == "seasonal_naive" and preds == [20.0] * 6
-    assert any("tflite lỗi" in r.getMessage() for r in caplog.records)
-
-
-@pytest.mark.parametrize("bad", [[1.0] * 5, [1.0] * 5 + [math.nan], [1.0] * 5 + [math.inf], None])
-def test_predictor_bad_output_falls_back(conn, bad):
-    fill(conn, LAST - 23 * H, LAST, lambda t: 20.0)
-    model, preds = run_forecast(conn, NOW, predictor=lambda x: bad)
-    assert model == "seasonal_naive" and preds == [20.0] * 6
-
-
-def test_predictor_used_when_ok(conn):
-    fill(conn, LAST - 23 * H, LAST, lambda t: 20.0)
-    seen = []
-
-    def lstm(x):
-        seen.append(x)
-        return [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
-
-    model, preds = run_forecast(conn, NOW, predictor=lstm)
-    assert model == "lstm" and preds == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
-    # chỉ có PM2.5 trong DB: dict không có temp/hum
-    assert sorted(seen[0]) == ["hour_cos", "hour_sin", "pm25"]
-    assert seen[0]["pm25"].shape == (24,)
-    assert [r[3] for r in rows(conn)] == ["lstm"] * 6
-
-
-def add_weather_hour(conn, start, pm25, temp, hum, n=12):
-    for i in range(n):
-        conn.execute("INSERT INTO readings (ts, pm25, temp, hum, valid) VALUES (?, ?, ?, ?, 1)",
-                     (start + i * 300, pm25, temp, hum))
-    conn.commit()
-
-
-def test_predictor_gets_feature_dict(conn):
-    for t in range(LAST - 23 * H, LAST + 1, H):
-        i = (t - BASE) // H
-        add_weather_hour(conn, t, float(i), 20.0 + i % 5, 60.0 + i % 7)
-    seen = []
-    run_forecast(conn, NOW, predictor=lambda x: seen.append(x) or [1.0] * 6)
-    x = seen[0]
-    assert sorted(x) == ["hour_cos", "hour_sin", "hum", "pm25", "temp"]
-    hours = list(range(LAST - 23 * H, LAST + 1, H))
-    idx = [(t - BASE) // H for t in hours]
-    assert list(x["pm25"]) == [float(i) for i in idx]
-    assert list(x["temp"]) == [20.0 + i % 5 for i in idx]
-    assert list(x["hum"]) == [60.0 + i % 7 for i in idx]
-    # giờ trong ngày (giờ địa phương) của từng giờ đầu vào, như add_time_features khi huấn luyện
-    local_h = np.array([time.localtime(t).tm_hour for t in hours])
-    np.testing.assert_allclose(x["hour_sin"], np.sin(2 * np.pi * local_h / 24))
-    np.testing.assert_allclose(x["hour_cos"], np.cos(2 * np.pi * local_h / 24))
-    assert all(v.shape == (24,) for v in x.values())
-
-
-def test_weather_gap_too_long_omits_feature(conn):
-    for t in range(LAST - 23 * H, LAST + 1, H):
-        # temp/hum thiếu 3 giờ liên tiếp: không dựng được, chỉ truyền những gì có
-        missing = LAST - 12 * H <= t <= LAST - 10 * H
-        add_weather_hour(conn, t, 20.0, None if missing else 25.0, None if missing else 70.0)
-    seen = []
-    run_forecast(conn, NOW, predictor=lambda x: seen.append(x) or [1.0] * 6)
-    assert sorted(seen[0]) == ["hour_cos", "hour_sin", "pm25"]
-
-
 def test_leading_gap_interpolated_from_left_neighbour(conn):
     # 48 giờ dữ liệu tăng đều, thiếu 2 giờ đầu của cửa sổ 24 giờ
     first = LAST - 23 * H
@@ -254,14 +180,6 @@ def test_prepare_input_rejects_gap_straddling_window_start():
     values[5] = 5.0                                # chỉ còn 2 giờ trống: vẫn nội suy được
     x = prepare_input(series_of(values))
     assert x[0] == pytest.approx(6.0) and x[1] == pytest.approx(7.0)
-
-
-def test_negative_predictions_clipped_to_zero(conn):
-    fill(conn, LAST - 23 * H, LAST, lambda t: 20.0)
-    model, preds = run_forecast(conn, NOW, predictor=lambda x: [-3.0, 0.0, 5.0, -0.1, 1.0, 2.0])
-    assert model == "lstm"
-    assert preds == [0.0, 0.0, 5.0, 0.0, 1.0, 2.0]
-    assert min(r[2] for r in rows(conn)) == 0.0
 
 
 def test_rerun_same_hour_overwrites(conn):

@@ -1,5 +1,4 @@
-"""Test collector với cảm biến giả: SQLite, CSV đúng định dạng cũ, MQTT không bắt buộc."""
-import json
+"""Test collector với cảm biến giả: SQLite và định dạng CSV."""
 import sqlite3
 from datetime import datetime
 
@@ -7,7 +6,6 @@ import pytest
 
 from aiot.collector import CsvLog, collect_once, is_clock_trusted
 from aiot.db import connect, init_schema
-from aiot.payload import valid_sensor_row
 from aiot.pms7003 import PmsReading
 
 NOW = datetime(2026, 11, 5, 8, 0, 0)
@@ -40,19 +38,6 @@ class RaisingSensors(FakeSensors):
         raise OSError("UART hỏng")
 
 
-class RecordingPublisher:
-    def __init__(self):
-        self.payloads = []
-
-    def publish(self, payload):
-        self.payloads.append(payload)
-
-
-class BrokenPublisher:
-    def publish(self, payload):
-        raise ConnectionError("broker down")
-
-
 @pytest.fixture
 def conn(tmp_path):
     c = connect(tmp_path / "aiot.db")
@@ -72,9 +57,8 @@ def raw_rows(conn):
     ).fetchall()
 
 
-def run(sensors, conn, csv_path, publisher=None, now=NOW, clock_synced=True, **kw):
-    return collect_once(sensors, conn, CsvLog(str(csv_path), "pi01"), publisher or RecordingPublisher(),
-                        now, clock_synced, **kw)
+def run(sensors, conn, csv_path, now=NOW, clock_synced=True):
+    return collect_once(sensors, conn, CsvLog(str(csv_path), "pi01"), now, clock_synced)
 
 
 def test_dht_failure_still_stores_pm(conn, csv_path):
@@ -100,7 +84,7 @@ def test_csv_format_unchanged(conn, csv_path):
     run(FakeSensors(dht=(28.5, 83), lux=170.83), conn, csv_path)
     # Khởi động lại dịch vụ: CsvLog mới trên cùng file, header không ghi lại
     collect_once(FakeSensors(dht=(28.46, 83.04), lux=170.8), conn, CsvLog(str(csv_path), "pi01"),
-                 RecordingPublisher(), datetime(2026, 11, 5, 8, 0, 10), True)
+                 datetime(2026, 11, 5, 8, 0, 10), True)
     assert csv_path.read_bytes() == (
         HEADER
         + b"2026-11-05T08:00:00,pi01,28.5,83.0,170.8\r\n"
@@ -108,46 +92,13 @@ def test_csv_format_unchanged(conn, csv_path):
     )
 
 
-def test_mqtt_payload_accepted_by_server(conn, csv_path):
-    pub = RecordingPublisher()
-    run(FakeSensors(), conn, csv_path, publisher=pub)
-    assert len(pub.payloads) == 1
-    p = pub.payloads[0]
-    assert valid_sensor_row(p)
-    assert p["pm25"] == 20.0 and p["pm1"] == 12.0 and p["pm10"] == 25.0 and "mq135_do" not in p
-    assert p["timestamp"] == "2026-11-05T08:00:00" and p["device_id"] == "pi01"
-    json.dumps(p)  # phải gửi được dạng JSON
-
-
-def test_mqtt_payload_allows_missing_pm(conn, csv_path):
-    pub = RecordingPublisher()
-    run(FakeSensors(pm=None), conn, csv_path, publisher=pub)
-    p = pub.payloads[0]
-    assert valid_sensor_row(p)
-    assert p["pm25"] is None
-
-
-def test_no_publish_when_csv_fields_missing(conn, csv_path):
-    pub = RecordingPublisher()
-    run(FakeSensors(lux=None), conn, csv_path, publisher=pub)
-    assert pub.payloads == []
-
-
-def test_broker_down_does_not_stop_collection(conn, csv_path):
-    run(FakeSensors(), conn, csv_path, publisher=BrokenPublisher())
-    assert len(raw_rows(conn)) == 1
-    assert csv_path.read_bytes().count(b"\r\n") == 2
-
-
 def test_all_sensors_fail_writes_nothing_and_survives(conn, csv_path):
-    pub = RecordingPublisher()
-    s = run(RaisingSensors(), conn, csv_path, publisher=pub)
+    s = run(RaisingSensors(), conn, csv_path)
     assert (s.pm25, s.temp, s.lux) == (None, None, None)
-    s = run(FakeSensors(dht=None, lux=None, pm=None), conn, csv_path, publisher=pub,
+    s = run(FakeSensors(dht=None, lux=None, pm=None), conn, csv_path,
             now=datetime(2026, 11, 5, 8, 0, 10))
     assert raw_rows(conn) == []
     assert not csv_path.exists() or csv_path.read_bytes() in (b"", HEADER)
-    assert pub.payloads == []
 
 
 def test_db_error_does_not_stop_csv(conn, csv_path):
@@ -247,7 +198,7 @@ def test_run_aggregates_only_when_clock_synced(conn, csv_path, monkeypatch, sync
     monkeypatch.setattr(col, "aggregate_pending", lambda c, now: calls.append(now))
     monkeypatch.setattr(col, "purge_raw", lambda c, ts: calls.append(("purge", ts)))
     t = [0.0]
-    col.run(FakeSensors(), conn, CsvLog(str(csv_path), "pi01"), RecordingPublisher(),
+    col.run(FakeSensors(), conn, CsvLog(str(csv_path), "pi01"),
             FakeStop(t, max_loops=13), clock=lambda: t[0], synced=lambda: synced)
     assert bool(calls) is expect_rows
     if synced:
@@ -347,7 +298,7 @@ def test_failed_purge_rolls_back(conn, csv_path, monkeypatch):
     monkeypatch.setattr(col, "aggregate_pending", lambda c, now: None)
     insert_conn = CommitFailsConn(conn)
     t = [0.0]
-    col.run(FakeSensors(), insert_conn, CsvLog(str(csv_path), "pi01"), RecordingPublisher(),
+    col.run(FakeSensors(), insert_conn, CsvLog(str(csv_path), "pi01"),
             FakeStop(t, max_loops=7), clock=lambda: t[0], synced=lambda: True)
     assert conn.in_transaction is False
 
@@ -389,12 +340,10 @@ def test_clock_trusted_default_flag_path():
     assert col.SYNC_FLAG_PATH == "/run/systemd/timesync/synchronized"
 
 
-def test_untrusted_clock_skips_csv_and_mqtt(conn, csv_path):
-    pub = RecordingPublisher()
-    run(FakeSensors(), conn, csv_path, publisher=pub, clock_synced=False)
+def test_untrusted_clock_skips_csv(conn, csv_path):
+    run(FakeSensors(), conn, csv_path, clock_synced=False)
     assert len(raw_rows(conn)) == 1 and raw_rows(conn)[0][-1] == 0   # SQLite vẫn ghi
     assert not csv_path.exists()
-    assert pub.payloads == []
 
 
 def test_untrusted_sample_colliding_with_existing_ts_warns(conn, csv_path, caplog):
@@ -454,55 +403,3 @@ def test_signal_handlers_survive_missing_hardware_libs():
         assert stop.is_set()
     finally:
         _signal.signal(_signal.SIGTERM, old)
-
-
-# ---------------- Trạng thái quạt gửi kèm payload ----------------
-def _set_controller(conn, *, mode="NORMAL", override_fan=None, override_until=None,
-                    heartbeat=None, relay_fault=False):
-    from aiot.control import ControlState
-    from aiot.db import set_state
-    st = ControlState(mode=mode, override_fan=override_fan, override_until=override_until)
-    set_state(conn, "control_state", st.to_json())
-    set_state(conn, "controller_heartbeat", heartbeat if heartbeat is not None else int(NOW.timestamp()))
-    if relay_fault:
-        set_state(conn, "relay_fault", "1")
-
-
-def test_payload_fan_unknown_without_controller(conn, csv_path):
-    pub = RecordingPublisher()
-    run(FakeSensors(), conn, csv_path, publisher=pub)
-    p = pub.payloads[0]
-    assert p["fan_on"] is None and p["fan_mode"] is None and p["fan_state"] is None
-
-
-def test_payload_fan_follows_controller_state(conn, csv_path):
-    _set_controller(conn, mode="PROTECT")
-    pub = RecordingPublisher()
-    run(FakeSensors(), conn, csv_path, publisher=pub)
-    p = pub.payloads[0]
-    assert p["fan_on"] is True and p["fan_mode"] == "auto" and p["fan_state"] == "PROTECT"
-    assert p["fan_relay_fault"] is False
-    json.dumps(p)
-
-
-def test_payload_fan_manual_override(conn, csv_path):
-    now = int(NOW.timestamp())
-    _set_controller(conn, mode="NORMAL", override_fan=True, override_until=now + 600, relay_fault=True)
-    pub = RecordingPublisher()
-    run(FakeSensors(), conn, csv_path, publisher=pub)
-    p = pub.payloads[0]
-    assert p["fan_on"] is True and p["fan_mode"] == "manual" and p["fan_relay_fault"] is True
-
-
-def test_payload_fan_unknown_when_heartbeat_stale(conn, csv_path):
-    _set_controller(conn, mode="PROTECT", heartbeat=int(NOW.timestamp()) - 600)
-    pub = RecordingPublisher()
-    run(FakeSensors(), conn, csv_path, publisher=pub)
-    assert pub.payloads[0]["fan_on"] is None
-
-
-def test_fan_state_keys_match_controller():
-    from aiot import collector, controller
-    assert collector.CONTROL_STATE_KEY == controller.STATE_KEY
-    assert collector.HEARTBEAT_KEY == controller.HEARTBEAT_KEY
-    assert collector.RELAY_FAULT_KEY == controller.RELAY_FAULT_KEY

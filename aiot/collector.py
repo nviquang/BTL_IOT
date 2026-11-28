@@ -1,23 +1,19 @@
 """
 Dịch vụ collector: đọc cảm biến mỗi giây (fast_readings, cho bộ nhận diện nguồn bụi)
-và mỗi 10 giây ghi raw_readings + CSV, gửi MQTT như trước.
+và mỗi 10 giây ghi raw_readings và CSV.
 
 - fast_readings (SQLite): mẫu 1 giây gồm PM, 6 kênh đếm hạt, nhiệt/ẩm (DHT11 ~2 giây),
   lux; ghi gộp mỗi 5 giây, giữ 48 giờ (đoạn có nhãn trong source_labels giữ lại).
 
 - raw_readings (SQLite): mọi mẫu có ít nhất một giá trị đo, kể cả khi DHT11 lỗi
   hay đồng hồ chưa đồng bộ (clock_synced=0). ts là giây epoch kiểu số nguyên.
-- CSV: giữ đúng định dạng của pi_sensor_client.py, chỉ ghi khi có đủ DHT11 và lux và
-  đồng hồ tin được (MQTT cũng vậy).
-- MQTT không bắt buộc: tắt trong config, thiếu mật khẩu hay mất broker thì vẫn thu thập.
+- CSV: ghi nhiệt độ, độ ẩm và ánh sáng khi có đủ số liệu và đồng hồ tin được.
 - Gộp trung bình 5 phút mỗi phút (chỉ khi đồng hồ tin được: is_clock_trusted);
   xoá raw_readings cũ hơn 7 ngày mỗi ngày một lần.
 
-Thay thế pi_sensor_client.py; không chạy cả hai cùng lúc vì dùng chung cảm biến.
 Chạy: cd ~/BTL_IOT && venv/bin/python -m aiot.collector
 """
 import csv
-import json
 import logging
 import os
 import signal
@@ -29,27 +25,19 @@ from datetime import datetime
 from pathlib import Path
 
 from aiot.aggregate import aggregate_pending
-from aiot.control import ControlState, fan_on, override_active
-from aiot.db import (RawSample, connect, get_state, init_schema, insert_fast_many, insert_raw,
+from aiot.db import (RawSample, connect, init_schema, insert_fast_many, insert_raw,
                      purge_fast, purge_raw)
-from aiot.payload import CSV_HEADER, build_csv_row, build_payload
 
 log = logging.getLogger("aiot.collector")
 
-INTERVAL = 10                   # giây giữa 2 mẫu raw_readings/CSV/MQTT, như client cũ
+INTERVAL = 10                   # giây giữa 2 mẫu raw_readings/CSV
 FAST_INTERVAL = 1               # giây giữa 2 mẫu fast_readings (bộ nhận diện nguồn bụi)
 FAST_FLUSH_S = 5
 FAST_KEEP_S = 2 * 86400         # giữ mẫu 1 giây 48 giờ (đoạn có nhãn giữ lâu hơn)
 AGGREGATE_EVERY_S = 60
 PURGE_EVERY_S = 86400
 RAW_KEEP_S = 7 * 86400          # giữ mẫu thô 7 ngày
-TOPIC_SENSOR = "nha/pi01/sensor"
-TOPIC_STATUS = "nha/pi01/sensor_status"
-# Khoá state do controller ghi (trùng hằng số trong aiot/controller.py; không import
-# controller để collector không kéo theo notifier/forecast)
-CONTROL_STATE_KEY = "control_state"
-HEARTBEAT_KEY = "controller_heartbeat"
-RELAY_FAULT_KEY = "relay_fault"
+CSV_HEADER = ["timestamp", "device_id", "temperature_c", "humidity_pct", "lux"]
 
 
 # ---------------- Thành phần nhỏ ----------------
@@ -60,7 +48,7 @@ class CsvLog:
         self.path = path
         self.device_id = device_id
 
-    def append(self, row: dict) -> None:
+    def append(self, now: datetime, temp: float, hum: float, lux: float) -> None:
         directory = os.path.dirname(self.path)
         if directory:
             os.makedirs(directory, exist_ok=True)
@@ -69,56 +57,8 @@ class CsvLog:
             writer = csv.writer(f)
             if is_new:
                 writer.writerow(CSV_HEADER)
-            writer.writerow([row[k] for k in CSV_HEADER])
-
-
-class NullPublisher:
-    """Dùng khi tắt MQTT."""
-
-    def publish(self, payload: dict) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
-
-
-class MqttPublisher:
-    """paho-mqtt v2, tự kết nối lại; trạng thái online/offline giữ lại (retain) + last will."""
-
-    def __init__(self, host: str, port: int, user: str, password: str):
-        import paho.mqtt.client as mqtt  # import muộn: laptop test không cần paho
-
-        def on_connect(client, userdata, flags, reason_code, properties):
-            if reason_code.is_failure:
-                log.warning("Kết nối MQTT thất bại: %s", reason_code)
-                return
-            log.info("Đã kết nối broker %s:%s", host, port)
-            client.publish(TOPIC_STATUS, "online", qos=1, retain=True)
-
-        def on_disconnect(client, userdata, flags, reason_code, properties):
-            log.warning("Mất kết nối MQTT, đang thử lại")
-
-        self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="pi01_sensor")
-        self._client.username_pw_set(user, password)
-        self._client.on_connect = on_connect
-        self._client.on_disconnect = on_disconnect
-        self._client.will_set(TOPIC_STATUS, "offline", qos=1, retain=True)
-        self._client.reconnect_delay_set(min_delay=1, max_delay=30)
-        self._client.connect_async(host, port, keepalive=60)
-        self._client.loop_start()
-
-    def publish(self, payload: dict) -> None:
-        if self._client.is_connected():
-            self._client.publish(TOPIC_SENSOR, json.dumps(payload), qos=1)
-
-    def close(self) -> None:
-        try:
-            if self._client.is_connected():
-                self._client.publish(TOPIC_STATUS, "offline", qos=1, retain=True).wait_for_publish(timeout=3)
-        except Exception as e:
-            log.warning("Không gửi được trạng thái offline: %s", e)
-        self._client.loop_stop()
-        self._client.disconnect()
+            writer.writerow((now.isoformat(timespec="seconds"), self.device_id,
+                             round(temp, 1), round(hum, 1), round(lux, 1)))
 
 
 SYNC_FLAG_PATH = "/run/systemd/timesync/synchronized"
@@ -173,45 +113,13 @@ def _warn_ts_collision(conn, ts: int) -> None:
                     "sẽ bị bỏ (INSERT OR IGNORE)", ts, last)
 
 
-FAN_HEARTBEAT_MAX_S = 90        # controller lặp 15–30 s; quá 90 s không có nhịp = không rõ
-
-
-def fan_status(conn, now: int) -> dict:
-    """Trạng thái quạt do controller ghi trong SQLite, để gửi kèm payload MQTT.
-
-    fan_on: True/False, None khi không rõ (controller không chạy/nhịp cũ, trạng thái hỏng).
-    fan_mode: 'auto' hoặc 'manual' (đang ghi đè thủ công); fan_state: 'NORMAL'/'PROTECT';
-    fan_relay_fault: True khi controller không ghi được GPIO23. Không bao giờ raise."""
-    unknown = {"fan_on": None, "fan_mode": None, "fan_state": None, "fan_relay_fault": None}
-    try:
-        hb = get_state(conn, HEARTBEAT_KEY)
-        text = get_state(conn, CONTROL_STATE_KEY)
-        relay_fault = get_state(conn, RELAY_FAULT_KEY) == "1"
-    except sqlite3.Error as e:
-        log.warning("Không đọc được trạng thái quạt: %s", e)
-        _rollback(conn)
-        return unknown
-    try:
-        if hb is None or text is None or abs(int(now) - int(hb)) > FAN_HEARTBEAT_MAX_S:
-            return unknown
-        st = ControlState.from_json(text)
-    except ValueError:
-        return unknown
-    return {
-        "fan_on": bool(fan_on(st, int(now))),
-        "fan_mode": "manual" if override_active(st, int(now)) else "auto",
-        "fan_state": st.mode,
-        "fan_relay_fault": relay_fault,
-    }
-
-
 # ---------------- Một lần thu thập ----------------
-def collect_once(sensors, conn, csv_writer, publisher, now: datetime,
+def collect_once(sensors, conn, csv_writer, now: datetime,
                  clock_synced: bool) -> RawSample:
-    """Đọc mọi cảm biến một lần, ghi raw_readings, CSV và gửi MQTT.
+    """Đọc mọi cảm biến một lần, ghi raw_readings và CSV.
 
     now là giờ địa phương (naive datetime); ts trong SQLite là int(now.timestamp()).
-    Không lỗi nào ở đây được làm dừng vòng lặp: cảm biến, DB, CSV, broker đều được bắt.
+    Lỗi đọc cảm biến, ghi SQLite hoặc CSV được ghi log và vòng lặp tiếp tục.
     """
     dht = _safe_read("DHT11", sensors.read_dht)
     lux = _safe_read("BH1750", sensors.read_lux)
@@ -236,29 +144,20 @@ def collect_once(sensors, conn, csv_writer, publisher, now: datetime,
         _rollback(conn)
 
     if not clock_synced:
-        # Giờ chưa tin được: CSV và MQTT (định dạng cũ, không có cờ đồng hồ) sẽ nhận dòng
-        # sai giờ, nên chỉ ghi SQLite (clock_synced=0)
-        log.info("Bỏ qua CSV/MQTT (đồng hồ chưa tin được), PM2.5=%s", pm25)
+        # CSV không có cờ đồng hồ nên chỉ ghi SQLite (clock_synced=0).
+        log.info("Bỏ qua CSV (đồng hồ chưa tin được), PM2.5=%s", pm25)
         return sample
 
     if temp is None or lux is None:
         # Không ghi dòng thiếu vào CSV: notebook time series không chịu được NaN
-        log.info("Bỏ qua CSV/MQTT (DHT11 hoặc BH1750 lỗi), PM2.5=%s", pm25)
+        log.info("Bỏ qua CSV (DHT11 hoặc BH1750 lỗi), PM2.5=%s", pm25)
         return sample
 
-    row = build_csv_row(now, csv_writer.device_id, temp, hum, lux)
     try:
-        csv_writer.append(row)
+        csv_writer.append(now, temp, hum, lux)
     except OSError as e:
         log.error("Lỗi ghi CSV: %s", e)
-    try:
-        payload = build_payload(row, pm1, pm25, pm10)
-        payload.update(fan_status(conn, sample.ts))
-        publisher.publish(payload)
-    except Exception as e:
-        log.warning("Lỗi gửi MQTT: %s", e)
-    log.info("T=%s H=%s Lux=%s PM2.5=%s", row["temperature_c"], row["humidity_pct"],
-             row["lux"], pm25)
+    log.info("T=%.1f H=%.1f Lux=%.1f PM2.5=%s", temp, hum, lux, pm25)
     return sample
 
 
@@ -275,12 +174,12 @@ def _flush_fast(conn, buffer) -> None:
     buffer.clear()
 
 
-def run(sensors, conn, csv_writer, publisher, stop: threading.Event,
+def run(sensors, conn, csv_writer, stop: threading.Event,
         *, clock=time.monotonic, synced=is_clock_trusted, wall=datetime.now) -> None:
     """Thu thập tới khi stop được đặt (SIGTERM/SIGINT).
 
     sensors có snapshot() (SensorHub): nhịp FAST_INTERVAL giây ghi fast_readings, mỗi
-    INTERVAL giây ghi raw_readings/CSV/MQTT như cũ. Không có snapshot(): chỉ nhịp 10 giây."""
+    INTERVAL giây ghi raw_readings và CSV. Không có snapshot(): chỉ nhịp 10 giây."""
     fast = hasattr(sensors, "snapshot")
     tick = FAST_INTERVAL if fast else INTERVAL
     next_time = clock()
@@ -292,7 +191,7 @@ def run(sensors, conn, csv_writer, publisher, stop: threading.Event,
     clock_ok = synced()
     if not clock_ok:
         log.warning("Đồng hồ chưa tin được (chưa đồng bộ NTP lần nào từ lúc khởi động): mẫu được "
-                    "đánh dấu clock_synced=0, chưa gộp, không ghi CSV/MQTT")
+                    "đánh dấu clock_synced=0, chưa gộp, không ghi CSV")
 
     while not stop.is_set():
         now_dt = wall()
@@ -307,7 +206,7 @@ def run(sensors, conn, csv_writer, publisher, stop: threading.Event,
             next_slow += INTERVAL
             if next_slow <= clock():
                 next_slow = clock() + INTERVAL
-            collect_once(sensors, conn, csv_writer, publisher, now_dt, clock_ok)
+            collect_once(sensors, conn, csv_writer, now_dt, clock_ok)
 
         if clock() >= next_aggregate:
             next_aggregate = clock() + AGGREGATE_EVERY_S
@@ -377,25 +276,13 @@ def main() -> None:
     init_schema(conn)
     csv_writer = CsvLog(cfg.csv_path, cfg.device_id)
 
-    publisher = NullPublisher()
-    if not cfg.mqtt.enabled:
-        log.info("MQTT đang tắt trong config.yaml, chỉ ghi SQLite và CSV")
-    elif cfg.secrets.mqtt_password is None:
-        log.warning("Chưa có MQTT_PASSWORD trong .env, bỏ qua MQTT")
-    else:
-        try:
-            publisher = MqttPublisher(cfg.mqtt.host, cfg.mqtt.port, cfg.mqtt.user, cfg.secrets.mqtt_password)
-        except Exception as e:
-            log.warning("Không khởi tạo được MQTT (%s), chỉ ghi SQLite và CSV", e)
-
     sensors = PiSensors()
     hub = SensorHub(sensors)
     hub.start()
     log.info("Collector bắt đầu: db=%s csv=%s (mẫu 1 giây + mẫu 10 giây)", cfg.db_path, cfg.csv_path)
     try:
-        run(hub, conn, csv_writer, publisher, stop)
+        run(hub, conn, csv_writer, stop)
     finally:
-        publisher.close()
         hub.stop()
         sensors.close()
         conn.close()

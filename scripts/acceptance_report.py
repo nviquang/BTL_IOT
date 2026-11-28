@@ -33,8 +33,8 @@ chỉ dùng thư viện chuẩn, numpy và gói aiot.
 Ví dụ (trên Pi):
   cd ~/BTL_IOT && venv/bin/python scripts/acceptance_report.py \\
       --start "2026-11-10" --end "2026-11-17" [--public-csv tram.csv]
-CSV trạm công khai: có cột timestamp (giờ địa phương, theo giờ) và pm25 (µg/m³), như
-training/export_hourly.py hoặc training/fetch_public.py ghi ra.
+CSV trạm công khai cần cột timestamp (giờ địa phương, theo giờ) và pm25 (µg/m³),
+cùng định dạng với CSV xuất từ training/export_hourly.py.
 """
 import argparse
 import csv

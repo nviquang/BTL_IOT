@@ -5,8 +5,7 @@ Bảng kiểm tra sức khoẻ của trạm (scripts/pi_up.sh gọi sau khi bậ
 - Quan trọng (quyết định mã thoát): aiot-collector đang chạy và có mẫu thô mới (< 60 s).
   Mọi mục khác chỉ là cảnh báo.
 - Mở DB chỉ đọc: chưa có DB thì báo lỗi, không tạo file mới.
-- Camera: chụp thử bằng tiến trình con có timeout (aiot.camera.capture_subprocess); bỏ qua
-  khi client camera cũ (pi_camera_client.py / pi_detection_client.py) đang giữ camera.
+- Camera: chụp thử bằng tiến trình con có timeout (aiot.camera.capture_subprocess).
 
 Chạy: cd ~/BTL_IOT && venv/bin/python -m aiot.healthcheck [--skip-unit aiot-controller]
 Mã thoát 0 khi mọi mục quan trọng đạt, 1 khi có mục quan trọng lỗi.
@@ -22,7 +21,7 @@ from pathlib import Path
 
 from aiot.config import load_config, read_env_file
 
-ENV_KEYS = ("TELEGRAM_TOKEN", "GEMINI_API_KEY", "ALLOWED_CHAT_IDS", "MQTT_PASSWORD")
+ENV_KEYS = ("TELEGRAM_TOKEN", "GEMINI_API_KEY", "ALLOWED_CHAT_IDS", "INGEST_TOKEN")
 UNITS = ("aiot-collector", "aiot-controller", "aiot-bot", "aiot-uplink",
          "aiot-forecast.timer", "aiot-morning.timer", "aiot-weather.timer")
 CRITICAL_UNITS = frozenset({"aiot-collector"})
@@ -32,7 +31,6 @@ UPLINK_KEY = "uplink_last_ok"          # aiot.uplink ghi sau mỗi lần cloud n
 UPLINK_FRESH_S = 60
 HEARTBEAT_STALE_LOOPS = 3            # như bot: cũ hơn 3 vòng loop_s là controller không chạy
 TELEGRAM_TIMEOUT_S = 10
-LEGACY_CAMERA_PATTERN = r"pi_(camera|detection)_client\.py"
 
 # Cột của raw_readings -> cảm biến tương ứng (theo thứ tự in)
 SENSOR_COLUMNS = (
@@ -59,7 +57,7 @@ def check_env(env_path) -> Check:
     missing = [key for key in ENV_KEYS if not values.get(key)]
     if missing:
         return Check(".env", False, "thiếu hoặc rỗng: " + ", ".join(missing))
-    return Check(".env", True, "đủ 4 khoá")
+    return Check(".env", True, f"đủ {len(ENV_KEYS)} khoá")
 
 
 def systemctl_is_active(unit) -> str:
@@ -206,16 +204,6 @@ def check_telegram(token, client_factory=_telegram_client) -> Check:
     return Check(name, True, f"bot @{username}" if username else "token hợp lệ")
 
 
-def legacy_camera_running() -> bool:
-    """pi_camera_client.py hoặc pi_detection_client.py đang chạy (giữ /dev/video0)."""
-    try:
-        r = subprocess.run(["pgrep", "-f", LEGACY_CAMERA_PATTERN],
-                           capture_output=True, text=True, timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return r.returncode == 0 and bool(r.stdout.strip())
-
-
 def _capture(path, index):
     from aiot.camera import capture_subprocess
     return capture_subprocess(path, index=index)
@@ -248,11 +236,8 @@ def video_group_hint(user=None, getgroups=None, getgrnam=_getgrnam):
     return f"{user} chưa thuộc nhóm video: chạy lại scripts/pi_up.sh"
 
 
-def check_camera(capture=_capture, legacy_running=legacy_camera_running, index=0,
-                 tmp_dir=None, hint=video_group_hint) -> Check:
+def check_camera(capture=_capture, index=0, tmp_dir=None, hint=video_group_hint) -> Check:
     name = "camera"
-    if legacy_running():
-        return Check(name, None, "bỏ qua: pi_camera_client/pi_detection_client đang giữ camera")
     fd, path = tempfile.mkstemp(prefix="healthcheck_", suffix=".jpg", dir=tmp_dir)
     os.close(fd)
     os.remove(path)            # capture_jpeg tự tạo file; còn file nghĩa là đã chụp được
@@ -284,7 +269,7 @@ def check_clock(clock_trusted=_clock_trusted) -> Check:
 # ---------------- tổng hợp ----------------
 def run_checks(cfg, env_path=".env", now=None, runner=systemctl_is_active,
                client_factory=_telegram_client, capture=_capture,
-               legacy_running=legacy_camera_running, clock_trusted=_clock_trusted,
+               clock_trusted=_clock_trusted,
                skip_units=frozenset()) -> list[Check]:
     now = int(time.time()) if now is None else now
     skip = set(skip_units)
@@ -300,7 +285,7 @@ def run_checks(cfg, env_path=".env", now=None, runner=systemctl_is_active,
                                   skipped="aiot-controller" in skip))
     checks.append(check_uplink(cfg.db_path, now, cfg))
     checks.append(check_telegram(secrets.telegram_token, client_factory=client_factory))
-    checks.append(check_camera(capture, legacy_running, index=cfg.weather.camera_index))
+    checks.append(check_camera(capture, index=cfg.weather.camera_index))
     checks.append(check_clock(clock_trusted))
     return checks
 

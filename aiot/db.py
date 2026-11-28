@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS readings (          -- trung bình 5 phút, ts = đ�
 );
 CREATE TABLE IF NOT EXISTS forecasts (
   made_at INTEGER, horizon_h INTEGER, pm25_pred REAL,
-  model TEXT NOT NULL,                         -- 'lstm', 'persistence', ...
+  model TEXT NOT NULL,                         -- 'seasonal_naive' hoặc 'persistence'
   PRIMARY KEY (made_at, horizon_h)
 );
 CREATE TABLE IF NOT EXISTS events (            -- 'fan_on', 'fan_off', 'override', 'sensor_fault'...

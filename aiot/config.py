@@ -2,7 +2,7 @@
 Đọc cấu hình chung cho mọi dịch vụ của trạm.
 
 - Tham số thường nằm trong config.yaml (được commit).
-- Bí mật (token, API key, mật khẩu MQTT, danh sách chat) chỉ nằm trong .env
+- Bí mật (token, API key, danh sách chat) chỉ nằm trong .env
   hoặc biến môi trường; biến môi trường thật thắng giá trị trong .env.
 - Thiếu bí mật không làm lỗi: collector vẫn phải chạy khi chưa có token.
 """
@@ -15,14 +15,6 @@ from dataclasses import dataclass, field
 import yaml
 
 log = logging.getLogger("aiot.config")
-
-
-@dataclass(frozen=True)
-class MqttCfg:
-    host: str = "localhost"         # IP laptop chạy Mosquitto
-    port: int = 1883
-    user: str = "pi01"
-    enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -61,13 +53,6 @@ class GeminiCfg:
     temperature: float = 0.2
     max_calls_per_day: int = 3
     timeout_s: int = 20
-
-
-@dataclass(frozen=True)
-class ForecastCfg:
-    model_path: str = "/home/admin/BTL_IOT/models/pm25_lstm.tflite"
-    scaler_path: str = "/home/admin/BTL_IOT/models/scaler.json"
-    # Tuổi tối đa của dự báo chỉ đặt ở control.forecast_max_age_s
 
 
 @dataclass(frozen=True)
@@ -137,7 +122,6 @@ class Secrets:
     telegram_token: str | None = None
     gemini_api_key: str | None = None
     allowed_chat_ids: frozenset[int] = frozenset()
-    mqtt_password: str | None = None
     ingest_token: str | None = None
 
     def __repr__(self):
@@ -147,7 +131,6 @@ class Secrets:
         return (f"Secrets(telegram_token={state(self.telegram_token)}, "
                 f"gemini_api_key={state(self.gemini_api_key)}, "
                 f"allowed_chat_ids={len(self.allowed_chat_ids)} chat, "
-                f"mqtt_password={state(self.mqtt_password)}, "
                 f"ingest_token={state(self.ingest_token)})")
 
     __str__ = __repr__
@@ -158,11 +141,9 @@ class Config:
     db_path: str = "/home/admin/iot_data/aiot.db"
     csv_path: str = "/home/admin/iot_data/sensors.csv"
     device_id: str = "pi01"
-    mqtt: MqttCfg = field(default_factory=MqttCfg)
     control: ControlCfg = field(default_factory=ControlCfg)
     telegram: TelegramCfg = field(default_factory=TelegramCfg)
     gemini: GeminiCfg = field(default_factory=GeminiCfg)
-    forecast: ForecastCfg = field(default_factory=ForecastCfg)
     report: ReportCfg = field(default_factory=ReportCfg)
     weather: WeatherCfg = field(default_factory=WeatherCfg)
     buzzer: BuzzerCfg = field(default_factory=BuzzerCfg)
@@ -173,11 +154,9 @@ class Config:
 
 # Mục con trong config.yaml -> lớp dataclass tương ứng
 SECTIONS = {
-    "mqtt": MqttCfg,
     "control": ControlCfg,
     "telegram": TelegramCfg,
     "gemini": GeminiCfg,
-    "forecast": ForecastCfg,
     "report": ReportCfg,
     "weather": WeatherCfg,
     "buzzer": BuzzerCfg,
@@ -254,7 +233,6 @@ def load_secrets(env_path):
         telegram_token=get("TELEGRAM_TOKEN"),
         gemini_api_key=get("GEMINI_API_KEY"),
         allowed_chat_ids=parse_chat_ids(get("ALLOWED_CHAT_IDS")),
-        mqtt_password=get("MQTT_PASSWORD"),
         ingest_token=get("INGEST_TOKEN"),
     )
 
@@ -295,6 +273,12 @@ def load_config(path="config.yaml", env_path=".env"):
         raise ValueError("config.yaml phải là một bảng khoá: giá trị")
     if "secrets" in data:
         raise ValueError("Không đặt bí mật trong config.yaml; dùng file .env hoặc biến môi trường")
+
+    # Cho phép cập nhật Pi mà vẫn dùng config.yaml từ phiên bản cũ.
+    for section in ("mqtt", "forecast"):
+        if section in data:
+            del data[section]
+            log.warning("Mục %s đã được gỡ, có thể xoá khỏi config.yaml", section)
 
     unknown = sorted(set(data) - set(SECTIONS) - set(TOP_LEVEL_KEYS))
     if unknown:

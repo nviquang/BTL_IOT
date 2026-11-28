@@ -1,7 +1,7 @@
 """
 Đọc phần cứng thật trên Raspberry Pi cho collector.
 
-- DHT11: chân 11 (GPIO17), thử lại 3 lần cách 2,5 giây như pi_sensor_client.py.
+- DHT11: chân 11 (GPIO17), thử lại 3 lần cách 2,5 giây.
 - BH1750: I2C chân 3, 5, địa chỉ 0x23.
 - PMS7003: UART /dev/serial0, đọc qua aiot.pms7003.PmsReader.
 

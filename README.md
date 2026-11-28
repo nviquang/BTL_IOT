@@ -2,9 +2,10 @@
 
 Bài tập nhóm môn IoT, dựa trên Chương 12 *Hands-On Artificial Intelligence for IoT*.
 Raspberry Pi 4 đo không khí, lưu cục bộ, dự báo PM2.5, tự bật/tắt quạt lọc, báo qua Telegram
-(kèm lời khuyên Gemini và ảnh camera). Laptop dùng để xem dashboard và huấn luyện LSTM.
+(kèm lời khuyên Gemini và ảnh camera). Pi gửi dữ liệu trực tiếp lên Render qua HTTPS.
+Mở [web của trạm](https://aiot-tram.onrender.com/) để xem số liệu và điều khiển.
 
-- Các bước thủ công, demo quạt, huấn luyện LSTM, nghiệm thu, xử lý sự cố:
+- Các bước thủ công, demo quạt, huấn luyện bộ nhận diện nguồn bụi, nghiệm thu, xử lý sự cố:
   [docs/van_hanh_chi_tiet.md](docs/van_hanh_chi_tiet.md)
 - Cách nối dây: [so_do_noi_day_raspberry_pi.md](so_do_noi_day_raspberry_pi.md) ·
   quy tắc dự án: [CLAUDE.md](CLAUDE.md) · nghiệm thu: [docs/nghiem_thu.md](docs/nghiem_thu.md)
@@ -13,50 +14,26 @@ Raspberry Pi 4 đo không khí, lưu cục bộ, dự báo PM2.5, tự bật/t�
 
 ## Chạy nhanh
 
-Cần: Pi đã cài Raspberry Pi OS với user `admin`, cùng Wi-Fi với laptop, và laptop SSH được vào
-Pi bằng key (`ssh admin@10.157.117.41` vào thẳng, không hỏi mật khẩu). Mạch đã nối theo
-`so_do_noi_day_raspberry_pi.md`.
+Cần Raspberry Pi OS với user `admin` và mạch đã nối theo `so_do_noi_day_raspberry_pi.md`.
+Pi cần Internet để dùng web Render và Telegram.
 
 ### 1. Chuẩn bị `.env` (một lần)
 
-Chép `.env.example` thành `.env` ở thư mục repo trên laptop rồi điền. File này không commit;
-script tự chép lên Pi và đặt quyền `600`.
+Chép `.env.example` thành `.env` trong thư mục repo trên Pi rồi điền.
+Giữ file ngoài Git và đặt quyền `600` (`pi_up.sh` tự đặt).
 
 | Khoá               | Lấy ở đâu                                                              | Thiếu thì                              |
 | ------------------ | ---------------------------------------------------------------------- | -------------------------------------- |
 | `TELEGRAM_TOKEN`   | Telegram: nhắn `@BotFather` → `/newbot` → token dạng `123456789:AA...` | bot không chạy                         |
 | `ALLOWED_CHAT_IDS` | mã chat được phép dùng bot, cách nhau dấu phẩy (xem dưới)              | bot không chạy                         |
 | `GEMINI_API_KEY`   | Google AI Studio → API key                                             | báo cáo dùng lời khuyên mẫu            |
-| `MQTT_PASSWORD`    | mật khẩu user `pi01` của Mosquitto trên laptop                         | collector bỏ qua MQTT, dashboard trống |
+| `INGEST_TOKEN`     | cùng giá trị với biến môi trường `INGEST_TOKEN` trên Render           | Pi không đồng bộ với web              |
 
 **Lấy chat id:** gửi `/start` cho bot (cả nhóm dùng thì thêm bot vào nhóm và nhắn một tin), rồi
 mở trên máy của bạn `https://api.telegram.org/bot<TOKEN>/getUpdates` và đọc `message.chat.id`
 (chat nhóm có id âm). Không dán link có token vào đâu cả. Lộ token thì `/revoke` trong BotFather.
 
-### 2. Cách 1 — từ laptop (khuyến nghị)
-
-Mở PowerShell ở thư mục repo:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\up.ps1
-```
-
-Script làm lần lượt: bật Mosquitto (`%USERPROFILE%\mosq\mosquitto.conf`, cửa sổ thu nhỏ) nếu
-chưa chạy → tìm Pi (`10.157.117.41`, rồi `pi.local`) → đóng gói bản **đã commit** (`git archive
-HEAD`) và chép cùng `.env` lên `~/BTL_IOT` → đặt `mqtt.host` trên Pi thành IP laptop → chạy
-`pi_up.sh` trên Pi (hỏi mật khẩu sudo của `admin` một lần) → mở dashboard
-<http://localhost:8501>. Thay đổi chưa commit **không** được đưa lên Pi.
-
-| Tham số        | Việc                                                                                                                         |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `-PiHost <IP>` | dùng IP/tên Pi này thay vì tự dò                                                                                             |
-| `-NoDeploy`    | không chép code, chỉ cập nhật `mqtt.host` và chạy `pi_up.sh` với code đang có trên Pi                                        |
-| `-NoFan`       | không chạy bộ điều khiển quạt (`pi_up.sh --no-fan`)                                                                          |
-| `-WithYolo`    | cài thêm torch CPU + ultralytics trên Pi (`pi_up.sh --with-yolo`, rất lâu)                                                   |
-| `-Status`      | chỉ in bảng kiểm tra của Pi                                                                                                  |
-| `-Stop`        | dừng dashboard và Mosquitto (chỉ bản chạy bằng `mosq\mosquitto.conf`) trên laptop; thêm `-StopPi` để dừng cả dịch vụ trên Pi |
-
-### 3. Cách 2 — ngay trên Pi
+### 2. Khởi động trên Pi
 
 Khi code đã có ở `~/BTL_IOT` (ví dụ `git pull`) và `.env` đã chép lên:
 
@@ -73,9 +50,8 @@ Repo phải ở `/home/admin/BTL_IOT` (các unit systemd trỏ vào đó).
 
 | Cờ            | Việc                                                                                                                 |
 | ------------- | -------------------------------------------------------------------------------------------------------------------- |
-| (không cờ)    | cài phần còn thiếu, bật `aiot-collector`, `aiot-controller`, `aiot-bot` và 3 timer, in bảng kiểm tra                 |
+| (không cờ) | cài phần còn thiếu, bật collector, controller và 3 timer. Bật bot và uplink khi có đủ cấu hình |
 | `--no-fan`    | như trên nhưng dừng và tắt tự khởi động `aiot-controller` (chưa làm demo quạt)                                       |
-| `--with-yolo` | cài thêm torch CPU + ultralytics cho `pi_detection_client.py` (tuỳ chọn, rất lâu; lỗi không ảnh hưởng dịch vụ chính) |
 | `--force`     | cho chạy khi repo không ở `/home/admin/BTL_IOT`                                                                      |
 | `--stop`      | dừng mọi dịch vụ và timer, tắt tự khởi động `aiot-controller` (quạt tắt); dịch vụ khác vẫn tự chạy khi bật lại Pi    |
 | `--status`    | chỉ in bảng kiểm tra, không cần sudo                                                                                 |
@@ -85,6 +61,18 @@ Lần đầu bật quạt tự động nên làm demo với DB thử trước
 ([chi tiết 5.3](docs/van_hanh_chi_tiet.md#53-điều-khiển-quạt-aiot-controller)), nên có thể chạy
 `--no-fan` trước rồi chạy lại không cờ.
 
+### 3. Triển khai qua SSH từ Windows (tuỳ chọn)
+
+Nếu muốn chép bản đã commit và chạy script trên Pi từ PowerShell, cần Git, OpenSSH và SSH key của Pi.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\up.ps1 -PiHost <IP_PI>
+```
+
+Script chép code từ `git archive HEAD`, file `.env` và các mô hình hiện có tới `~/BTL_IOT`,
+rồi chạy `pi_up.sh` trên Pi. Các cờ `-NoDeploy`, `-NoFan`, `-Status` và `-StopPi` lần lượt
+dùng bản đã có trên Pi, bỏ qua controller, xem tình trạng hoặc dừng các dịch vụ Pi.
+
 ### 4. Lệnh bot Telegram
 
 Gõ `/` trong Telegram để thấy menu. Bot chỉ trả lời chat có trong `ALLOWED_CHAT_IDS`.
@@ -93,9 +81,7 @@ Gõ `/` trong Telegram để thấy menu. Bot chỉ trả lời chat có trong `
 | ----------------------------- | ---------------------------------------------------------------- |
 | `/now`                        | số liệu cảm biến mới nhất (PM, nhiệt độ, độ ẩm, ánh sáng)        |
 | `/status`                     | chế độ, quạt, ghi đè, lỗi cảm biến, tuổi dữ liệu, giờ yên lặng   |
-| `/forecast`                   | dự báo PM2.5 6 giờ tới kèm nhãn AQI                              |
 | `/report`                     | báo cáo 24 giờ qua (tính vào 3 lượt Gemini/ngày)                 |
-| `/photo`                      | chụp ảnh ban công ngay                                           |
 | `/fan on` / `/fan off`        | bật/tắt quạt thủ công trong 2 giờ                                |
 | `/mode auto` / `/mode manual` | quạt theo PM2.5 / giữ quạt như hiện tại trong 2 giờ              |
 | `/quiet 22 6`                 | giờ yên lặng 22h → 6h (chỉ cảnh báo khẩn cấp được gửi)           |
@@ -117,7 +103,7 @@ Cuối `pi_up.sh` (và `--status`, `up.ps1 -Status`) in bảng do `python -m aio
 | ✅       | đạt                                                                                                      |
 | ❌       | mục **quan trọng** chưa đạt: `aiot-collector` không chạy hoặc không có mẫu mới trong 60 giây; mã thoát 1 |
 | ⚠️      | cảnh báo, trạm vẫn đo được (ví dụ timer chưa bật, thiếu khoá `.env`, camera không chụp được)             |
-| ➖       | bỏ qua có chủ ý (`--no-fan`, thiếu token Telegram, client camera cũ đang giữ camera)                     |
+| ➖       | bỏ qua có chủ ý (`--no-fan`, thiếu token Telegram hoặc cấu hình web)                     |
 
 Các dòng: `.env` (chỉ in tên khoá thiếu, không in giá trị), trạng thái 7 unit systemd, tuổi
 mẫu mới nhất, cảm biến không có số, nhịp của
@@ -129,19 +115,16 @@ Có ❌ thì xem `journalctl -u aiot-collector -n 30` và
 
 ## Tổng quan
 
-```
-                         RASPBERRY PI (chạy liên tục, không cần Internet)
- DHT11, BH1750,  ──► aiot-collector (1 s + 10 s) ► SQLite ~/iot_data/aiot.db ◄── aiot-forecast (mỗi giờ :02)
- PMS7003               │                          │      ▲                  dự báo PM2.5 1–6 giờ
-                       ├─► sensors.csv            │      │
-                       └─► MQTT ──────────────────┼──────┼─────────► Laptop: Mosquitto + server_app.py
-                                                  ▼      │                 (dashboard, tuỳ chọn)
-                       aiot-controller (5 s) ─────┘      │
-                       AI nguồn bụi + luật ──► GPIO23 relay (quạt), GPIO5 (còi)
-                                                         │
-                       aiot-bot (Telegram) ◄─────────────┘ gửi tin chờ trong outbox, nhận lệnh
-                       aiot-morning (06:30) ──► Gemini (số liệu tổng hợp) ──► báo cáo sáng
-                       aiot-weather (5 phút) ──► camera USB ──► cảnh báo nắng / sắp mưa kèm ảnh
+```text
+DHT11, BH1750, PMS7003 → aiot-collector → SQLite trên Pi
+                              └───────→ sensors.csv trên Pi
+
+SQLite ↔ aiot-controller → GPIO23 (relay quạt), GPIO5 (còi)
+       ↔ aiot-forecast   → dự báo PM2.5 cho 6 giờ tới
+       ↔ aiot-uplink     ↔ HTTPS ↔ FastAPI trên Render ↔ Neon Postgres
+       ↔ aiot-bot        ↔ Telegram
+       ← aiot-morning    → Gemini để viết lời khuyên
+       ← aiot-weather    → camera USB để đính kèm ảnh cảnh báo
 ```
 
 - **Local-first:** đo, lưu, dự báo và điều khiển chạy trên Pi. Mất mạng vẫn đo, vẫn điều khiển;
@@ -151,12 +134,13 @@ Có ❌ thì xem `journalctl -u aiot-collector -n 30` và
 
 | Dịch vụ (systemd)     | Chạy             | Việc                                                               |
 | --------------------- | ---------------- | ------------------------------------------------------------------ |
-| `aiot-collector`      | liên tục         | mẫu 1 s → `fast_readings`; mỗi 10 s → SQLite + CSV + MQTT, gộp 5 phút |
+| `aiot-collector`      | liên tục         | mẫu 1 s → `fast_readings`; mỗi 10 s → SQLite + CSV, gộp 5 phút |
 | `aiot-controller`     | liên tục         | mỗi 5 s: AI nguồn bụi → quạt + còi, lệnh `/fan`, `/mode`             |
 | `aiot-bot`            | liên tục         | bot Telegram, gửi cảnh báo và báo cáo                              |
-| `aiot-forecast.timer` | mỗi giờ, phút 02 | dự báo PM2.5 6 giờ tới                                             |
+| `aiot-uplink` | mỗi 5 giây khi có cấu hình | gửi dữ liệu và nhận lệnh từ Render qua HTTPS |
+| `aiot-forecast.timer` | mỗi giờ, phút 02 | dự báo PM2.5 6 giờ tới bằng seasonal naive hoặc persistence                                             |
 | `aiot-morning.timer`  | 06:30 hằng ngày  | báo cáo sáng + lời khuyên Gemini                                   |
-| `aiot-weather.timer`  | mỗi 5 phút       | luật nắng/mưa, chụp ảnh khi cảnh báo                               |
+| `aiot-weather.timer`  | mỗi 20 giây       | luật nắng/mưa, chụp ảnh khi cảnh báo                               |
 
 Test trên laptop: `.venv\Scripts\python -m pytest`. **Tắt Pi và rút cáp nguồn trước khi đổi dây.**
 
@@ -187,9 +171,9 @@ Demo trên DB thử: `venv/bin/python scripts/inject_pm.py --db ~/iot_data/demo.
 
 ## Web trên cloud
 
-Trang web công khai: xem số liệu, nhãn nguồn bụi AI kèm xác suất, biểu đồ 6 giờ tô màu theo
-nhãn, dự báo 6 giờ, nhật ký; đăng nhập bằng mật khẩu nhóm để chuyển Tự động/Thủ công và bật/tắt
-quạt, còi. Kế hoạch và lý do chọn dịch vụ: `docs/ke_hoach_web.md`.
+Trang web công khai hiển thị số liệu, nhãn nguồn bụi AI kèm xác suất, biểu đồ 6 giờ vừa qua và nhật ký.
+Đăng nhập bằng mật khẩu nhóm để chuyển Tự động/Thủ công và bật/tắt quạt, còi.
+Kế hoạch và lý do chọn dịch vụ nằm trong `docs/ke_hoach_web.md`.
 
 ```
 Pi: aiot-uplink ──HTTPS, 5 s/lần──► Render: cloud/app.py (FastAPI) ◄── trình duyệt
@@ -201,7 +185,7 @@ Pi: aiot-uplink ──HTTPS, 5 s/lần──► Render: cloud/app.py (FastAPI) �
   của lệnh Telegram (`aiot/commands.py` → `pending_override`/`pending_buzzer` → controller).
 - Lệnh web quá 60 giây chưa được Pi nhận thì hết hạn, không áp dụng muộn. Mỗi lệnh chỉ áp
   dụng một lần. Còi bật thủ công tối đa `buzzer.manual_max_s` (60 s).
-- Cloud chỉ nhận số liệu tổng hợp (TB 1 phút), không nhận ảnh, chat id Telegram hay IP.
+- Cloud nhận mẫu mới nhất, lịch sử trung bình 1 phút, trạng thái, dự báo và nhật ký đã lọc thông tin riêng tư. Ảnh được gửi qua Telegram.
 - Mất Internet: trạm vẫn đo và điều khiển như cũ; web hiện "Pi mất kết nối" và số liệu cuối.
 
 ### Chạy thử trên laptop (không cần Pi, Render, Neon)
@@ -231,7 +215,7 @@ uplink + controller với quạt/còi giả (in ra màn hình), nên bấm nút 
    sinh. Đợi build xong, mở `https://<tên>.onrender.com/healthz` thấy `{"ok":true}`.
 4. **Pi**: thêm `INGEST_TOKEN=<cùng giá trị>` vào `.env`; trong `config.yaml` đặt
    `cloud.enabled: true` và `cloud.url: https://<tên>.onrender.com`; chạy
-   `powershell -ExecutionPolicy Bypass -File scripts\up.ps1`. `pi_up.sh` tự bật `aiot-uplink`,
+   `bash ~/BTL_IOT/scripts/pi_up.sh` trên Pi. Script tự bật `aiot-uplink`,
    bảng kiểm tra có dòng "web cloud".
 5. **Kiểm tra**: mở URL bằng 4G trên điện thoại; đăng nhập, bấm Thủ công → Bật quạt, Kêu còi;
    mạch phản hồi trong ≤ 10 giây (cần người đứng cạnh mạch).

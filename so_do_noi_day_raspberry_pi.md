@@ -140,9 +140,8 @@ Kết quả lần kiểm tra cuối bằng `~/BTL_IOT/test_all.py` ngày 04/11/2
 
 Các giới hạn hiện tại:
 
-- `pi_sensor_client.py` (client cũ) chưa đọc PMS7003, chưa điều khiển quạt. CSV của nó chỉ gồm nhiệt độ, độ ẩm và ánh sáng.
-- Dịch vụ `aiot/collector.py` (unit `deploy/aiot-collector.service`) đọc cả DHT11, BH1750 và PMS7003, ghi SQLite + `sensors.csv` + MQTT. Đã chép lên Pi và chạy thử 75 giây ở foreground ngày 07/11/2026: đọc đủ cảm biến, ghi CSV và SQLite, dừng sạch. **Chưa cài dịch vụ systemd** (README mục 2.4a). Collector và `pi_sensor_client.py` không được chạy cùng lúc vì dùng chung cảm biến.
+- `aiot-collector` đọc DHT11, BH1750 và PMS7003 rồi ghi SQLite và `sensors.csv` trên Pi. Script `scripts/pi_up.sh` cài và bật dịch vụ.
 - Bộ điều khiển quạt `aiot/controller.py` (relay GPIO23) có code và unit test, **chưa chạy trên mạch**. Lần đầu phải chạy demo với DB thử khi có người đứng cạnh quạt (README mục 2.4c).
-- Bot Telegram, báo cáo sáng và lời khuyên Gemini chưa thử với bot và API thật; mô hình LSTM mới huấn luyện trên dữ liệu công khai, chưa chép lên Pi.
+- Bot Telegram, báo cáo sáng và lời khuyên Gemini chưa thử với bot và API thật.
 - `test.py` trên Pi vẫn yêu cầu ADS1115 nên sẽ báo lỗi; hãy dùng `test_all.py`.
 - Phần quạt và còi của `test_all.py` cần người đứng cạnh mạch trả lời trong terminal (`ssh -t`).

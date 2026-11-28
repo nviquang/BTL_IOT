@@ -24,7 +24,7 @@ Quay về luật ngưỡng PM2.5 cũ khi:
 | File | Việc |
 | ---- | ---- |
 | `aiot/pms7003.py` | thêm giải mã 6 kênh đếm hạt (byte 16–27) |
-| `aiot/sensors.py` (`SensorHub`), `aiot/collector.py` | mỗi cảm biến chạy một luồng; ghi `fast_readings` 1 giây, vẫn ghi `raw_readings`/CSV/MQTT 10 giây |
+| `aiot/sensors.py` (`SensorHub`), `aiot/collector.py` | mỗi cảm biến chạy một luồng, ghi `fast_readings` mỗi giây và ghi `raw_readings` cùng CSV mỗi 10 giây |
 | `aiot/source_features.py` | 22 đặc trưng: mức, động học, tỉ lệ hạt, độ ẩm/nhiệt/ánh sáng; dùng chung cho Pi và laptop |
 | `aiot/source_model.py` | đọc rừng cây dạng JSON bằng numpy (không cần scikit-learn trên Pi), làm mượt kết quả, bảng hành động |
 | `aiot/control.py`, `aiot/alarm.py`, `aiot/controller.py` | quạt và còi theo nhãn; sự kiện `source_change` và tin Telegram |

@@ -6,7 +6,7 @@
 
 **Architecture:** Một package Python `aiot/` chạy thành các dịch vụ systemd độc lập, chỉ giao tiếp qua một file SQLite (WAL). `collector` là tiến trình duy nhất đọc cảm biến, `controller` là tiến trình duy nhất giữ GPIO23, `bot` chỉ ghi yêu cầu vào DB. Logic quyết định là hàm thuần, test được trên laptop không cần phần cứng.
 
-**Tech Stack:** Python 3 (laptop 3.11, Pi 3.13, nên không dùng cú pháp chỉ có từ 3.12), SQLite, pyserial, lgpio, adafruit-circuitpython-dht/bh1750, requests, google-genai, pandas/statsmodels/scikit-learn, Keras (laptop/Colab), LiteRT (Pi), pytest.
+**Tech Stack:** Python 3 (laptop 3.11, Pi 3.13, nên không dùng cú pháp chỉ có từ 3.12), SQLite, pyserial, lgpio, adafruit-circuitpython-dht/bh1750, requests, google-genai, pandas và scikit-learn (máy phát triển), pytest.
 
 **Spec:** `CLAUDE.md`, `so_do_noi_day_raspberry_pi.md`
 
@@ -14,10 +14,9 @@
 
 | Phát hiện | Hệ quả cho plan |
 | --------- | --------------- |
-| Laptop chỉ có 53 dòng CSV, dòng cuối ngày 23/10; không có dữ liệu PM trong client chính | Thu dữ liệu là việc gấp nhất, vì LSTM và mọi test ≥ 7 ngày đều phải chờ nó |
+| Laptop chỉ có 53 dòng CSV, dòng cuối ngày 23/10; không có dữ liệu PM trong client chính | Thu dữ liệu là việc gấp nhất, để có số liệu cho nghiệm thu |
 | `pi_sensor_client.py` trong repo trỏ `/home/pi` và IP broker cũ; bản trên Pi có thay đổi chưa commit | Task 1 phải lấy bản trên Pi về trước |
 | Mật khẩu MQTT nằm cứng trong 4 file `.py` đã commit | Task 1 chuyển sang `.env`, đổi mật khẩu broker |
-| `normalize()` trong notebook fit trên toàn chuỗi | Không tái dùng hàm này; xem Task 11 |
 | Không SSH được vào Pi lúc lập plan | Mọi nhận định về Pi lấy từ `CLAUDE.md`, chưa kiểm chứng lại |
 
 ## Bổ sung so với thiết kế trong CLAUDE.md
@@ -26,7 +25,7 @@ Cần sửa `CLAUDE.md` cho khớp khi làm xong Task 3 và Task 5:
 
 1. **Thêm bảng `raw_readings`.** `readings` chỉ có trung bình 5 phút, không đủ để tính "TB 10 phút liên tục ≥ 5 phút" hay "mất dữ liệu quá 2 phút".
 2. **Thêm bảng `state` và `outbox`.** Dùng để khôi phục sau khởi động lại và gửi bù tin khi có mạng lại.
-3. **Thêm cột `forecasts.model`.** Phân biệt dự báo LSTM với dự báo đối chứng khi đánh giá.
+3. **Thêm cột `forecasts.model`.** Ghi lại phương pháp dự báo dùng cho từng lần chạy.
 4. **Sửa tên mức "Nguy hại ≥ 150".** Tên này trùng với nhóm AQI "Nguy hại ≥ 225,5" nhưng khác ngưỡng. Plan gọi mức 150 là "khẩn cấp" (`danger_pm25`).
 5. **Thêm luật chống dao động cho chế độ chủ động.** Nếu đo đã thấp mà dự báo vẫn cao, thiết kế gốc sẽ thoát rồi vào lại liên tục. Plan chặn thoát khi còn dự báo mới > 100.
 6. **Mức khẩn cấp dùng trung vị 1 phút, cần ít nhất 3 mẫu.** "Vào ngay" theo từng mẫu thì một mẫu nhiễu cũng bật quạt, còn trung bình thì không loại được nhiễu: một mẫu 900 và năm mẫu 20 cho trung bình 167.
@@ -60,7 +59,6 @@ Các giá trị này nằm trong `config.yaml`, đổi được mà không sửa
 - Bí mật chỉ nằm trong `.env`: `TELEGRAM_TOKEN`, `GEMINI_API_KEY`, `ALLOWED_CHAT_IDS`, thêm `MQTT_PASSWORD`. Không in ra log, không commit.
 - Tắt Pi và rút cáp nguồn trước khi đổi dây. Khi đổi dây, cập nhật `so_do_noi_day_raspberry_pi.md` và `CLAUDE.md`.
 - Bước cần người đứng cạnh mạch phải chạy với `ssh -t`.
-- Chia dữ liệu theo thời gian, scaler chỉ fit trên train. LSTM không hơn đối chứng thì báo cáo trung thực.
 - Thử khói chỉ dùng lượng nhỏ, nơi thoáng, có người trông. Báo cáo ghi rõ quạt mini là proof of concept.
 - Làm trên nhánh `feat/aiot-core` tách từ `main` sau khi `docs/wiring-diagram` đã merge.
 
@@ -83,10 +81,10 @@ Các giá trị này nằm trong `config.yaml`, đổi được mà không sửa
 | 2. Điều khiển | 5–6 | Quạt tự bật/tắt theo PM2.5, chịu được lỗi | Có, cần người cạnh mạch |
 | 3. Telegram | 7–8 | Cảnh báo và lệnh từ xa | Có |
 | 4. Dự báo đối chứng, báo cáo | 9–10 | Báo cáo sáng có dự báo và lời khuyên | Có |
-| 5. AI (Chương 12) | 11–12 | LSTM được đánh giá trung thực, chạy trên Pi | Chủ yếu laptop |
+| 5. Xuất dữ liệu theo giờ | 11 | CSV số đo phục vụ đối chiếu dự báo | Có |
 | 6. Nghiệm thu | 13 | Số liệu cho báo cáo, tài liệu cập nhật | Có |
 
-Giai đoạn 2–4 có thể làm song song với việc Pi đang thu dữ liệu. Task 11 bắt đầu được ngay bằng dữ liệu công khai. Task 12 cần đủ dữ liệu thật, nên hãy tính ngược từ mốc nộp bài để biết còn bao nhiêu ngày thu.
+Giai đoạn 2–4 có thể làm song song với việc Pi đang thu dữ liệu. Khi có số đo thực, Task 11 xuất dữ liệu theo giờ để đối chiếu dự báo.
 
 ---
 
@@ -105,25 +103,20 @@ Giai đoạn 2–4 có thể làm song song với việc Pi đang thu dữ liệ
 
 Lấy `git diff pi_sensor_client.py` và `test_all.py` về. Áp thay đổi cần giữ vào repo. Đọc `test_all.py` để ghi lại cách nó đọc khung PMS7003 (cho Task 2), sau đó **kiểm tra không có bí mật** rồi mới thêm vào repo.
 
-- [ ] **Step 2: Kiểm tra LiteRT trên Python 3.13 của Pi**
-
-Trong venv tạm: `pip install ai-edge-litert`, rồi import `Interpreter`.
-Expected: import được. Nếu không, ghi lại vào đầu Task 12 và chọn ONNX Runtime làm phương án xuất model. Đây là rủi ro lớn nhất của phần AI nên cần biết sớm.
-
-- [ ] **Step 3: Viết test thất bại trong `tests/test_config.py`**
+- [ ] **Step 2: Viết test thất bại trong `tests/test_config.py`**
 
 `test_defaults_match_spec` (`enter_pm25 == 55.0`, `stale_s == 120`, `override_ttl_s == 7200`), `test_demo_shortens_waits` (`demo: true` thì `enter_hold_s`, `exit_hold_s`, `min_state_s`, `enter_mean_s`, `exit_mean_s` đều bằng 20, ngưỡng PM giữ nguyên; nếu không rút ngắn cửa sổ trung bình thì demo vẫn phải chờ vài phút), `test_secrets_come_from_env_not_yaml`, `test_repr_hides_secrets` (`"abc123" not in repr(cfg)` khi token là `abc123`), `test_allowed_chat_ids_parsed` (`"1, 2"` thành `{1, 2}`), `test_missing_telegram_token_does_not_raise` (collector phải chạy được khi chưa có token).
 
-- [ ] **Step 4: Chạy test để thấy thất bại**
+- [ ] **Step 3: Chạy test để thấy thất bại**
 
 Run: `pytest tests/test_config.py -v`
 Expected: FAIL với `ModuleNotFoundError: aiot`
 
-- [ ] **Step 5: Implement `aiot/config.py`, tạo `config.yaml`, `.env.example`**
+- [ ] **Step 4: Implement `aiot/config.py`, tạo `config.yaml`, `.env.example`**
 
 Dùng PyYAML; tự đọc `.env`, không thêm thư viện. `.gitignore` thêm `.env`, `*.db`, `*.db-wal`, `*.db-shm`. Thêm `pytest` vào `requirements-dev.txt`; thêm `pyserial`, `lgpio`, `PyYAML`, `requests`, `google-genai` vào `requirements-pi.txt`.
 
-- [ ] **Step 6: Đưa mật khẩu MQTT và IP broker ra khỏi 4 file `.py`**
+- [ ] **Step 5: Đưa mật khẩu MQTT và IP broker ra khỏi 4 file `.py`**
 
 Đọc từ `MQTT_PASSWORD` và `config.yaml`. Đổi mật khẩu broker vì mật khẩu cũ đã nằm trong lịch sử git. Sửa `CSV_DIR` thành `/home/admin/iot_data`.
 
@@ -489,7 +482,7 @@ git commit -m "feat: add Telegram bot with allowlist and outbox delivery"
 
 **Interfaces:**
 - Consumes: bảng `readings`, `classify`
-- Produces: `hourly_series(conn, end_ts, hours=48) -> pandas.Series`, `prepare_input(series, hours=24, max_gap_h=2, min_valid=20) -> numpy.ndarray | None`, `persistence(series) -> list[float]`, `seasonal_naive(series) -> list[float]`, `run_forecast(conn, now, predictor=None) -> tuple[str, list[float]]`, `latest_forecast(conn, now, max_age_s) -> tuple[float, int] | None` (trả trung bình 3 giờ đầu và `made_at`)
+- `run_forecast(conn, now)` tổng hợp số đo theo giờ, chọn `seasonal_naive` hoặc `persistence` và ghi kết quả vào SQLite. `latest_forecast(conn, now, max_age_s)` trả trung bình của 3 giờ đầu và thời điểm lập dự báo khi còn hạn.
 
 - [ ] **Step 1: Viết test thất bại**
 
@@ -499,8 +492,6 @@ git commit -m "feat: add Telegram bot with allowlist and outbox delivery"
 - `test_small_gap_interpolated_large_gap_returns_none`: khoảng trống 2 giờ được nội suy; 3 giờ thì trả `None`.
 - `test_cold_start_uses_persistence`: chưa đủ 24 giờ thì `model == "persistence"`.
 - `test_no_forecast_from_old_data`: không có dữ liệu, hoặc dữ liệu mới nhất cũ hơn 3 giờ, thì không ghi dự báo và không raise.
-- `test_predictor_failure_falls_back`: `predictor` raise thì dùng đối chứng.
-- `test_negative_predictions_clipped_to_zero`
 - `test_rerun_same_hour_overwrites`: không vi phạm khoá chính.
 - `test_latest_forecast_mean_of_first_three_horizons`, `test_stale_forecast_returns_none`
 
@@ -577,111 +568,10 @@ git add aiot/advice.py aiot/report.py aiot/bot.py deploy tests config.yaml
 git commit -m "feat: add Gemini advice with fallback and morning report"
 ```
 
-### Task 11: Chuẩn bị dữ liệu và phân tích theo Chương 12
+### Task 11: Xuất dữ liệu theo giờ
 
-**Files:**
-- Create: `training/data.py`, `training/fetch_public.py`, `training/export_hourly.py`, `training/01_phan_tich_chuoi.ipynb`, `training/requirements.txt`, `tests/test_training_data.py`
-
-**Interfaces:**
-- Produces: `chrono_split(df, train=0.7, val=0.15) -> tuple[df, df, df]`, `fit_scaler(train_df, columns) -> MinMaxScaler`, `add_time_features(df)` (sin/cos giờ), `make_windows(df, target="pm25", n_in=24, n_out=6) -> tuple[X, y, target_times]`, `difference(s, lag) -> Series`, `invert_difference(pred, history, lag) -> ndarray`
-- Produces: CLI `python training/export_hourly.py --db aiot.db --out hourly.csv` (chỉ dùng dòng `valid=1`)
-
-- [ ] **Step 1: Viết test thất bại**
-
-- `test_split_is_chronological_without_overlap`: `train.index.max() < val.index.min()`.
-- `test_scaler_fit_on_train_only`: `scaler.data_max_` bằng max của train dù val có đỉnh lớn hơn.
-- `test_window_shapes`: 100 giờ, 3 đặc trưng cho `X.shape == (71, 24, 3)`, `y.shape == (71, 6)`.
-- `test_windows_skip_gaps`: thiếu 1 giờ thì mọi cửa sổ chạm giờ đó bị bỏ, không có NaN.
-- `test_target_never_inside_input`: giờ đích đầu tiên nằm sau giờ đầu vào cuối cùng.
-- `test_difference_roundtrip`: cả lag 1 và lag 24.
-- `test_export_excludes_invalid_rows`
-
-- [ ] **Step 2: Chạy test**
-
-Run: `pytest tests/test_training_data.py -v`
-Expected: FAIL
-
-- [ ] **Step 3: Implement `training/data.py`, `training/export_hourly.py`**
-
-Viết hàm mới, không dùng lại `normalize()` của notebook Chương 12 vì hàm đó fit trên toàn chuỗi.
-
-- [ ] **Step 4: Chạy test**
-
-Run: `pytest tests/test_training_data.py -v`
-Expected: PASS
-
-- [ ] **Step 5: Implement `training/fetch_public.py`**
-
-Lấy PM2.5, gió, mưa theo giờ từ Open-Meteo và dữ liệu công khai của Hà Nội. Lưu rõ nguồn và ngày tải; ghi trong báo cáo đây là dữ liệu dùng để huấn luyện sơ bộ.
-
-- [ ] **Step 6: Lập notebook phân tích, chạy lại từ đầu không lỗi**
-
-Theo đúng thứ tự: chuỗi giờ và trung bình trượt 24 giờ → `diff()` → ACF, ghi nhận có đỉnh lag 24 hay không → sai phân lag 24 → ADF trước và sau. Ghi kết quả thực tế, kể cả khi không thấy đỉnh như kỳ vọng.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add training tests/test_training_data.py
-git commit -m "feat: add time-series preparation and Chapter 12 analysis"
-```
-
-### Task 12: Huấn luyện, đánh giá và đưa LSTM lên Pi
-
-**Files:**
-- Create: `training/train_lstm.py`, `training/evaluate.py`, `training/02_danh_gia.ipynb`, `tests/test_evaluate.py`, `tests/test_tflite_predictor.py`
-- Modify: `aiot/forecast.py`
-
-**Interfaces:**
-- Consumes: mọi hàm trong `training/data.py`; `run_forecast(..., predictor=...)`
-- Produces: `evaluate(y_true, y_pred) -> dict` gồm `mae[h]`, `rmse[h]`, `aqi_accuracy[h]`, `exceedance_recall[h]`; file `pm25_lstm.tflite`, `scaler.json`
-- Produces trong `forecast.py`: `load_predictor(model_path, scaler_path) -> Callable | None`
-
-- [ ] **Step 1: Viết test thất bại**
-
-- `test_metrics_on_known_values`: tính tay với mảng nhỏ, theo từng horizon.
-- `test_exceedance_recall_when_no_events`: trả `None`, không chia cho 0.
-- `test_aqi_accuracy_uses_shared_classifier`: dùng `aiot.aqi.classify`.
-- `test_load_predictor_missing_file_returns_none`, `test_load_predictor_corrupt_file_returns_none`
-- `test_predictor_shape_mismatch_falls_back`: `scaler.json` không khớp đầu vào thì `run_forecast` dùng đối chứng.
-- `test_scaler_json_roundtrip`: kết quả giống `MinMaxScaler` gốc tới `1e-6`.
-
-- [ ] **Step 2: Chạy test**
-
-Run: `pytest tests/test_evaluate.py tests/test_tflite_predictor.py -v`
-Expected: FAIL
-
-- [ ] **Step 3: Implement `training/evaluate.py` và `load_predictor`**
-
-Chỉ phụ thuộc NumPy và LiteRT trên Pi, không phụ thuộc TensorFlow hay scikit-learn.
-
-- [ ] **Step 4: Chạy test**
-
-Run: `pytest tests/test_evaluate.py tests/test_tflite_predictor.py -v`
-Expected: PASS
-
-- [ ] **Step 5: Implement `training/train_lstm.py`**
-
-LSTM 1–2 lớp, 32–64 đơn vị, đầu ra 6 giá trị, early stopping trên tập validation. So sánh hai dạng đích: giá trị gốc và sai phân lag 24 (có đảo ngược); chọn theo MAE trên validation, không theo test. Đầu vào: PM2.5, nhiệt độ, độ ẩm, sin/cos giờ. Cố định batch size khi xuất. Sau khi xuất, kiểm tra Keras và `.tflite` cho kết quả lệch dưới `1e-3` trên 20 cửa sổ.
-
-- [ ] **Step 6: Đánh giá trên tập test đúng một lần, ghi vào `training/02_danh_gia.ipynb`**
-
-So với persistence, seasonal naive, SARIMA hoặc hồi quy trên đặc trưng trễ, và Open-Meteo Air Quality. Đánh giá MAE, RMSE theo từng horizon, độ chính xác nhóm AQI, độ nhạy với sự kiện vượt ngưỡng. Báo cáo riêng kết quả trên dữ liệu công khai và dữ liệu Pi.
-
-Tiêu chí đưa LSTM lên Pi: vượt persistence ở horizon ≥ 2 giờ. Nếu không đạt, giữ đối chứng cho sản phẩm và báo cáo trung thực.
-
-- [ ] **Step 7: Nếu đạt, chép model lên Pi và kiểm tra**
-
-Run trên Pi: chạy `aiot-forecast.service` một lần, rồi `select model, count(*) from forecasts group by model`.
-Expected: có `model = 'lstm'`, thời gian suy luận được ghi lại cho báo cáo. Xoá file model thì lần sau rơi về đối chứng.
-
-- [ ] **Step 8: Commit**
-
-Model chỉ commit khi nhỏ và được nhóm đồng ý.
-
-```bash
-git add training aiot/forecast.py tests
-git commit -m "feat: add LSTM training, evaluation and on-device inference"
-```
+- Công cụ `training/export_hourly.py` đọc các cửa sổ 5 phút hợp lệ trong SQLite và xuất số đo theo giờ.
+- Dùng `python -m training.export_hourly --db aiot.db --out hourly.csv` để tạo CSV đối chiếu dự báo.
 
 ### Task 13: Nghiệm thu và tài liệu
 
@@ -718,7 +608,7 @@ Expected: PASS
 | ---- | -------- | -------- |
 | Cảm biến | So với trạm công khai ≥ 7 ngày | Tương quan cao sau hiệu chỉnh tuyến tính; ghi kèm độ ẩm |
 | Ổn định | Chạy liên tục ≥ 7 ngày | Hợp lệ ≥ 95%, không treo |
-| Dự báo | Từ Task 12 | LSTM vượt persistence ở horizon ≥ 2 giờ |
+| Dự báo | Mỗi giờ | Tạo đủ 6 mốc bằng seasonal naive hoặc persistence khi có dữ liệu hợp lệ |
 | Điều khiển | Hộp khói, 10 lần vượt ngưỡng, có người trông | Đúng thời gian cấu hình, không nhảy trạng thái |
 | Hiệu quả lọc | So đường PM2.5 khi quạt bật và tắt | Có khác biệt đo được |
 | Telegram | Báo cáo sáng 7 ngày, có một lần tắt mạng | Đúng giờ ≥ 6/7, có gửi bù |

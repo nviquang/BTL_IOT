@@ -13,7 +13,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 
 EXPECTED_DIR="/home/admin/BTL_IOT"
-ENV_KEYS=(TELEGRAM_TOKEN GEMINI_API_KEY ALLOWED_CHAT_IDS MQTT_PASSWORD)
+ENV_KEYS=(TELEGRAM_TOKEN GEMINI_API_KEY ALLOWED_CHAT_IDS INGEST_TOKEN)
 APT_PACKAGES=(i2c-tools python3-venv sqlite3)
 BUILD_PACKAGES=(build-essential python3-dev swig liblgpio-dev)
 GROUPS_NEEDED=(gpio i2c dialout video)
@@ -318,11 +318,11 @@ else
   fi
   for mod in lgpio sysv_ipc; do
     if ! py_imports "$mod"; then
-      warn "import $mod vẫn lỗi (docs/van_hanh_chi_tiet.md, Phụ lục C)"
+      warn "import $mod vẫn lỗi (docs/van_hanh_chi_tiet.md, Phụ lục B)"
       pip_ok=0
     fi
   done
-  py_imports cv2 || warn "import cv2 lỗi: /photo và ảnh cảnh báo sẽ không chụp được"
+  py_imports cv2 || warn "import cv2 lỗi: không thể chụp ảnh cảnh báo"
   if (( pip_ok )); then
     printf '%s\n' "$req_hash" > "$REQ_STAMP"
     ok "đã cài thư viện"
@@ -334,19 +334,7 @@ fi
 mkdir -p "$DATA_DIR/photos"
 ok "thư mục dữ liệu $DATA_DIR"
 
-# ---------------- 4. client cũ ----------------
-section "Client cũ"
-if pgrep -f 'pi_sensor_client\.py' >/dev/null 2>&1; then
-  sudo pkill -f 'pi_sensor_client\.py' || true
-  ok "đã dừng pi_sensor_client.py (dùng chung cảm biến với aiot-collector)"
-else
-  ok "pi_sensor_client.py không chạy"
-fi
-if pgrep -f 'pi_(camera|detection)_client\.py' >/dev/null 2>&1; then
-  warn "pi_camera_client.py/pi_detection_client.py đang chạy và giữ camera: /photo và ảnh cảnh báo sẽ không chụp được"
-fi
-
-# ---------------- 5. unit systemd ----------------
+# ---------------- 4. unit systemd ----------------
 section "Dịch vụ systemd"
 units_changed=0
 for src in deploy/aiot-*.service deploy/aiot-*.timer; do
@@ -409,7 +397,7 @@ fi
 printf '%s\n' "$new_code_hash" > "$CODE_STAMP"
 ok "đang chạy: ${wanted[*]} ${TIMERS[*]}"
 
-# ---------------- 6. bảng kiểm tra ----------------
+# ---------------- 5. bảng kiểm tra ----------------
 section "Chờ ${WAIT_S} giây cho collector đọc mẫu đầu tiên"
 if [[ -t 1 ]]; then
   for (( s = WAIT_S; s > 0; s-- )); do

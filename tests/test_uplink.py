@@ -6,7 +6,7 @@ import pytest
 
 from aiot import uplink
 from aiot.config import BuzzerCfg, CloudCfg, Config, Secrets
-from aiot.db import RawSample, connect, get_state, init_schema, insert_raw, log_event
+from aiot.db import RawSample, connect, get_state, init_schema, insert_raw, log_event, set_state
 
 NOW = 1_800_000_000
 CFG = dataclasses.replace(Config(), cloud=CloudCfg(enabled=True, url="https://x.example"),
@@ -84,6 +84,26 @@ def test_network_error_keeps_cursor_and_resends(conn):
     assert get_state(conn, uplink.CURSOR_KEY) is None
     assert up.once(NOW) is True
     assert len(s.calls[2]["json"]["history"]) == 2
+
+
+def test_replaces_retired_forecast_on_cloud_in_same_hour(conn):
+    set_state(conn, uplink.CURSOR_KEY, json.dumps({"forecast_at": NOW}))
+    conn.executemany("INSERT INTO forecasts VALUES (?, ?, ?, ?)",
+                     [(NOW, h, 20.0, "retired_method") for h in range(1, 7)])
+    conn.commit()
+    session = Session()
+    up = uplink.Uplink(conn, CFG, session=session)
+    assert up.once(NOW) is True
+    assert session.calls[-1]["json"]["forecast"] is None
+
+    conn.execute("UPDATE forecasts SET model = 'persistence' WHERE made_at = ?", (NOW,))
+    conn.commit()
+    assert up.once(NOW + 5) is True
+    assert session.calls[-1]["json"]["forecast"] == {
+        "made_at": NOW, "model": "persistence", "values": [20.0] * 6,
+    }
+    assert up.once(NOW + 10) is True
+    assert session.calls[-1]["json"]["forecast"] is None
 
 
 def test_bad_json_response_is_failure(conn):

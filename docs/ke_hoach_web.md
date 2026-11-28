@@ -136,7 +136,7 @@ Pi: aiot-uplink ─── POST /api/ingest (token) ──►  Render: FastAPI �
 1. Tạo project Neon, lấy `DATABASE_URL`.
 2. Tạo Web Service trên Render từ repo GitHub. Root là `cloud/`. Đặt biến môi trường `DATABASE_URL`, `INGEST_TOKEN`, `WEB_PASSWORD_HASH`, `SESSION_SECRET` trong dashboard Render, không ghi vào repo.
 3. Cloud tự tạo bảng khi khởi động. Kiểm tra `GET /api/status` trả về `pi_online: false`.
-4. Đặt `cloud.url` và `INGEST_TOKEN` trên Pi, chạy `scripts/up.ps1`. Kiểm tra trang hiện số liệu thật.
+4. Đặt `cloud.url` và `INGEST_TOKEN` trên Pi rồi chạy `bash ~/BTL_IOT/scripts/pi_up.sh`. Kiểm tra trang hiện số liệu thật.
 5. Mở trang bằng 4G trên điện thoại. Đăng nhập, bấm quạt và còi; mạch phải phản hồi trong ≤ 10 s (5 s uplink + 5 s controller). Cần người đứng cạnh mạch.
 
 Cần người trong nhóm làm (Claude không tạo tài khoản hay nhập mật khẩu): tạo tài khoản Render và Neon, nhập biến môi trường bí mật, nối repo GitHub với Render.

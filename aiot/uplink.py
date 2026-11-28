@@ -31,6 +31,7 @@ from aiot import commands
 from aiot.aqi import classify
 from aiot.control import fan_on, override_active
 from aiot.db import connect, get_state, init_schema, set_state
+from aiot.forecast import latest_rows
 
 log = logging.getLogger("aiot.uplink")
 
@@ -154,15 +155,17 @@ def build_history(conn, since_ts, now, step_s):
     return out, nxt
 
 
-def build_forecast(conn, after_made_at):
-    row = conn.execute("SELECT max(made_at) FROM forecasts").fetchone()
-    made_at = row[0] if row else None
-    if made_at is None or (after_made_at is not None and made_at <= after_made_at):
+def build_forecast(conn, now, max_age_s, cursor):
+    forecast = latest_rows(conn, now, max_age_s)
+    if forecast is None:
         return None
-    rows = conn.execute("SELECT horizon_h, pm25_pred, model FROM forecasts WHERE made_at = ? "
-                        "ORDER BY horizon_h", (made_at,)).fetchall()
-    return {"made_at": int(made_at), "model": rows[0][2] if rows else None,
-            "values": [r[1] for r in rows]}
+    made_at, model, rows = forecast
+    sent_at = cursor.get("forecast_at")
+    # Gửi lại khi bản dự báo đã gửi cùng giờ được thay bởi một phương pháp khác.
+    if sent_at is not None and (made_at < sent_at or
+                                (made_at == sent_at and cursor.get("forecast_model") == model)):
+        return None
+    return {"made_at": made_at, "model": model, "values": [v for _, v in rows]}
 
 
 def sanitize(detail):
@@ -186,11 +189,12 @@ def build_payload(conn, cfg, now, acks):
     if not isinstance(since, int):
         since = int(now) - FIRST_HISTORY_S
     history, next_ts = build_history(conn, since, now, cfg.cloud.history_step_s)
-    forecast = build_forecast(conn, cur.get("forecast_at"))
+    forecast = build_forecast(conn, now, cfg.control.forecast_max_age_s, cur)
     events = build_events(conn, cur.get("event_rowid"))
     new_cur = dict(cur, history_ts=next_ts)
     if forecast is not None:
         new_cur["forecast_at"] = forecast["made_at"]
+        new_cur["forecast_model"] = forecast["model"]
     if events:
         new_cur["event_rowid"] = events[-1]["id"]
     elif cur.get("event_rowid") is None:
