@@ -229,7 +229,7 @@ def test_end_to_end_with_uplink_and_controller(client, clock, tmp_path):
     assert up.once(t0 + 2) is True                 # nhận 2 lệnh, ghi khoá state
     assert len(up.acks) == 2
     step(conn, relay, cfg.control, t0 + 3, monotonic=lambda: 10_000, buzzer=buzzer,
-         bcfg=cfg.buzzer, tcfg=cfg.telegram)
+         bcfg=cfg.buzzer)
     assert relay.on is False                       # thủ công giữ quạt đang tắt
     assert buzzer.bursts and buzzer.bursts[0] <= cfg.buzzer.manual_max_s
     assert json.loads(get_state(conn, BUZZER_OVERRIDE_KEY))["on"] is True

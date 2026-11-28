@@ -7,12 +7,12 @@ Dịch vụ uplink: đẩy dữ liệu của trạm lên web trên cloud và nh�
   quả các lệnh web đã xử lý. Pi chỉ kết nối ra ngoài, không mở port.
 - Mốc đã gửi (history, dự báo, sự kiện) lưu ở khoá state 'uplink_cursor' và chỉ tiến lên
   sau khi cloud trả 200, nên mất mạng thì lần sau gửi bù (tối đa MAX_HISTORY dòng mỗi lần).
-- Lệnh web được ghi qua aiot.commands (đúng đường của lệnh Telegram): uplink không chạm
+- Lệnh web được ghi qua aiot.commands: uplink không chạm
   GPIO, controller áp dụng ở vòng kế tiếp. Lệnh cũ hơn cloud.command_max_age_s (tính bằng
   đồng hồ của server: age_s) bị từ chối. Mỗi id chỉ áp dụng một lần: id đã xử lý và kết
   quả lưu ở khoá 'uplink_done' (200 id gần nhất), để cloud gửi lại sau khi mất mạng hay
   Pi khởi động lại không làm lệnh chạy hai lần.
-- Không gửi chat id Telegram hay IP: chi tiết sự kiện bị bỏ các trường chat=, ip=, user=.
+- Không gửi IP hay tên người dùng: chi tiết sự kiện bị bỏ các trường chat=, ip=, user=.
 - Lỗi mạng/HTTP: chỉ ghi log và chờ lâu dần tới BACKOFF_MAX_S. Không ảnh hưởng collector
   hay controller. cloud.enabled false, thiếu url hoặc INGEST_TOKEN: thoát mã 2.
 

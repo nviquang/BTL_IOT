@@ -13,13 +13,15 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 
 EXPECTED_DIR="/home/admin/BTL_IOT"
-ENV_KEYS=(TELEGRAM_TOKEN GEMINI_API_KEY ALLOWED_CHAT_IDS INGEST_TOKEN)
+ENV_KEYS=(INGEST_TOKEN)
 APT_PACKAGES=(i2c-tools python3-venv sqlite3)
 BUILD_PACKAGES=(build-essential python3-dev swig liblgpio-dev)
-GROUPS_NEEDED=(gpio i2c dialout video)
+GROUPS_NEEDED=(gpio i2c dialout)
 TIMEZONE="Asia/Ho_Chi_Minh"
-SERVICES=(aiot-collector aiot-controller aiot-bot aiot-uplink)
-TIMERS=(aiot-forecast.timer aiot-morning.timer aiot-weather.timer)
+SERVICES=(aiot-collector aiot-controller aiot-uplink)
+TIMERS=(aiot-forecast.timer)
+# Unit của bot Telegram, báo cáo sáng và cảnh báo nắng/mưa (đã gỡ 29/11/2026): dừng và xoá khỏi Pi
+REMOVED_UNITS=(aiot-bot.service aiot-morning.timer aiot-morning.service aiot-weather.timer aiot-weather.service)
 VENV_PY="$REPO_DIR/venv/bin/python"
 REQ_STAMP="$REPO_DIR/venv/.requirements-pi.sha256"
 CODE_STAMP="$REPO_DIR/venv/.deployed-code.sha256"
@@ -156,22 +158,17 @@ if [[ "$REPO_DIR" != "$EXPECTED_DIR" ]]; then
 fi
 ok "user admin, thư mục $REPO_DIR"
 
-BOT_ENABLED=1
 if [[ "$MODE" == "up" ]]; then
-  [[ -f .env ]] || die "không có file $REPO_DIR/.env. Chép .env.example thành .env, điền 4 khoá (README mục Chạy nhanh) rồi chạy lại."
+  [[ -f .env ]] || die "không có file $REPO_DIR/.env. Chép .env.example thành .env, điền INGEST_TOKEN (README mục Chạy nhanh) rồi chạy lại."
   chmod 600 .env
   missing=()
   for key in "${ENV_KEYS[@]}"; do
     env_has "$key" || missing+=("$key")
   done
   if (( ${#missing[@]} == 0 )); then
-    ok ".env đủ 4 khoá (đã chmod 600)"
+    ok ".env đủ khoá (đã chmod 600)"
   else
     warn ".env thiếu hoặc rỗng: ${missing[*]}"
-  fi
-  if ! env_has TELEGRAM_TOKEN || ! env_has ALLOWED_CHAT_IDS; then
-    BOT_ENABLED=0
-    warn "thiếu TELEGRAM_TOKEN hoặc ALLOWED_CHAT_IDS: bỏ qua aiot-bot (không có tin Telegram)"
   fi
 fi
 
@@ -296,13 +293,6 @@ else
   info "Cài requirements-pi.txt (lần đầu mất vài phút, lâu hơn nếu phải build lgpio/sysv_ipc)..."
   LIBS_CHANGED=1
   req_file="requirements-pi.txt"
-  if py_imports cv2; then
-    # opencv-python có sẵn: cài thêm opencv-python-headless sẽ ghi đè thư mục cv2 và làm hỏng import
-    req_file="$(mktemp)"
-    TMP_FILES+=("$req_file")
-    grep -v -E '^[[:space:]]*opencv-python-headless' requirements-pi.txt > "$req_file"
-    info "venv đã có cv2: bỏ qua opencv-python-headless"
-  fi
   pip_ok=1
   if ! "$VENV_PY" -m pip install -q -r "$req_file"; then
     warn "pip lỗi, thường do lgpio/sysv_ipc phải build từ source; cài công cụ build + wheel lgpio của Adafruit rồi thử lại"
@@ -322,7 +312,6 @@ else
       pip_ok=0
     fi
   done
-  py_imports cv2 || warn "import cv2 lỗi: không thể chụp ảnh cảnh báo"
   if (( pip_ok )); then
     printf '%s\n' "$req_hash" > "$REQ_STAMP"
     ok "đã cài thư viện"
@@ -331,7 +320,7 @@ else
   fi
 fi
 
-mkdir -p "$DATA_DIR/photos"
+mkdir -p "$DATA_DIR"
 ok "thư mục dữ liệu $DATA_DIR"
 
 # ---------------- 4. unit systemd ----------------
@@ -343,6 +332,14 @@ for src in deploy/aiot-*.service deploy/aiot-*.timer; do
     sudo install -m 644 "$src" "$dest" || die "không chép được $src vào /etc/systemd/system"
     units_changed=1
     info "cập nhật $(basename "$src")"
+  fi
+done
+for unit in "${REMOVED_UNITS[@]}"; do
+  if [[ -f "/etc/systemd/system/$unit" ]]; then
+    sudo systemctl disable --now "$unit" >/dev/null 2>&1 || true
+    sudo rm -f "/etc/systemd/system/$unit" || warn "không xoá được /etc/systemd/system/$unit"
+    units_changed=1
+    info "gỡ $unit (Telegram, báo cáo sáng, nắng/mưa đã bỏ)"
   fi
 done
 if (( units_changed )); then
@@ -360,7 +357,6 @@ fi
 
 wanted=(aiot-collector)
 if (( ! NO_FAN )); then wanted+=(aiot-controller); fi
-if (( BOT_ENABLED )); then wanted+=(aiot-bot); fi
 if (( UPLINK_ENABLED )); then wanted+=(aiot-uplink); fi
 
 was_active=()
@@ -371,10 +367,6 @@ done
 if (( NO_FAN )); then
   sudo systemctl disable --now aiot-controller >/dev/null 2>&1 || true
   ok "--no-fan: đã dừng aiot-controller và tắt tự khởi động (quạt tắt)"
-fi
-if (( ! BOT_ENABLED )); then
-  sudo systemctl stop aiot-bot >/dev/null 2>&1 || true
-  warn "aiot-bot không chạy (thiếu token/chat id)"
 fi
 if (( ! UPLINK_ENABLED )); then
   sudo systemctl disable --now aiot-uplink >/dev/null 2>&1 || true

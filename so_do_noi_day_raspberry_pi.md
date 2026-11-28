@@ -141,7 +141,7 @@ Kết quả lần kiểm tra cuối bằng `~/BTL_IOT/test_all.py` ngày 04/11/2
 Các giới hạn hiện tại:
 
 - `aiot-collector` đọc DHT11, BH1750 và PMS7003 rồi ghi SQLite và `sensors.csv` trên Pi. Script `scripts/pi_up.sh` cài và bật dịch vụ.
-- Bộ điều khiển quạt `aiot/controller.py` (relay GPIO23) có code và unit test, **chưa chạy trên mạch**. Lần đầu phải chạy demo với DB thử khi có người đứng cạnh quạt (README mục 2.4c).
-- Bot Telegram, báo cáo sáng và lời khuyên Gemini chưa thử với bot và API thật.
+- Bộ điều khiển quạt `aiot/controller.py` (relay GPIO23) có code và unit test, **chưa chạy trên mạch**. Lần đầu phải chạy demo với DB thử khi có người đứng cạnh quạt (`docs/van_hanh_chi_tiet.md` mục 5.3).
+- Bot Telegram, báo cáo sáng và lời khuyên Gemini đã gỡ khỏi hệ thống ngày 29/11/2026; điều khiển thủ công chỉ qua web.
 - `test.py` trên Pi vẫn yêu cầu ADS1115 nên sẽ báo lỗi; hãy dùng `test_all.py`.
 - Phần quạt và còi của `test_all.py` cần người đứng cạnh mạch trả lời trong terminal (`ssh -t`).

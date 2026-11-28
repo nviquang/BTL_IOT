@@ -1,11 +1,10 @@
 """
 Bảng kiểm tra sức khoẻ của trạm (scripts/pi_up.sh gọi sau khi bật dịch vụ).
 
-- Không cần sudo, không in giá trị bí mật (chỉ tên khoá thiếu; lỗi Telegram đã che token).
+- Không cần sudo, không in giá trị bí mật (chỉ tên khoá thiếu).
 - Quan trọng (quyết định mã thoát): aiot-collector đang chạy và có mẫu thô mới (< 60 s).
   Mọi mục khác chỉ là cảnh báo.
 - Mở DB chỉ đọc: chưa có DB thì báo lỗi, không tạo file mới.
-- Camera: chụp thử bằng tiến trình con có timeout (aiot.camera.capture_subprocess).
 
 Chạy: cd ~/BTL_IOT && venv/bin/python -m aiot.healthcheck [--skip-unit aiot-controller]
 Mã thoát 0 khi mọi mục quan trọng đạt, 1 khi có mục quan trọng lỗi.
@@ -14,23 +13,20 @@ import argparse
 import os
 import sqlite3
 import subprocess
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from aiot.config import load_config, read_env_file
 
-ENV_KEYS = ("TELEGRAM_TOKEN", "GEMINI_API_KEY", "ALLOWED_CHAT_IDS", "INGEST_TOKEN")
-UNITS = ("aiot-collector", "aiot-controller", "aiot-bot", "aiot-uplink",
-         "aiot-forecast.timer", "aiot-morning.timer", "aiot-weather.timer")
+ENV_KEYS = ("INGEST_TOKEN",)
+UNITS = ("aiot-collector", "aiot-controller", "aiot-uplink", "aiot-forecast.timer")
 CRITICAL_UNITS = frozenset({"aiot-collector"})
 FRESH_S = 60                         # mẫu thô mới hơn mức này mới coi là đang thu thập
 HEARTBEAT_KEY = "controller_heartbeat"
 UPLINK_KEY = "uplink_last_ok"          # aiot.uplink ghi sau mỗi lần cloud nhận
 UPLINK_FRESH_S = 60
-HEARTBEAT_STALE_LOOPS = 3            # như bot: cũ hơn 3 vòng loop_s là controller không chạy
-TELEGRAM_TIMEOUT_S = 10
+HEARTBEAT_STALE_LOOPS = 3            # cũ hơn 3 vòng loop_s là controller không chạy
 
 # Cột của raw_readings -> cảm biến tương ứng (theo thứ tự in)
 SENSOR_COLUMNS = (
@@ -186,75 +182,6 @@ def check_uplink(db_path, now, cfg) -> Check:
                  f"gửi thành công cách đây {_fmt_age(age)} ({cfg.cloud.url})")
 
 
-def _telegram_client(token):
-    from aiot.telegram_api import TelegramClient
-    return TelegramClient(token)
-
-
-def check_telegram(token, client_factory=_telegram_client) -> Check:
-    name = "Telegram getMe"
-    if not token:
-        return Check(name, None, "bỏ qua (thiếu TELEGRAM_TOKEN)")
-    from aiot.telegram_api import redact
-    try:
-        me = client_factory(token).get_me(timeout=TELEGRAM_TIMEOUT_S) or {}
-    except Exception as e:  # noqa: BLE001 - mọi lỗi chỉ là một dòng cảnh báo
-        return Check(name, False, redact(f"{type(e).__name__}: {e}", token))
-    username = me.get("username") if isinstance(me, dict) else None
-    return Check(name, True, f"bot @{username}" if username else "token hợp lệ")
-
-
-def _capture(path, index):
-    from aiot.camera import capture_subprocess
-    return capture_subprocess(path, index=index)
-
-
-def _getgrnam(name):
-    import grp                 # chỉ có trên Linux; laptop Windows không có
-    return grp.getgrnam(name)
-
-
-def _current_user():
-    import getpass
-    return getpass.getuser()
-
-
-def video_group_hint(user=None, getgroups=None, getgrnam=_getgrnam):
-    """Gợi ý khi phiên hiện tại không có quyền camera (nhóm video), ngược lại None.
-
-    usermod -aG chỉ có hiệu lực ở phiên đăng nhập mới; dịch vụ systemd thì có ngay."""
-    try:
-        group = getgrnam("video")
-        user = user if user is not None else _current_user()
-        groups = getgroups() if getgroups is not None else os.getgroups()
-    except (ImportError, KeyError, OSError, AttributeError):
-        return None
-    if group.gr_gid in groups:
-        return None
-    if user in group.gr_mem:
-        return f"{user} đã được thêm vào nhóm video nhưng phiên này chưa có: đăng nhập lại SSH rồi kiểm tra lại"
-    return f"{user} chưa thuộc nhóm video: chạy lại scripts/pi_up.sh"
-
-
-def check_camera(capture=_capture, index=0, tmp_dir=None, hint=video_group_hint) -> Check:
-    name = "camera"
-    fd, path = tempfile.mkstemp(prefix="healthcheck_", suffix=".jpg", dir=tmp_dir)
-    os.close(fd)
-    os.remove(path)            # capture_jpeg tự tạo file; còn file nghĩa là đã chụp được
-    try:
-        ok = bool(capture(path, index))
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-    if ok:
-        return Check(name, True, f"chụp thử /dev/video{index} được")
-    detail = f"không chụp được từ /dev/video{index}"
-    extra = hint() if hint is not None else None
-    return Check(name, False, f"{detail} ({extra})" if extra else detail)
-
-
 def _clock_trusted():
     from aiot.collector import is_clock_trusted
     return is_clock_trusted()
@@ -263,19 +190,15 @@ def _clock_trusted():
 def check_clock(clock_trusted=_clock_trusted) -> Check:
     if clock_trusted():
         return Check("đồng hồ", True, "đã đồng bộ NTP")
-    return Check("đồng hồ", False, "chưa đồng bộ NTP: chưa gộp 5 phút, lệnh /fan bị từ chối")
+    return Check("đồng hồ", False, "chưa đồng bộ NTP: chưa gộp 5 phút")
 
 
 # ---------------- tổng hợp ----------------
 def run_checks(cfg, env_path=".env", now=None, runner=systemctl_is_active,
-               client_factory=_telegram_client, capture=_capture,
                clock_trusted=_clock_trusted,
                skip_units=frozenset()) -> list[Check]:
     now = int(time.time()) if now is None else now
     skip = set(skip_units)
-    secrets = cfg.secrets
-    if not secrets.telegram_token or not secrets.allowed_chat_ids:
-        skip.add("aiot-bot")       # bot tự thoát mã 2 khi thiếu token/chat id
     if not uplink_wanted(cfg):
         skip.add("aiot-uplink")    # web cloud chưa bật
     checks = [check_env(env_path)]
@@ -284,8 +207,6 @@ def run_checks(cfg, env_path=".env", now=None, runner=systemctl_is_active,
     checks.append(check_heartbeat(cfg.db_path, now, cfg.control.loop_s,
                                   skipped="aiot-controller" in skip))
     checks.append(check_uplink(cfg.db_path, now, cfg))
-    checks.append(check_telegram(secrets.telegram_token, client_factory=client_factory))
-    checks.append(check_camera(capture, index=cfg.weather.camera_index))
     checks.append(check_clock(clock_trusted))
     return checks
 

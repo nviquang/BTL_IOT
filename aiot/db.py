@@ -1,7 +1,7 @@
 """
 Lớp lưu trữ SQLite dùng chung cho mọi dịch vụ của trạm.
 
-- Nhiều tiến trình (collector, controller, bot, forecast) mở cùng một file,
+- Nhiều tiến trình (collector, controller, uplink, forecast) mở cùng một file,
   nên bật WAL và busy_timeout để không bị 'database is locked'.
 - Mỗi hàm ghi commit ngay trước khi trả về, vì mỗi dịch vụ là một tiến trình riêng.
   set_state/delete_state/log_event có commit=False để gộp nhiều lệnh ghi vào một
@@ -35,12 +35,6 @@ CREATE TABLE IF NOT EXISTS events (            -- 'fan_on', 'fan_off', 'override
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events (ts);
 CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS outbox (            -- tin Telegram chờ gửi (gửi bù khi có mạng)
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  created_at INTEGER NOT NULL, kind TEXT NOT NULL,
-  text TEXT NOT NULL, sent_at INTEGER,
-  photo_path TEXT                              -- ảnh JPEG gửi kèm (NULL: chỉ chữ)
-);
 CREATE TABLE IF NOT EXISTS fast_readings (     -- mẫu 1 giây cho bộ nhận diện nguồn bụi
   ts INTEGER PRIMARY KEY,
   pm1 REAL, pm25 REAL, pm10 REAL,
@@ -59,10 +53,6 @@ CREATE TABLE IF NOT EXISTS source_predictions (  -- dự đoán nguồn bụi m�
   label TEXT,                                  -- nhãn sau làm mượt (NULL: không đủ dữ liệu)
   raw_label TEXT, proba TEXT,                  -- nhãn và xác suất của riêng lần này (JSON)
   model TEXT
-);
-CREATE TABLE IF NOT EXISTS tg_messages (       -- message_id Telegram (nhận và gửi) cho /clear
-  chat_id INTEGER, message_id INTEGER, ts INTEGER,
-  PRIMARY KEY (chat_id, message_id)
 );
 """
 
@@ -104,24 +94,11 @@ def connect(path) -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection) -> None:
     """Tạo bảng nếu chưa có và thêm cột mới vào DB cũ; chạy nhiều lần không sao."""
     conn.executescript(SCHEMA)
-    _add_column(conn, "outbox", "photo_path", "TEXT")
+    # Bảng outbox và tg_messages của bot Telegram (đã gỡ 29/11/2026) còn trong DB cũ: để nguyên
     # MQ135 đã bị loại khỏi hệ thống: xoá cột của DB tạo bởi phiên bản cũ
     _drop_column(conn, "raw_readings", "mq135_do")
     _drop_column(conn, "readings", "mq135_do")
     conn.commit()
-
-
-def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
-    """ALTER TABLE ... ADD COLUMN nếu bảng (tạo bởi phiên bản cũ) chưa có cột.
-    Hai dịch vụ cùng khởi động có thể cùng thêm: lỗi 'duplicate column' thì bỏ qua."""
-    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
-    if column in cols:
-        return
-    try:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
-    except sqlite3.OperationalError as e:
-        if "duplicate column" not in str(e).lower():
-            raise
 
 
 def _drop_column(conn: sqlite3.Connection, table: str, column: str) -> None:
@@ -207,39 +184,6 @@ def purge_raw(conn: sqlite3.Connection, older_than_ts: int) -> None:
     conn.commit()
 
 
-def record_message(conn: sqlite3.Connection, chat_id: int, message_id: int, ts: int,
-                   *, commit: bool = True) -> None:
-    """Ghi message_id một tin Telegram (bot nhận hoặc gửi) để /clear xoá được; trùng thì bỏ qua."""
-    conn.execute("INSERT OR IGNORE INTO tg_messages (chat_id, message_id, ts) VALUES (?, ?, ?)",
-                 (int(chat_id), int(message_id), int(ts)))
-    if commit:
-        conn.commit()
-
-
-def recent_message_ids(conn: sqlite3.Connection, chat_id: int, since_ts: int) -> list[int]:
-    """message_id đã ghi của chat có ts >= since_ts."""
-    rows = conn.execute("SELECT message_id FROM tg_messages WHERE chat_id = ? AND ts >= ?",
-                        (int(chat_id), int(since_ts))).fetchall()
-    return [int(r[0]) for r in rows]
-
-
-def forget_messages(conn: sqlite3.Connection, chat_id: int, message_ids,
-                    *, commit: bool = True) -> None:
-    """Xoá các hàng tg_messages của đúng chat này có message_id trong message_ids."""
-    conn.executemany("DELETE FROM tg_messages WHERE chat_id = ? AND message_id = ?",
-                     [(int(chat_id), int(m)) for m in message_ids])
-    if commit:
-        conn.commit()
-
-
-def purge_messages(conn: sqlite3.Connection, older_than_ts: int, *, commit: bool = True) -> None:
-    """Xoá hàng tg_messages có ts < older_than_ts (Telegram không cho xoá tin đó nữa)."""
-    conn.execute("DELETE FROM tg_messages WHERE ts < ?", (int(older_than_ts),))
-    if commit:
-        conn.commit()
-
-
-# ---------------- mẫu 1 giây và nhãn nguồn bụi ----------------
 def insert_fast_many(conn: sqlite3.Connection, rows) -> None:
     """Ghi nhiều mẫu 1 giây; rows: [(ts, {cột: giá trị}, clock_synced)]. Trùng ts thì bỏ qua."""
     cols = ", ".join(FAST_COLUMNS)

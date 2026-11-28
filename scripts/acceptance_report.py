@@ -19,12 +19,8 @@ chỉ dùng thư viện chuẩn, numpy và gói aiot.
   min_state_s (fan_on -> fan_off), hoặc vào lại vì 'enter' chưa tới enter_hold_s sau fan_off.
   Trạng thái trước lần đổi đầu tiên lấy từ sự kiện quạt trước start. quick_reentries đếm riêng
   các lần vào lại < min_state_s sau khi thoát (đúng luật, chỉ để tham khảo).
-- report_punctuality: một ngày (giờ địa phương) đúng giờ khi có tin 'morning_report' tạo trong
-  ngày đó và đã gửi (sent_at) trong khoảng [giờ báo cáo, giờ báo cáo + tolerance_s]. Việc gộp
-  tin cũ (collapse_stale_alerts) không bao giờ đụng 'morning_report', nên sent_at là giờ gửi
-  thật. Ngày không có tin hoặc tin chưa gửi là không đúng giờ.
 - fan_effect: chia mỗi cửa sổ 5 phút thành "bật" (bật cả 300 s) hoặc "tắt" (0 s) theo nhật ký
-  sự kiện (aiot.report.fan_on_seconds); cửa sổ lẫn lộn bị bỏ. So PM2.5 trung bình và độ dốc
+  sự kiện (fan_on_seconds); cửa sổ lẫn lộn bị bỏ. So PM2.5 trung bình và độ dốc
   (µg/m³ mỗi giờ, từ hai cửa sổ liền nhau cùng trạng thái). Trung bình bị nhiễu vì quạt bật
   đúng lúc không khí xấu; độ dốc mới cho thấy quạt có làm PM2.5 giảm nhanh hơn không.
 - station_correlation: ghép theo giờ, hệ số tương quan Pearson và hồi quy tuyến tính
@@ -39,10 +35,11 @@ cùng định dạng với CSV xuất từ training/export_hourly.py.
 import argparse
 import csv
 import math
+import re
 import sqlite3
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -127,43 +124,66 @@ def quick_reentries(conn, start, end, min_state_s=600) -> int:
                if p_kind == "fan_off" and ts - p_ts < min_state_s)
 
 
-# ---------------- Telegram ----------------
-def _scheduled(day: date, report_time: str) -> int:
-    hh, mm = (int(p) for p in report_time.split(":"))
-    return int(datetime(day.year, day.month, day.day, hh, mm).timestamp())
-
-
-def morning_report_details(conn, days, report_time="06:30", tolerance_s=900):
-    """[(ngày, created_at, sent_at, đúng giờ?)] mỗi ngày; created_at/sent_at None nếu không có.
-    Nhiều tin trong một ngày: lấy tin gửi sớm nhất (tin chưa gửi xếp sau)."""
-    rows = conn.execute("SELECT created_at, sent_at FROM outbox WHERE kind = 'morning_report' "
-                        "ORDER BY created_at, id").fetchall()
-    by_day = {}
-    for created, sent in rows:
-        d = datetime.fromtimestamp(created).date()
-        best = by_day.get(d)
-        key = (sent is None, sent or 0)
-        if best is None or key < (best[1] is None, best[1] or 0):
-            by_day[d] = (created, sent)
-    out = []
-    for d in days:
-        created, sent = by_day.get(d, (None, None))
-        due = _scheduled(d, report_time)
-        on_time = sent is not None and due <= sent <= due + tolerance_s
-        out.append((d, created, sent, on_time))
-    return out
-
-
-def report_punctuality(conn, days, report_time="06:30", tolerance_s=900) -> tuple[int, int]:
-    """(số ngày gửi đúng giờ, số ngày). days: các ngày địa phương (datetime.date)."""
-    details = morning_report_details(conn, days, report_time, tolerance_s)
-    return sum(1 for *_, ok in details if ok), len(details)
-
-
 # ---------------- hiệu quả lọc ----------------
+_OVERRIDE_RE = re.compile(r"set fan=(on|off) until=(\d+)")
+
+
+def fan_on_seconds(conn, start, end):
+    """Số giây quạt bật trong [start, end), dựng lại từ nhật ký sự kiện của controller:
+    fan_on/fan_off (chế độ BẢO VỆ/BÌNH THƯỜNG), override ('set fan=on|off until=...',
+    'cleared ...'), override_expired, state_corrupt (về BÌNH THƯỜNG). Ghi đè hết hạn theo
+    until kể cả khi không có sự kiện. Là ước tính: không tính lúc controller dừng."""
+    start, end = int(start), int(end)
+    rows = conn.execute(
+        "SELECT ts, kind, detail FROM events WHERE ts < ? AND kind IN "
+        "('fan_on', 'fan_off', 'override', 'override_expired', 'state_corrupt') "
+        "ORDER BY ts, rowid", (end,)).fetchall()
+    protect = False
+    override = None                     # (bật?, until) hoặc None
+
+    def on_between(a, b):
+        """Số giây bật trong [a, b) với trạng thái hiện tại, cắt theo [start, end)."""
+        a, b = max(a, start), min(b, end)
+        if b <= a:
+            return 0
+        if override is None:
+            return b - a if protect else 0
+        fan, until = override
+        cut = min(max(until, a), b)
+        total = (cut - a) if fan else 0             # đoạn còn ghi đè
+        total += (b - cut) if protect else 0        # đoạn sau khi ghi đè hết hạn
+        return total
+
+    total, t = 0, None
+    for ts, kind, detail in rows:
+        ts = int(ts)
+        if t is not None:
+            total += on_between(t, ts)
+        t = ts
+        if override is not None and ts >= override[1]:
+            override = None
+        if kind == "fan_on":
+            protect = True
+        elif kind == "fan_off":
+            protect = False
+        elif kind == "state_corrupt":
+            protect, override = False, None
+        elif kind == "override_expired":
+            override = None
+        elif kind == "override":
+            m = _OVERRIDE_RE.search(detail or "")
+            if m:
+                override = (m.group(1) == "on", int(m.group(2)))
+            elif (detail or "").startswith("cleared"):
+                override = None
+    if t is None:
+        t = start
+    total += on_between(t, end)
+    return total
+
+
 def fan_effect(conn, start, end) -> dict:
     """So PM2.5 khi quạt bật và tắt, xem docstring module."""
-    from aiot.report import fan_on_seconds
     rows = conn.execute(
         "SELECT ts, pm25 FROM readings WHERE valid = 1 AND pm25 IS NOT NULL "
         "AND ts >= ? AND ts < ? ORDER BY ts", (int(start), int(end))).fetchall()
@@ -248,8 +268,6 @@ def main(argv=None) -> int:
                                         "'2026-11-10 06:00'; mặc định 7 ngày trước --end")
     parser.add_argument("--end", help="mặc định bây giờ")
     parser.add_argument("--public-csv", help="CSV trạm công khai (timestamp, pm25) theo giờ")
-    parser.add_argument("--tolerance-min", type=int, default=15,
-                        help="báo cáo sáng gửi muộn tối đa bao nhiêu phút vẫn tính đúng giờ")
     args = parser.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):        # console Windows mặc định cp1252
         if hasattr(stream, "reconfigure"):
@@ -297,22 +315,6 @@ def main(argv=None) -> int:
             print(f"{label}: {fx[f'{name}_windows']} cửa sổ, PM2.5 TB "
                   f"{_num(fx[f'{name}_mean'])} µg/m³, độ dốc "
                   f"{_num(fx[f'{name}_slope_per_h'], 2)} µg/m³/giờ")
-
-        print("\n[Telegram] Báo cáo sáng")
-        first = datetime.fromtimestamp(start).date()
-        last = datetime.fromtimestamp(end - 1).date()
-        days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
-        tol = args.tolerance_min * 60
-        for d, created, sent, ok in morning_report_details(conn, days, cfg.report.time, tol):
-            verdict = "đúng giờ" if ok else "KHÔNG đúng giờ"
-            if created is None:
-                print(f"  {d.isoformat()}: không có tin, {verdict}")
-                continue
-            c = datetime.fromtimestamp(created).strftime("%H:%M")
-            s = datetime.fromtimestamp(sent).strftime("%d/%m %H:%M") if sent else "chưa gửi"
-            print(f"  {d.isoformat()}: tạo {c}, gửi {s}, {verdict}")
-        on_time, total = report_punctuality(conn, days, cfg.report.time, tol)
-        print(f"Đúng giờ {on_time}/{total} (tiêu chí >= 6/7, trễ tối đa {args.tolerance_min} phút)")
 
         print("\n[Cảm biến]")
         hum = conn.execute("SELECT avg(hum), max(hum) FROM readings WHERE valid = 1 "

@@ -11,7 +11,6 @@ from aiot.config import BuzzerCfg, ControlCfg, SourceCfg
 from aiot.control import ControlState, Event, Inputs, decide, fan_on
 from aiot.controller import SOURCE_KEY, load_source_model, step
 from aiot.db import RawSample, connect, get_state, init_schema, insert_fast_many, insert_raw
-from aiot.notifier import event_message
 from aiot.source_model import LABELS, LogRegModel, SourceState, actions, save_model, smooth
 from aiot.source_window import WINDOW_FEATURES
 
@@ -105,11 +104,6 @@ def test_alarm_by_source():
     assert alarm_reason(900.0, b) == "pm25"          # không có nhãn: luật cũ
 
 
-def test_source_change_message():
-    msg, urgent = event_message(Event("source_change", "pollution p=0.91"), ControlState(), None, 1000)
-    assert "bụi mịn" in msg and "0,91" in msg and not urgent
-
-
 # ---------------- controller ----------------
 class StubModel:
     classes = LABELS
@@ -178,10 +172,8 @@ def test_step_drives_fan_and_buzzer_by_label(conn, label, fan, buzz):
     assert json.loads(get_state(conn, SOURCE_KEY))["label"] == label
     row = conn.execute("SELECT label, raw_label, model FROM source_predictions").fetchone()
     assert row == (label, label, "stub")
-    kinds = [k for (k,) in conn.execute("SELECT kind FROM events")]
-    assert "source_change" in kinds
-    outbox = [k for (k,) in conn.execute("SELECT kind FROM outbox")]
-    assert f"source_{label}" in outbox
+    details = [d for (d,) in conn.execute("SELECT detail FROM events WHERE kind = 'source_change'")]
+    assert details == [f"{label} p=0.90"]
 
 
 def test_step_falls_back_to_pm_rules_without_fast_data(conn):

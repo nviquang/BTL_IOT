@@ -7,8 +7,8 @@ pytest
 PyYAML        # aiot/config.py đọc config.yaml
 numpy         # aiot/forecast.py
 pandas        # xuất dữ liệu và huấn luyện bộ nhận diện nguồn bụi
-scikit-learn  # Random Forest và đánh giá bộ nhận diện nguồn bụi
-requests      # Telegram và uplink
+scikit-learn  # huấn luyện logistic regression của bộ nhận diện nguồn bụi
+requests      # aiot/uplink.py
 
 # Web trên cloud (tests/test_cloud.py; thiếu thì test bị bỏ qua)
 fastapi

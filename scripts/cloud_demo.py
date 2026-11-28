@@ -88,7 +88,7 @@ def fake_station(db_path, cfg, stop):
             {"normal": 0.9, "cooking": 0.06, "pollution": 0.04}), "logreg-demo")
         try:
             step(conn, relay, cfg.control, now, monotonic=lambda: 10_000, buzzer=buzzer,
-                 bcfg=cfg.buzzer, tcfg=cfg.telegram)
+                 bcfg=cfg.buzzer)
         except Exception as e:
             print("[Pi giả] lỗi controller:", e, flush=True)
         stop.wait(5)

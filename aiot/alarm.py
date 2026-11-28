@@ -10,12 +10,12 @@ và plan() mỗi vòng rồi ra lệnh cho aiot.buzzer.Buzzer theo hành động
 - Kêu một hồi (burst_s giây) ngay khi vừa vượt ngưỡng, lặp lại mỗi repeat_s giây nếu
   vẫn còn vượt; hết vượt ngưỡng thì tắt ngay.
 - Mất dữ liệu PM: không có trung vị 1 phút nên không kêu theo PM (lỗi cảm biến đã có
-  cảnh báo Telegram riêng).
-- Đang tắt tiếng (/mute): không kêu, nhưng vẫn theo dõi để kêu lại khi hết tắt tiếng.
-- Ghi đè thủ công (khoá 'buzzer_override', do controller ghi từ lệnh /buzzer hoặc web):
+  sự kiện sensor_fault riêng).
+- Đang tắt tiếng (khoá 'buzzer_mute_until'): không kêu, nhưng vẫn theo dõi để kêu lại khi hết tắt tiếng.
+- Ghi đè thủ công (khoá 'buzzer_override', do controller ghi từ lệnh còi trên web):
   bật thì kêu liên tục tới hết hạn (tối đa buzzer.manual_max_s, plan_manual); tắt thì im
-  như /mute. /mode auto xoá ghi đè.
-- Còi kêu bất kể giờ yên lặng: đây là cảnh báo an toàn tại chỗ, vẫn chạy khi mất Internet.
+  như khi tắt tiếng. Về chế độ tự động thì xoá ghi đè.
+- Còi là cảnh báo an toàn tại chỗ, vẫn chạy khi mất Internet.
 """
 import dataclasses
 import json
@@ -78,7 +78,7 @@ def plan(st, reason, now, cfg, muted=False):
 
 
 def plan_manual(st, set_at, until, now, max_s):
-    """Ghi đè bật còi (/buzzer on, web): kêu một hồi dài tới until (tối đa max_s giây), một
+    """Ghi đè bật còi (từ web): kêu một hồi dài tới until (tối đa max_s giây), một
     lần cho mỗi lệnh (set_at = giờ controller nhận lệnh). Trả về (trạng thái, số giây kêu
     hoặc None). Hết hạn thì vòng sau plan() thấy lý do đổi và tắt/kêu theo luật."""
     now = int(now)
@@ -91,7 +91,7 @@ def plan_manual(st, set_at, until, now, max_s):
 
 
 def is_muted(value, now):
-    """value: chuỗi giây epoch hết tắt tiếng (khoá state do bot ghi), hoặc None."""
+    """value: chuỗi giây epoch hết tắt tiếng (khoá state 'buzzer_mute_until'), hoặc None."""
     try:
         return value is not None and int(now) < int(value)
     except (TypeError, ValueError):

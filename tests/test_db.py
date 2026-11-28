@@ -39,7 +39,8 @@ def test_init_schema_idempotent_and_tables(tmp_path):
     conn = open_db(tmp_path / "aiot.db")
     init_schema(conn)  # chạy lần hai không lỗi
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"readings", "forecasts", "events", "raw_readings", "state", "outbox"} <= names
+    assert {"readings", "forecasts", "events", "raw_readings", "state"} <= names
+    assert not {"outbox", "tg_messages"} & names           # bot Telegram đã gỡ
     cols = {r[1] for r in conn.execute("PRAGMA table_info(forecasts)")}
     assert "model" in cols
 
@@ -199,14 +200,8 @@ def test_pm25_series_drops_out_of_range_values(tmp_path):
     assert pm25_series(conn, 0) == [(1010, 0.0), (1020, 1000.0)]
 
 
-def test_outbox_has_photo_path_column(tmp_path):
-    conn = open_db(tmp_path / "aiot.db")
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(outbox)")}
-    assert "photo_path" in cols
-
-
-def test_init_schema_migrates_old_outbox(tmp_path):
-    """DB tạo trước khi có photo_path: init_schema thêm cột, giữ tin cũ, chạy lại không lỗi."""
+def test_init_schema_keeps_old_telegram_tables(tmp_path):
+    """DB cũ trên Pi còn bảng outbox của bot Telegram: init_schema chạy được, không xoá dữ liệu."""
     path = tmp_path / "aiot.db"
     old = sqlite3.connect(path)
     old.execute("CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -217,6 +212,4 @@ def test_init_schema_migrates_old_outbox(tmp_path):
     old.close()
     conn = open_db(path)
     init_schema(conn)
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(outbox)")}
-    assert "photo_path" in cols
-    assert conn.execute("SELECT text, photo_path FROM outbox").fetchall() == [("cũ", None)]
+    assert conn.execute("SELECT text FROM outbox").fetchall() == [("cũ",)]

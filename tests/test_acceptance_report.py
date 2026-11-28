@@ -10,7 +10,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import acceptance_report as ar  # noqa: E402
 from aiot.db import RawSample, connect, init_schema, insert_raw, log_event  # noqa: E402
-from aiot.notifier import enqueue, mark_sent  # noqa: E402
 
 H = 3600
 T0 = 1_793_000_000 // H * H          # đầu một giờ
@@ -108,46 +107,22 @@ def test_count_flaps_seeds_state_from_before_start(conn):
     assert ar.count_flaps(conn, T0 - 200, T0 + 100) == 0
 
 
-# ---------- Telegram ----------
-def _at(day, hh, mm):
-    return int(datetime(day.year, day.month, day.day, hh, mm).timestamp())
-
-
-def test_report_punctuality_counts_6_of_7(conn):
-    days = [date(2026, 11, 10) + timedelta(days=i) for i in range(7)]
-    for i, d in enumerate(days):
-        created = _at(d, 6, 30)
-        enqueue(conn, "morning_report", f"báo cáo {i}", created)
-        row_id = conn.execute("SELECT max(id) FROM outbox").fetchone()[0]
-        if i == 3:
-            mark_sent(conn, row_id, _at(d, 8, 0))       # mất mạng, gửi bù muộn 90 phút
-        else:
-            mark_sent(conn, row_id, created + 20 + i * 60)
-    # trả lời lệnh /report không phải báo cáo sáng
-    enqueue(conn, "reply", "báo cáo", _at(days[3], 6, 31))
-    mark_sent(conn, conn.execute("SELECT max(id) FROM outbox").fetchone()[0], _at(days[3], 6, 31))
-    assert ar.report_punctuality(conn, days) == (6, 7)
-
-
-def test_report_punctuality_missing_and_unsent_days_count_as_late(conn):
-    days = [date(2026, 11, 10), date(2026, 11, 11), date(2026, 11, 12)]
-    enqueue(conn, "morning_report", "a", _at(days[0], 6, 30))
-    mark_sent(conn, 1, _at(days[0], 6, 31))
-    enqueue(conn, "morning_report", "b", _at(days[1], 6, 30))      # chưa gửi
-    assert ar.report_punctuality(conn, days) == (1, 3)
-    # cho phép trễ 0 giây: 1 phút cũng là muộn
-    assert ar.report_punctuality(conn, days, tolerance_s=0) == (0, 3)
-
-
-def test_morning_report_details_reports_catch_up(conn):
-    d = date(2026, 11, 10)
-    enqueue(conn, "morning_report", "a", _at(d, 6, 30))
-    mark_sent(conn, 1, _at(d, 9, 0))
-    rows = ar.morning_report_details(conn, [d])
-    assert rows == [(d, _at(d, 6, 30), _at(d, 9, 0), False)]
-
-
 # ---------- hiệu quả lọc ----------
+def test_fan_on_seconds_replays_events(conn):
+    now = T0 + 2 * 86400
+    t0 = now - 86400
+    log_event(conn, t0 - 3600, "fan_on", "enter")           # bật từ trước cửa sổ
+    log_event(conn, t0 + 1800, "fan_off", "exit")            # 30 phút trong cửa sổ
+    log_event(conn, t0 + 7200, "override", f"set fan=on until={t0 + 7200 + 600} (x)")
+    # ghi đè hết hạn sau 10 phút (không cần sự kiện)
+    log_event(conn, t0 + 10800, "fan_on", "proactive")
+    log_event(conn, t0 + 10800 + 300, "override", f"set fan=off until={t0 + 99999} (x)")
+    log_event(conn, t0 + 10800 + 900, "override", "cleared (auto)")
+    log_event(conn, t0 + 10800 + 1500, "fan_off", "exit")
+    # bật 30 + 10 + 5 + 10 phút
+    assert ar.fan_on_seconds(conn, t0, now) == (30 + 10 + 5 + 10) * 60
+
+
 def test_fan_effect_compares_on_and_off_periods(conn):
     # quạt bật [T0, T0+1h): PM giảm 1 µg/m³ mỗi 5 phút; tắt [T0+1h, T0+2h): tăng 0,5
     log_event(conn, T0, "fan_on", "enter")
@@ -220,7 +195,7 @@ def test_main_prints_report(conn, tmp_path, capsys):
     assert ar.main(["--db", str(db), "--start", start, "--end", end]) == 0
     out = capsys.readouterr().out
     assert "50,0%" in out                 # 12/24 cửa sổ hợp lệ
-    assert "Báo cáo sáng" in out
+    assert "Báo cáo sáng" not in out and "Telegram" not in out
 
 
 def test_main_missing_db_exits_without_creating_file(tmp_path, capsys):

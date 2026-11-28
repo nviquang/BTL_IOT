@@ -1,6 +1,6 @@
 # Trạm quan trắc không khí AIoT tại nhà
 
-Bài tập nhóm môn IoT, dựa trên Chương 12 *Hands-On Artificial Intelligence for IoT*. Chuỗi xử lý: thu thập cục bộ → dự báo → Gemini → Telegram → tự động bật/tắt quạt lọc.
+Bài tập nhóm môn IoT, dựa trên Chương 12 *Hands-On Artificial Intelligence for IoT*. Chuỗi xử lý: thu thập cục bộ → AI nhận diện nguồn bụi + dự báo → tự động bật/tắt quạt lọc và còi → web trên cloud để xem và điều khiển.
 
 Cách nối dây chi tiết và kết quả test nằm ở `so_do_noi_day_raspberry_pi.md`.
 
@@ -9,6 +9,7 @@ Không thuộc hệ thống (đã loại khỏi thiết kế):
 - Toàn bộ phần đóng/mở cửa: servo, mô hình cửa, công tắc hành trình, lệnh `/door`, lỗi "cửa kẹt"
 - DHT22 (mạch dùng DHT11)
 - Nguồn 5V rời, OLED, LED báo (không có trong mạch hiện tại)
+- Toàn bộ chuỗi Telegram (đã gỡ khỏi code ngày 29/11/2026): bot và các lệnh `/now`, `/fan`, `/mute`..., hàng đợi tin `outbox` và tin cảnh báo, báo cáo sáng 06:30, lời khuyên Gemini, cảnh báo nắng/mưa kèm ảnh camera. Điều khiển thủ công giờ chỉ qua web; sự kiện xem ở nhật ký trên web (bảng `events`)
 
 ## Trạng thái dự án
 
@@ -17,10 +18,8 @@ Không thuộc hệ thống (đã loại khỏi thiết kế):
 | Mạch: DHT11, PMS7003, BH1750, relay + quạt | Đạt `test_all.py` ngày 04/11/2026 và 23/11/2026 |
 | Collector `aiot/collector.py` đọc DHT11, BH1750 và PMS7003, lưu SQLite và CSV, gộp 5 phút | Chạy qua `aiot-collector` trên Pi |
 | Điều khiển quạt tự động `aiot/controller.py` | Có code, chưa thử trên mạch (`docs/van_hanh_chi_tiet.md` 5.3) |
-| Còi báo vượt ngưỡng (`aiot/alarm.py`, `aiot/buzzer.py`, `/mute`) | Có code và test, chưa nối và thử trên mạch |
-| Bot Telegram, cảnh báo, báo cáo sáng, lời khuyên Gemini | Có code, chưa thử với bot thật và Gemini thật (`docs/van_hanh_chi_tiet.md` 5.4, 5.5) |
+| Còi báo vượt ngưỡng (`aiot/alarm.py`, `aiot/buzzer.py`) | Đã nối và thử trên mạch qua web (xem dòng Web) |
 | Dự báo PM2.5 mỗi giờ | Pi dùng seasonal naive hoặc persistence để dự báo 6 giờ tới |
-| Cảnh báo nắng/mưa kèm ảnh camera (`aiot/weather.py`) | Có code, chưa thử thật (`docs/van_hanh_chi_tiet.md` 5.6) |
 | Nhận diện nguồn bụi AI bản demo (`aiot/source_window.py`, `aiot/source_model.py`, `training/demo_data.py`, `training/train_logreg.py`): logistic regression 3 nhãn, cửa sổ 120 s so với nền phòng, dự đoán mỗi 5 s, quạt + còi theo nhãn | Huấn luyện 28/11/2026 trên dữ liệu sinh từ số liệu thật (nhang 23/11, gai bụi 08:20 28/11), đạt cả 8 tiêu chí demo; chưa có lần nấu ăn thật (`docs/nhan_dien_nguon_bui.md`) |
 | Web trên cloud (`cloud/`, `aiot/uplink.py`, `aiot/commands.py`): xem số liệu, nhãn AI, dự báo; Tự động/Thủ công, quạt, còi (cần mật khẩu) | Đã deploy ngày 23/11/2026: https://aiot-tram.onrender.com (Render free + Neon Singapore); Pi chạy `aiot-uplink`, lệnh quạt bật/tắt và còi thủ công từ web tới controller trong ≤ 5 s. Đã xác nhận tại mạch quạt quay, còi kêu; chưa thử qua 4G (README "Web trên cloud", `docs/ke_hoach_web.md`) |
 | Nghiệm thu 7 ngày | Có `scripts/acceptance_report.py`; chưa đo, kết quả ghi ở `docs/nghiem_thu.md` |
@@ -38,7 +37,7 @@ Raspberry Pi 4 Model B 4GB. Số chân là số vật lý trên header 40 chân.
 | PMS7003 | PM1.0, PM2.5, PM10 | UART pin 8, 10 (`/dev/serial0`); 5V |
 | Relay + quạt 5V | Mô phỏng máy lọc | IN → pin 16 (GPIO23); tải nối COM/NO |
 | Còi chủ động (module 3 chân, kích mức thấp) | Báo vượt ngưỡng tại chỗ | I/O → pin 29 (GPIO5); VCC pin 17 (3.3V), GND pin 25 |
-| Camera USB | Ảnh | /dev/video0 |
+| Camera USB | Không còn dùng (cảnh báo nắng/mưa đã gỡ) | /dev/video0 |
 
 Những điều dễ sai:
 - **Còi kích mức thấp:** GPIO5 LOW = kêu, HIGH = im. VCC phải lấy 3.3V (pin 17), cấp 5V thì mức HIGH của Pi không tắt được còi. Phải dùng GPIO 0–8 (mặc định kéo lên) để còi im lúc Pi khởi động; GPIO26 mặc định kéo xuống nên còi sẽ kêu.
@@ -50,23 +49,22 @@ Những điều dễ sai:
 
 ## Kiến trúc mục tiêu
 
-Nguyên tắc **local-first:** đo, lưu, dự báo và điều khiển đều chạy trên Pi, không phụ thuộc Internet. Internet chỉ dùng cho Telegram, Gemini và dữ liệu tham chiếu Open-Meteo. Mất mạng thì vẫn đo, vẫn điều khiển, và gửi bù tin khi có mạng lại.
+Nguyên tắc **local-first:** đo, lưu, dự báo và điều khiển đều chạy trên Pi, không phụ thuộc Internet. Internet chỉ dùng cho web trên cloud (`aiot-uplink`). Mất mạng thì vẫn đo, vẫn điều khiển, còi vẫn kêu; uplink gửi bù khi có mạng lại.
 
-Nguyên tắc **an toàn AI:** Gemini chỉ viết lời khuyên, không điều khiển thiết bị. Việc bật/tắt quạt là luật tất định chạy cục bộ.
+Nguyên tắc **an toàn AI:** mô hình chỉ chọn nhãn nguồn bụi; hành động ứng với nhãn (quạt, còi) là bảng cố định chạy cục bộ, có luật ngưỡng dự phòng.
 
 | Việc | Chạy ở đâu |
 | ---- | ---------- |
 | Đọc cảm biến, lưu dữ liệu, luật điều khiển | Pi |
 | Dự báo đối chứng PM2.5 | Pi |
-| Viết lời khuyên | Gemini API, khoảng 1–3 lần/ngày |
-| Gửi/nhận tin | Telegram long polling, không cần mở port |
+| Nhận diện nguồn bụi (AI) | Pi, mỗi 5 giây |
+| Xem số liệu, điều khiển thủ công | Web trên Render; Pi tự gửi lên và nhận lệnh về, không cần mở port |
 
 ## Chức năng dự kiến
 
 - **Thu thập:** gộp trung bình 5 phút, gắn cờ `valid`, loại giá trị lỗi.
-- **Báo cáo sáng (mặc định 06:30):** không khí 24 giờ qua, dự báo 6 giờ tới, lời khuyên từ Gemini, trạng thái quạt.
 - **Dự báo:** PM2.5 trung bình giờ cho 1–6 giờ tới, kèm nhãn AQI. Pi dùng số đo PM2.5 cùng giờ hôm qua khi đủ dữ liệu, hoặc mức của giờ hợp lệ gần nhất.
-- **Cảnh báo:** gửi khi đổi nhóm AQI, tối đa 1 tin cùng loại mỗi 30 phút, có giờ yên lặng.
+- **Cảnh báo tại chỗ:** còi kêu theo nhãn AI (ô nhiễm bụi mịn) hoặc khi PM2.5 vượt ngưỡng; mọi sự kiện ghi vào bảng `events`, web hiện ở nhật ký.
 - **Điều khiển:** tự bật quạt khi không khí xấu, tự tắt khi tốt lại, có ghi đè thủ công.
 
 ### Nhận diện nguồn bụi (AI điều khiển quạt và còi)
@@ -82,35 +80,22 @@ Hai trạng thái: BÌNH THƯỜNG (quạt tắt) và BẢO VỆ (quạt bật).
 | Vào BẢO VỆ | PM2.5 TB 10 phút > 55 µg/m³, liên tục ≥ 5 phút |
 | Thoát BẢO VỆ | PM2.5 TB 15 phút < 35 µg/m³, liên tục ≥ 15 phút, và đã giữ trạng thái ≥ 10 phút; không thoát khi còn dự báo mới (≤ 90 phút) với TB 3 giờ tới > 100 µg/m³ |
 | Khẩn cấp | Trung vị PM2.5 1 phút (cần ≥ 3 mẫu) ≥ 150 µg/m³: vào ngay, kèm cảnh báo mạnh. Không nhầm với nhóm AQI "Nguy hại" (≥ 225,5) |
-| Còi | Trung vị PM2.5 1 phút ≥ `buzzer.alarm_pm25` (mặc định 150): kêu 10 giây, lặp lại mỗi 5 phút khi còn vượt, tắt ngay khi hết; kêu cả giờ yên lặng; `/mute` tắt tiếng |
+| Còi | Trung vị PM2.5 1 phút ≥ `buzzer.alarm_pm25` (mặc định 150): kêu 10 giây, lặp lại mỗi 5 phút khi còn vượt, tắt ngay khi hết; bật/giữ im thủ công từ web |
 | Chủ động | Dự báo TB 3 giờ tới > 100 µg/m³: bật quạt trước |
 | Chế độ demo | Rút ngắn thời gian chờ, ví dụ 20 giây |
 
 An toàn:
-- Ghi đè thủ công có hiệu lực tới `/mode auto` hoặc hết hạn, mặc định 2 giờ.
-- Mất dữ liệu cảm biến PM quá 2 phút: giữ nguyên trạng thái, gửi cảnh báo, không quyết định theo số liệu cũ.
+- Ghi đè thủ công (từ web) có hiệu lực tới khi về chế độ Tự động hoặc hết hạn, mặc định 2 giờ.
+- Mất dữ liệu cảm biến PM quá 2 phút: giữ nguyên trạng thái, ghi sự kiện `sensor_fault`, không quyết định theo số liệu cũ.
 - Khởi động lại Pi: đọc trạng thái cuối trong DB rồi đưa quạt về trạng thái hợp lý.
-- Quyết định điều khiển không phụ thuộc Gemini hay Internet.
-
-### Telegram
-
-Lệnh: `/now`, `/report`, `/status`, `/mode auto|manual`, `/fan on|off`, `/quiet 22 6`, `/mute [phút]|off` (tắt tiếng còi), `/buzzer on|off` (còi thủ công, bật tối đa `buzzer.manual_max_s` = 60 s), `/web`. `/mode auto` xoá cả ghi đè quạt lẫn còi.
+- Quyết định điều khiển không phụ thuộc Internet.
 
 ### Web trên cloud
 
 - Web FastAPI trên Render (`cloud/app.py`, `render.yaml`), dữ liệu ở Neon Postgres. Pi chạy dịch vụ `aiot-uplink` gửi `POST /api/ingest` 5 giây/lần (Bearer `INGEST_TOKEN`) và nhận lệnh về; Pi không mở port.
 - Xem công khai; điều khiển cần mật khẩu chung (hash ở biến `WEB_PASSWORD_HASH` trên Render, tạo bằng `python -m cloud.security`).
-- Lệnh web và Telegram cùng đi qua `aiot/commands.py` → khoá `pending_override` / `pending_buzzer` → controller (`buzzer_override`). Lệnh quá 60 s chưa được nhận thì hết hạn; mỗi id chỉ áp dụng một lần (khoá `uplink_done`).
-- Không gửi lên cloud: ảnh, chat id, IP (uplink bỏ `chat=`, `ip=` khỏi chi tiết sự kiện).
-
-Chỉ phản hồi chat trong `ALLOWED_CHAT_IDS`, không in token vào log, và ghi mọi lệnh điều khiển vào nhật ký.
-
-### Gemini
-
-- Chỉ gửi số liệu đã tổng hợp dạng JSON, không có thông tin cá nhân. Yêu cầu trả về JSON `{headline, advice}`, nhiệt độ khoảng 0.2.
-- Yêu cầu không chẩn đoán y tế, không bịa số liệu.
-- Lỗi, hết hạn mức hoặc JSON sai: dùng mẫu lời khuyên cố định theo nhóm AQI, bản tin vẫn phải gửi được.
-- Tên model đặt trong `config.yaml`, kiểm tra model và hạn mức hiện hành trước khi triển khai.
+- Lệnh web đi qua `aiot/commands.py` → khoá `pending_override` / `pending_buzzer` → controller (`buzzer_override`). Lệnh quá 60 s chưa được nhận thì hết hạn (phía Pi bỏ lệnh chờ quá `control.stale_command_s`); mỗi id chỉ áp dụng một lần (khoá `uplink_done`). Chế độ Tự động xoá cả ghi đè quạt lẫn còi.
+- Không gửi lên cloud: IP, tên người dùng (uplink bỏ `chat=`, `ip=`, `user=` khỏi chi tiết sự kiện). Không in token vào log; mọi lệnh điều khiển được ghi vào nhật ký.
 
 ## Đánh giá dự báo PM2.5
 
@@ -157,19 +142,15 @@ CREATE TABLE fast_readings (       -- mẫu 1 giây cho AI nguồn bụi, giữ 
 CREATE TABLE source_labels (id, start_ts, end_ts, label, note);  -- scripts/label_event.py
 CREATE TABLE source_predictions (ts PRIMARY KEY, label, raw_label, proba, model);
 -- Khoá state cho lệnh: pending_override (quạt), pending_buzzer -> buzzer_override (còi),
--- buzzer_mute_until (/mute); uplink: uplink_cursor, uplink_done, uplink_last_ok
-CREATE TABLE outbox (              -- tin Telegram chờ gửi, gửi bù khi có mạng
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  created_at INTEGER NOT NULL, kind TEXT NOT NULL,
-  text TEXT NOT NULL, sent_at INTEGER
-);
+-- buzzer_mute_until (tắt tiếng còi, hiện không còn lệnh ghi); uplink: uplink_cursor, uplink_done, uplink_last_ok
+-- DB cũ trên Pi còn bảng outbox, tg_messages của bot Telegram đã gỡ: để nguyên, không dùng
 ```
 
 ## Phần mềm
 
-Python 3 trong venv. Thư viện dự kiến: `pyserial`, `adafruit-circuitpython-dht`, `adafruit-circuitpython-bh1750`, `lgpio` hoặc `gpiozero`, `pandas` và `scikit-learn` (máy phát triển), `requests` hoặc `python-telegram-bot`, `google-genai`.
+Python 3 trong venv. Thư viện dự kiến: `pyserial`, `adafruit-circuitpython-dht`, `adafruit-circuitpython-bh1750`, `lgpio` hoặc `gpiozero`, `numpy`, `requests` (uplink), `pandas` và `scikit-learn` (máy phát triển).
 
-Dịch vụ chạy trên Pi qua systemd. Collector thu thập liên tục, controller lặp 5 giây, bot dùng long polling. Uplink bật khi có `cloud.enabled`, `cloud.url` và `INGEST_TOKEN`. Các timer chạy dự báo mỗi giờ, báo cáo lúc 06:30 và kiểm tra cảnh báo thời tiết mỗi 20 giây. Bí mật trên Pi để trong `.env` theo mẫu `.env.example`. Bí mật của web nằm trong các biến môi trường Render `DATABASE_URL`, `INGEST_TOKEN`, `WEB_PASSWORD_HASH`, `SESSION_SECRET`.
+Dịch vụ chạy trên Pi qua systemd. Collector thu thập liên tục, controller lặp 5 giây. Uplink bật khi có `cloud.enabled`, `cloud.url` và `INGEST_TOKEN`. Timer `aiot-forecast.timer` chạy dự báo mỗi giờ. Bí mật trên Pi để trong `.env` theo mẫu `.env.example` (chỉ còn `INGEST_TOKEN`). Bí mật của web nằm trong các biến môi trường Render `DATABASE_URL`, `INGEST_TOKEN`, `WEB_PASSWORD_HASH`, `SESSION_SECRET`.
 
 Cấu hình chung nằm trong `config.yaml` và được đọc bằng `aiot.config.load_config()`. Để chạy test trên Windows, tạo `.venv` trong repo, cài `requirements-dev.txt` và chạy `.venv/Scripts/python -m pytest`.
 
@@ -182,9 +163,8 @@ Cấu hình chung nằm trong `config.yaml` và được đọc bằng `aiot.con
 | Dự báo | Dữ liệu PM2.5 hợp lệ của trạm | Pi tạo đủ 6 mốc dự báo bằng seasonal naive hoặc persistence |
 | Điều khiển | Hộp khói, 10 lần vượt ngưỡng | Phản ứng đúng thời gian cấu hình, không nhảy trạng thái |
 | Hiệu quả lọc | Đường PM2.5 khi quạt bật so với tắt | Có khác biệt đo được |
-| Telegram | Báo cáo sáng 7 ngày | Đúng giờ ≥ 6/7, gửi bù sau khi mất mạng |
-| Gemini | Giả lập lỗi API | Dùng mẫu cố định, bản tin vẫn gửi |
-| An toàn | Rút dây PMS7003 | Cảnh báo lỗi, không bật/tắt bừa |
+| Web | Lệnh quạt/còi từ web, mất mạng rồi có lại | Áp dụng trong ≤ 5 s; số liệu gửi bù |
+| An toàn | Rút dây PMS7003 | Ghi sự kiện lỗi, không bật/tắt bừa |
 
 Thử khói chỉ dùng lượng nhỏ, nơi thoáng, có người trông. Quạt mini là mô phỏng, phải ghi rõ trong báo cáo đây là proof of concept. Độ ẩm cao ở Hà Nội có thể làm PMS7003 đọc cao hơn thực tế, nên ghi độ ẩm cùng lúc và đối chiếu trạm công khai.
 
@@ -194,7 +174,6 @@ Các mục có ghi "tạm" đã có giá trị mặc định trong `config.yaml`
 
 - Thang AQI (US EPA hay VN_AQI) và ngưỡng điều khiển cuối cùng — tạm: US EPA 2024, ngưỡng như bảng trên (`control` trong `config.yaml`)
 - Vị trí đặt cảm biến, và một hay hai cảm biến PM
-- Model Gemini và số lần gọi mỗi ngày — tạm: `gemini-3.5-flash-lite`, tối đa 3 lần/ngày
 - Mốc nộp bài và phân công
 
 ## Làm việc với Pi

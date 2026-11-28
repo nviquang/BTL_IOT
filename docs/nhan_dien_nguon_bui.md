@@ -16,14 +16,14 @@ Bộ nhận diện chạy trong `aiot-controller`. Cứ 5 giây nó nhìn **120 
 Mục tiêu của bản này là **demo**, không phải độ chính xác ngoài thực tế. Dữ liệu huấn luyện là dữ liệu sinh ra, hiệu chỉnh theo số liệu thật của trạm. Báo cáo phải ghi rõ đây là proof of concept.
 
 Những gì vẫn giữ nguyên:
-- Ghi đè `/fan`, `/buzzer`, `/mute` vẫn được ưu tiên.
+- Ghi đè quạt và còi từ web vẫn được ưu tiên.
 - Mất dữ liệu PM quá 2 phút thì giữ nguyên trạng thái.
 - `min_state_s` vẫn chống quạt bật/tắt liên tục.
 - Làm mượt: trung bình xác suất 3 lần đoán gần nhất, chỉ đổi nhãn khi ≥ 0,6.
 
 Quay về luật ngưỡng PM2.5 khi không có file mô hình, mẫu 1 giây mới nhất cũ hơn 15 s, hoặc chưa đủ tin cậy.
 
-**Đánh đổi cần ghi trong báo cáo:** mô hình không nhìn mức bụi tuyệt đối. Phòng ô nhiễm nhưng **ổn định** (ví dụ nền 160 cả buổi tối) được gọi là `normal`, nên quạt không tự bật. Cảnh báo AQI qua Telegram vẫn chạy riêng; gửi `/fan on` để bật tay.
+**Đánh đổi cần ghi trong báo cáo:** mô hình không nhìn mức bụi tuyệt đối. Phòng ô nhiễm nhưng **ổn định** (ví dụ nền 160 cả buổi tối) được gọi là `normal`, nên quạt không tự bật. Khi AI đã có nhãn thì cả quạt lẫn còi đều theo nhãn, luật ngưỡng PM2.5 (kể cả còi ≥ 150) không chạy, nên còi cũng im. Muốn bật quạt thì chuyển Thủ công trên web và bấm bật quạt.
 
 ## Mô hình
 

@@ -1,5 +1,5 @@
 # Cấu hình trạm quan trắc không khí AIoT (aiot/config.py đọc file này).
-# Không đặt token, API key hay mật khẩu ở đây: bí mật nằm trong .env (xem .env.example).
+# Không đặt token hay mật khẩu ở đây: bí mật nằm trong .env (xem .env.example).
 
 db_path: /home/admin/iot_data/aiot.db
 csv_path: /home/admin/iot_data/sensors.csv
@@ -14,59 +14,20 @@ control:
   exit_mean_s: 900
   exit_hold_s: 900          # ...liên tục >= 15 phút
   min_state_s: 600          # và đã giữ trạng thái >= 10 phút
-  danger_pm25: 150.0        # mức khẩn cấp: vào ngay, kèm cảnh báo mạnh
+  danger_pm25: 150.0        # mức khẩn cấp: vào ngay
   danger_window_s: 60
   proactive_pm25: 100.0     # dự báo TB 3 giờ tới > 100 thì bật quạt trước
-  forecast_max_age_s: 5400  # dự báo cũ hơn (giây) thì controller và báo cáo bỏ qua
-  stale_s: 120              # mất dữ liệu PM > 2 phút: giữ nguyên trạng thái, cảnh báo
+  forecast_max_age_s: 5400  # dự báo cũ hơn (giây) thì controller bỏ qua
+  stale_s: 120              # mất dữ liệu PM > 2 phút: giữ nguyên trạng thái, ghi sự kiện sensor_fault
   override_ttl_s: 7200      # ghi đè thủ công hết hạn sau 2 giờ
+  stale_command_s: 120      # lệnh từ web chờ quá 120 s (+ loop_s) mà controller chưa nhận thì bỏ
   loop_s: 5                 # 5 giây: bộ nhận diện nguồn bụi dự đoán mỗi vòng
   demo: true                # true: mọi thời gian chờ và cửa sổ TB rút còn demo_wait_s
   demo_wait_s: 20
 
-telegram:
-  quiet_start: 22           # giờ yên lặng 22h -> 6h
-  quiet_end: 6
-  alert_cooldown_s: 1800
-  stale_command_s: 120
-  poll_timeout_s: 50
-
-# Gemini chỉ viết lời khuyên cho báo cáo; lỗi/hết lượt/model rỗng thì dùng lời khuyên mẫu.
-gemini:
-  # Model kiểm tra ngày 07/11/2026 tại https://ai.google.dev/gemini-api/docs/models
-  # (chuyển tới aistudio.google.com/docs/models): gemini-3.5-flash-lite là bản Stable rẻ nhất
-  # dòng 3.5; https://ai.google.dev/gemini-api/docs/pricing ghi Free Tier "Free of charge".
-  # Hạn mức RPM/RPD từng model chỉ xem được trong AI Studio (docs/rate-limits), RPD đặt lại
-  # lúc nửa đêm giờ Thái Bình Dương. Kiểm tra lại trước khi triển khai; "" = luôn dùng mẫu.
-  model: gemini-3.5-flash-lite
-  temperature: 0.2
-  max_calls_per_day: 3
-  timeout_s: 20
-
-report:
-  # Chỉ dùng để chấm "đúng giờ" (scripts/acceptance_report.py). Giờ gửi thật do
-  # OnCalendar trong deploy/aiot-morning.timer quyết định: đổi giờ thì sửa CẢ HAI.
-  time: "06:30"
-
-# Cảnh báo nắng gắt / có thể mưa (aiot/weather.py, chạy bởi aiot-weather.timer mỗi 20 giây).
-# DHT11, BH1750 và camera USB đặt ngoài ban công. Đây là ước lượng từ cảm biến,
-# không phải dự báo thời tiết. Mỗi điều kiện phải đúng ở 3 cửa sổ 5 phút liền nhau.
-weather:
-  sunny_lux: 30000.0        # nắng gắt: lux > 30000 và nhiệt độ >= 33 °C
-  sunny_temp_c: 33.0
-  rain_hum_pct: 85.0        # có thể mưa: độ ẩm >= 85% và lux < 5000, chỉ từ 8h tới 16h
-  rain_lux: 5000.0
-  day_start_h: 8            # tránh bình minh (~06:10) và hoàng hôn (~17:15), lux thấp + ẩm
-  day_end_h: 16
-  sustain_windows: 3        # 0 = tức thời: chỉ cần một mẫu thô 10 giây vượt ngưỡng
-  cooldown_s: 10800         # tối đa 1 tin cùng loại mỗi 3 giờ
-  photo_dir: /home/admin/iot_data/photos
-  photo_keep_days: 7        # ảnh cũ hơn bị xoá
-  camera_index: 0           # /dev/video0
-
 # Còi báo vượt ngưỡng tại chỗ (aiot/alarm.py, aiot/buzzer.py), chạy trong aiot-controller.
 # Module còi chủ động kích mức thấp: VCC pin 17 (3.3V), GND pin 25, I/O pin 29 (GPIO5).
-# Kêu bất kể giờ yên lặng và khi mất Internet; tắt tiếng bằng /mute trên Telegram.
+# Kêu cả khi mất Internet. Bật/giữ im thủ công từ web.
 buzzer:
   enabled: true
   gpio: 5                   # GPIO5 mặc định kéo lên khi Pi khởi động nên còi im
@@ -76,8 +37,8 @@ buzzer:
   beep_off_s: 0.2
   burst_s: 10.0             # một hồi còi 10 giây
   repeat_s: 300             # còn vượt thì kêu lại sau 5 phút; hết vượt thì tắt ngay
-  mute_s: 1800              # /mute không kèm số phút: tắt tiếng 30 phút
-  manual_max_s: 60          # bật còi thủ công (/buzzer on, web) tối đa 60 giây rồi tự tắt
+  mute_s: 1800              # tắt tiếng không kèm thời gian: 30 phút
+  manual_max_s: 60          # bật còi thủ công từ web tối đa 60 giây rồi tự tắt
 
 # Bộ nhận diện nguồn bụi bằng AI: logistic regression (aiot/source_model.py), models/source_logreg.json
 # do training/train_logreg.py tạo. Dự đoán mỗi control.loop_s giây từ cửa sổ 120 s mẫu 1 giây,

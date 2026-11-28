@@ -1,7 +1,7 @@
 # Dịch vụ đẩy dữ liệu trạm lên web trên cloud và nhận lệnh từ web (aiot/uplink.py).
 # Cài: scripts/pi_up.sh tự cài và chỉ bật khi config.yaml có cloud.enabled: true, cloud.url
 #      và .env có INGEST_TOKEN.
-# Không chạm GPIO: lệnh web chỉ ghi khoá state cho controller, như lệnh Telegram.
+# Không chạm GPIO: lệnh web chỉ ghi khoá state cho controller.
 [Unit]
 Description=AIoT air station cloud uplink (push readings, receive web commands)
 # Mất mạng thì tự thử lại, không phụ thuộc cứng vào mạng.

@@ -2,15 +2,16 @@
 Dịch vụ controller: mỗi loop_s giây đọc PM2.5 từ SQLite, chạy luật decide()
 và bật/tắt quạt qua relay GPIO23.
 
-- Chỉ dịch vụ này chạm GPIO23. Bot ghi khoá state 'pending_override' dạng JSON:
+- Chỉ dịch vụ này chạm GPIO23. Lệnh từ web (aiot.uplink qua aiot.commands) ghi khoá state
+  'pending_override' dạng JSON:
   {"fan": true|false, "ttl_s": int, "at": epoch} đặt ghi đè; {"fan": null, "at": epoch}
-  xoá ghi đè (/mode auto). Controller đọc khoá ở đầu mỗi bước; trạng thái mới, sự kiện
+  xoá ghi đè (chế độ tự động). Controller đọc khoá ở đầu mỗi bước; trạng thái mới, sự kiện
   'override' và lệnh xoá khoá (chỉ khi giá trị chưa đổi) được ghi trong cùng một transaction.
-  Lệnh thiếu "at", hoặc lệch quá telegram.stale_command_s + control.loop_s so với giờ hiện
+  Lệnh thiếu "at", hoặc lệch quá control.stale_command_s + control.loop_s so với giờ hiện
   tại (cũ, hay "ở tương lai"), bị bỏ với sự kiện 'override_stale': controller dừng vài giờ
-  thì lệnh /fan cũ không được chạy khi nó chạy lại.
-- Mỗi bước ghi khoá 'controller_heartbeat' (giây epoch) cùng transaction; bot dùng khoá
-  này để cảnh báo khi controller không chạy.
+  thì lệnh quạt cũ không được chạy khi nó chạy lại.
+- Mỗi bước ghi khoá 'controller_heartbeat' (giây epoch) cùng transaction; healthcheck và
+  uplink dùng khoá này để biết controller còn chạy.
 - Trạng thái logic (ControlState) lưu ở khoá 'control_state' sau mỗi bước, trước khi
   ghi relay. Relay được ghi lại mỗi vòng (idempotent), nên relay lỗi thì vòng sau tự
   thử lại; sự kiện 'relay_error' chỉ ghi một lần cho cả chuỗi lỗi.
@@ -22,20 +23,15 @@ và bật/tắt quạt qua relay GPIO23.
   giờ tắt). Trong stale_s giây đầu sau khi khởi động, thiếu dữ liệu PM vẫn giữ nguyên trạng
   thái nhưng không báo 'sensor_fault' (collector chưa kịp ghi mẫu đầu); quá thời gian đó mà
   vẫn thiếu thì báo như thường.
-- Relay lỗi: ngoài sự kiện 'relay_error', lần lỗi đầu của chuỗi gửi cảnh báo 'relay_error'
-  (theo giới hạn tin của notifier); tin fan_on/fan_off của cùng bước được sửa để không
-  khẳng định quạt đã đổi trạng thái.
-- Cảnh báo (Task 7): Event của bước (danger, fan_on/off, sensor_fault...) và đổi nhóm
-  AQI theo PM2.5 TB exit_mean_s (15 phút) được ghi vào outbox trong CÙNG transaction với
-  trạng thái và sự kiện, đặt sau SAVEPOINT riêng: lỗi trong phần tin nhắn chỉ huỷ phần
-  tin nhắn, ghi log rồi tiếp tục; trạng thái, sự kiện và relay không bị ảnh hưởng.
+- Relay lỗi: sự kiện 'relay_error' chỉ ghi một lần cho cả chuỗi lỗi, 'relay_recovered' khi
+  ghi được trở lại. Mọi sự kiện nằm trong bảng events (web hiện ở nhật ký).
 - Dự báo (Task 9): mỗi bước đọc latest_forecast (TB 3 giờ tới của dự báo mới nhất, bỏ
   qua nếu cũ hơn control.forecast_max_age_s) cho luật 'Chủ động'. Đọc lỗi thì coi như
   không có dự báo, ghi log một lần, vẫn điều khiển bình thường.
 - Còi (aiot/alarm.py, aiot/buzzer.py, GPIO5): trung vị PM2.5 1 phút >= buzzer.alarm_pm25
-  thì kêu một hồi, lặp lại mỗi buzzer.repeat_s giây khi còn vượt, tắt ngay khi hết. Khoá 'buzzer_mute_until' (bot ghi bằng /mute) tắt tiếng tới mốc đó. Trạng
+  thì kêu một hồi, lặp lại mỗi buzzer.repeat_s giây khi còn vượt, tắt ngay khi hết. Khoá 'buzzer_mute_until' (nếu có) tắt tiếng tới mốc đó. Trạng
   thái còi lưu ở khoá 'alarm_state'. Lỗi còi chỉ ghi log, không ảnh hưởng quạt.
-  Lệnh còi thủ công (bot /buzzer, web qua aiot.uplink) nằm ở khoá 'pending_buzzer'; controller
+  Lệnh còi thủ công (web qua aiot.uplink) nằm ở khoá 'pending_buzzer'; controller
   kiểm tra tuổi lệnh như pending_override rồi ghi 'buzzer_override' {"on", "until", "at"}
   trong cùng transaction của bước (bật tối đa buzzer.manual_max_s; null = xoá ghi đè).
 - Nhận diện nguồn bụi (aiot/source_model.py, mục source trong config.yaml): mỗi bước đọc
@@ -43,11 +39,11 @@ và bật/tắt quạt qua relay GPIO23.
   bằng logistic regression, làm mượt (khoá 'source_state') và ghi source_predictions (kèm
   điểm bất thường 'anomaly' = 1 − P(normal)) cùng transaction của bước. Có nhãn: quạt và còi
   theo nhãn (nấu ăn: quạt; ô nhiễm bụi mịn: quạt + còi; bình thường: tắt cả hai), đổi nhãn
-  thì ghi sự kiện 'source_change' và cảnh báo. Không có mô hình, mẫu 1 giây cũ hơn
+  thì ghi sự kiện 'source_change'. Không có mô hình, mẫu 1 giây cũ hơn
   source.stale_s hoặc chưa đủ tin cậy: luật ngưỡng PM2.5 như trước. Lỗi ở phần này chỉ
   ghi log và quay về luật ngưỡng.
 - SIGTERM/SIGINT: đưa GPIO23 về LOW, tắt còi, nhả chip, thoát 0.
-- Không phụ thuộc Internet hay Gemini.
+- Không phụ thuộc Internet.
 
 Chạy: cd ~/BTL_IOT && venv/bin/python -m aiot.controller [--config demo.yaml]
 """
@@ -63,26 +59,21 @@ from pathlib import Path
 
 from aiot.alarm import BURST, SILENCE, AlarmState, alarm_reason, is_muted, plan, plan_manual
 from aiot.commands import BUZZER_OVERRIDE_KEY, BUZZER_PENDING_KEY, buzzer_override
-from aiot.config import BuzzerCfg, SourceCfg, TelegramCfg
+from aiot.config import BuzzerCfg, SourceCfg
 from aiot.control import ControlState, Event, apply_override, decide, fan_on, inputs_from_series
 from aiot.db import (connect, delete_state, fast_rows, get_state, init_schema, insert_prediction,
                      log_event, pm25_series, set_state)
 from aiot.forecast import latest_forecast
-from aiot.notifier import (FAULT_PENDING_KEY, check_aqi_change, event_message, resend_suppressed,
-                           send_alert)
 
 log = logging.getLogger("aiot.controller")
 
 STATE_KEY = "control_state"
 PENDING_KEY = "pending_override"
 RELAY_FAULT_KEY = "relay_fault"     # "1" khi đang trong chuỗi lỗi relay
-HEARTBEAT_KEY = "controller_heartbeat"   # giây epoch của bước gần nhất (bot đọc)
+HEARTBEAT_KEY = "controller_heartbeat"   # giây epoch của bước gần nhất (healthcheck, uplink đọc)
 ALARM_KEY = "alarm_state"           # AlarmState của còi (JSON)
 SOURCE_KEY = "source_state"         # SourceState của bộ nhận diện nguồn bụi (JSON)
-MUTE_KEY = "buzzer_mute_until"      # bot ghi bằng /mute: giây epoch hết tắt tiếng
-RELAY_ERROR_TEXT = ("Lỗi relay: bộ điều khiển không ghi được GPIO23 để {action} quạt lọc, "
-                    "quạt có thể không phản hồi. Kiểm tra dây relay và dịch vụ aiot-controller.")
-RELAY_FAN_NOTE = " (Lưu ý: không điều khiển được relay, quạt có thể chưa {action}.)"
+MUTE_KEY = "buzzer_mute_until"      # giây epoch hết tắt tiếng còi (nếu có)
 
 _forecast_error_logged = False      # lỗi đọc dự báo chỉ ghi log một lần mỗi chuỗi lỗi
 
@@ -107,7 +98,7 @@ def _load_state(conn):
 
 def _parse_pending(text, default_ttl_s: int):
     """(fan, ttl_s, at) từ JSON pending_override; sai định dạng thì ValueError.
-    at (giây epoch lúc bot nhận lệnh) là None khi thiếu hoặc không phải số nguyên."""
+    at (giây epoch lúc lệnh được ghi) là None khi thiếu hoặc không phải số nguyên."""
     try:
         data = json.loads(text)
     except ValueError:
@@ -127,7 +118,7 @@ def _parse_pending(text, default_ttl_s: int):
 
 
 def _apply_pending(st: ControlState, text: str, cfg, now: int, max_age_s: int):
-    """Áp dụng lệnh ghi đè bot để lại vào st (trong bộ nhớ). Trả về (st, [Event]).
+    """Áp dụng lệnh ghi đè (từ web) vào st (trong bộ nhớ). Trả về (st, [Event]).
     Lệnh thiếu "at" hoặc lệch quá max_age_s giây so với now bị bỏ ('override_stale')."""
     try:
         fan, ttl_s, at = _parse_pending(text, cfg.override_ttl_s)
@@ -182,42 +173,10 @@ def _apply_buzzer_pending(text: str, now: int, max_age_s: int, max_on_s: int):
     return value, [Event("buzzer_override", detail)]
 
 
-def _notify(conn, now: int, st: ControlState, inp, events, tcfg) -> None:
-    """Ghi tin cảnh báo của bước vào outbox (không commit: nằm trong transaction của _persist)."""
-    for ev in events:
-        msg = event_message(ev, st, inp, now)
-        if msg is None:
-            continue
-        if ev.kind == "sensor_recovered" and get_state(conn, FAULT_PENDING_KEY) is not None:
-            continue                    # lỗi chưa từng được báo thì không báo đã hết lỗi
-        text, urgent = msg
-        kind = ev.kind
-        if kind == "source_change":     # mỗi nhãn một loại tin để giới hạn 30 phút riêng
-            kind = "source_" + (ev.detail or "").split(" ")[0]
-        send_alert(conn, kind, text, now, tcfg, urgent=urgent, commit=False)
-    resend_suppressed(conn, now, tcfg, st.fault_active, commit=False)
-    if inp is not None and not st.fault_active:
-        # Mất dữ liệu: TB 15 phút có thể vẫn tính được từ mẫu cũ, không báo đổi nhóm theo nó
-        check_aqi_change(conn, inp.mean_exit, now, tcfg, commit=False)
-
-
-def _run_notifier(conn, notify) -> None:
-    """Chạy notify() sau SAVEPOINT: lỗi thì huỷ riêng phần tin nhắn, ghi log, không raise."""
-    conn.execute("SAVEPOINT notify")
-    try:
-        notify()
-    except Exception:
-        log.exception("Lỗi khi tạo tin cảnh báo, bỏ qua tin của vòng này")
-        conn.execute("ROLLBACK TO SAVEPOINT notify")
-    conn.execute("RELEASE SAVEPOINT notify")
-
-
-def _persist(conn, now: int, st: ControlState, events, pending_text=None, notify=None,
-             extra=None) -> None:
-    """Ghi control_state, mọi Event, (nếu có) xoá đúng lệnh pending đã đọc và tin cảnh báo
-    (notify) trong MỘT transaction, commit một lần. Lỗi ghi DB thì rollback toàn bộ và
-    raise: lệnh pending còn nguyên cho vòng sau, không có sự kiện nào được ghi mà không
-    áp dụng. Lỗi trong notify chỉ huỷ phần tin nhắn (_run_notifier)."""
+def _persist(conn, now: int, st: ControlState, events, pending_text=None, extra=None) -> None:
+    """Ghi control_state, mọi Event và (nếu có) xoá đúng lệnh pending đã đọc trong MỘT
+    transaction, commit một lần. Lỗi ghi DB thì rollback toàn bộ và raise: lệnh pending còn
+    nguyên cho vòng sau, không có sự kiện nào được ghi mà không áp dụng."""
     try:
         set_state(conn, STATE_KEY, st.to_json(), commit=False)
         set_state(conn, HEARTBEAT_KEY, int(now), commit=False)
@@ -225,22 +184,18 @@ def _persist(conn, now: int, st: ControlState, events, pending_text=None, notify
             log.info("Sự kiện %s %s", ev.kind, ev.detail)
             log_event(conn, now, ev.kind, ev.detail, commit=False)
         if pending_text is not None:
-            # Chỉ xoá nếu bot chưa ghi lệnh mới kể từ lúc đọc
+            # Chỉ xoá nếu chưa có lệnh mới kể từ lúc đọc
             delete_state(conn, PENDING_KEY, value=pending_text, commit=False)
         if extra is not None:
             extra()
-        if notify is not None:
-            _run_notifier(conn, notify)
         conn.commit()
     except BaseException:
         conn.rollback()
         raise
 
 
-def _drive(conn, relay, on: bool, now: int, tcfg: TelegramCfg | None = None) -> bool:
-    """Ghi mức relay. Lỗi thì ghi 'relay_error' và gửi cảnh báo một lần mỗi chuỗi lỗi
-    (cảnh báo theo giới hạn tin của notifier), không raise."""
-    tcfg = tcfg if tcfg is not None else TelegramCfg()
+def _drive(conn, relay, on: bool, now: int) -> bool:
+    """Ghi mức relay. Lỗi thì ghi sự kiện 'relay_error' một lần mỗi chuỗi lỗi, không raise."""
     try:
         relay.set(on)
     except Exception as e:
@@ -249,9 +204,6 @@ def _drive(conn, relay, on: bool, now: int, tcfg: TelegramCfg | None = None) -> 
             try:
                 log_event(conn, now, "relay_error", f"set {'on' if on else 'off'}: {e}", commit=False)
                 set_state(conn, RELAY_FAULT_KEY, "1", commit=False)
-                _run_notifier(conn, lambda: send_alert(
-                    conn, "relay_error", RELAY_ERROR_TEXT.format(action="bật" if on else "tắt"),
-                    now, tcfg, commit=False))
                 conn.commit()
             except BaseException:
                 conn.rollback()
@@ -413,48 +365,25 @@ def restore_state(conn, now: int) -> ControlState:
     return st
 
 
-def restore(conn, relay, cfg, now: int, *, tcfg: TelegramCfg | None = None) -> ControlState:
+def restore(conn, relay, cfg, now: int) -> ControlState:
     """Khôi phục trạng thái rồi đưa relay về đúng mức ngay."""
     st = restore_state(conn, now)
-    _drive(conn, relay, fan_on(st, int(now)), int(now), tcfg)
+    _drive(conn, relay, fan_on(st, int(now)), int(now))
     return st
 
 
-def _flag_unconfirmed_fan_messages(conn, now: int, events, on: bool) -> None:
-    """Relay lỗi ngay trong bước vừa báo fan_on/fan_off: sửa tin chưa gửi của bước đó để
-    không khẳng định quạt đã đổi trạng thái. Lỗi ở đây chỉ ghi log."""
-    kinds = [ev.kind for ev in events if ev.kind in ("fan_on", "fan_off")]
-    if not kinds:
-        return
-    note = RELAY_FAN_NOTE.format(action="bật" if on else "tắt")
-    try:
-        conn.executemany(
-            "UPDATE outbox SET text = text || ? WHERE created_at = ? AND kind = ? "
-            "AND sent_at IS NULL", [(note, int(now), k) for k in kinds])
-        conn.commit()
-    except Exception as e:
-        log.error("Không sửa được tin quạt sau lỗi relay: %s", e)
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-
-
-def step(conn, relay, cfg, now: int, *, tcfg: TelegramCfg | None = None,
-         monotonic=time.monotonic, buzzer=None, bcfg: BuzzerCfg | None = None,
-         model=None, scfg: SourceCfg | None = None) -> ControlState:
-    """Một vòng điều khiển. cfg là ControlCfg, tcfg là TelegramCfg (giờ yên lặng, giới hạn
-    tin, tuổi lệnh; mặc định TelegramCfg()), now là giây epoch, monotonic() là số giây từ
+def step(conn, relay, cfg, now: int, *, monotonic=time.monotonic, buzzer=None,
+         bcfg: BuzzerCfg | None = None, model=None, scfg: SourceCfg | None = None) -> ControlState:
+    """Một vòng điều khiển. cfg là ControlCfg, now là giây epoch, monotonic() là số giây từ
     lúc Pi khởi động (time.monotonic trên Linux). buzzer None thì không điều khiển còi.
 
-    Đọc hết rồi mới ghi: trạng thái mới, sự kiện, việc xoá pending_override và tin cảnh
-    báo cùng một transaction (_persist), sau đó mới ghi relay."""
+    Đọc hết rồi mới ghi: trạng thái mới, sự kiện và việc xoá pending_override cùng một
+    transaction (_persist), sau đó mới ghi relay."""
     now = int(now)
-    tcfg = tcfg if tcfg is not None else TelegramCfg()
     st, events = _load_state(conn)
     pending_text = get_state(conn, PENDING_KEY)
     if pending_text is not None:
-        max_age_s = tcfg.stale_command_s + cfg.loop_s
+        max_age_s = cfg.stale_command_s + cfg.loop_s
         st, pending_events = _apply_pending(st, pending_text, cfg, now, max_age_s)
         events += pending_events
     bcfg = bcfg if bcfg is not None else BuzzerCfg()
@@ -462,7 +391,7 @@ def step(conn, relay, cfg, now: int, *, tcfg: TelegramCfg | None = None,
     buzzer_value = _KEEP
     if buzzer_text is not None:
         buzzer_value, buzzer_events = _apply_buzzer_pending(
-            buzzer_text, now, tcfg.stale_command_s + cfg.loop_s, bcfg.manual_max_s)
+            buzzer_text, now, cfg.stale_command_s + cfg.loop_s, bcfg.manual_max_s)
         events += buzzer_events
 
     uptime = monotonic()
@@ -495,11 +424,9 @@ def step(conn, relay, cfg, now: int, *, tcfg: TelegramCfg | None = None,
             delete_state(conn, BUZZER_PENDING_KEY, value=buzzer_text, commit=False)
 
     # Lưu trạng thái logic trước khi ghi relay: relay lỗi không làm mất quyết định
-    _persist(conn, now, st, events, pending_text,
-             notify=lambda: _notify(conn, now, st, inp, events, tcfg), extra=extra)
+    _persist(conn, now, st, events, pending_text, extra=extra)
     level = fan_on(st, now)
-    if not _drive(conn, relay, level, now, tcfg):
-        _flag_unconfirmed_fan_messages(conn, now, events, level)
+    _drive(conn, relay, level, now)
     if buzzer is not None:
         _sound_alarm(conn, buzzer, bcfg, inp, now)
     return st
@@ -507,15 +434,14 @@ def step(conn, relay, cfg, now: int, *, tcfg: TelegramCfg | None = None,
 
 # ---------------- Vòng lặp dịch vụ ----------------
 def run(conn, relay, cfg, stop: threading.Event, *, wall=time.time, clock=time.monotonic,
-        tcfg: TelegramCfg | None = None, buzzer=None, bcfg: BuzzerCfg | None = None,
-        model=None, scfg: SourceCfg | None = None) -> None:
+        buzzer=None, bcfg: BuzzerCfg | None = None, model=None,
+        scfg: SourceCfg | None = None) -> None:
     """Gọi step mỗi cfg.loop_s giây tới khi stop được đặt. Lỗi một vòng không dừng dịch vụ;
     khi đó relay giữ nguyên mức cũ."""
     next_time = clock()
     while not stop.is_set():
         try:
-            step(conn, relay, cfg, int(wall()), tcfg=tcfg, buzzer=buzzer, bcfg=bcfg,
-                 model=model, scfg=scfg)
+            step(conn, relay, cfg, int(wall()), buzzer=buzzer, bcfg=bcfg, model=model, scfg=scfg)
         except Exception:
             log.exception("Lỗi trong vòng điều khiển, giữ nguyên quạt")
             try:
@@ -562,7 +488,7 @@ def main(argv=None) -> int:
     level = fan_on(st, now)
     # Nhận chân với mức đã khôi phục để quạt không tắt một nhịp khi khởi động lại
     relay = Relay(pin=23, initial=level)
-    _drive(conn, relay, level, now, cfg.telegram)
+    _drive(conn, relay, level, now)
     buzzer = None
     if cfg.buzzer.enabled:
         try:
@@ -575,8 +501,7 @@ def main(argv=None) -> int:
              cfg.db_path, st.mode, "bật" if level else "tắt", ctrl.demo, ctrl.loop_s)
     try:
         model = load_source_model(cfg.source)
-        run(conn, relay, ctrl, stop, tcfg=cfg.telegram, buzzer=buzzer, bcfg=cfg.buzzer,
-            model=model, scfg=cfg.source)
+        run(conn, relay, ctrl, stop, buzzer=buzzer, bcfg=cfg.buzzer, model=model, scfg=cfg.source)
     finally:
         if buzzer is not None:
             try:

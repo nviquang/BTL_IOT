@@ -83,7 +83,7 @@ function Deploy-ToPi([string]$PiTarget) {
         Write-Warn "có thay đổi chưa commit: KHÔNG được đưa lên Pi (chỉ bản HEAD được gửi)"
     }
     if (-not (Test-Path (Join-Path $RepoDir ".env"))) {
-        Stop-WithError "không có file .env trong $RepoDir. Chép .env.example thành .env và điền 4 khoá (README mục Chạy nhanh)."
+        Stop-WithError "không có file .env trong $RepoDir. Chép .env.example thành .env và điền INGEST_TOKEN (README mục Chạy nhanh)."
     }
     $tar = Join-Path $env:TEMP "btl_iot_deploy.tar"
     if (Test-Path $tar) { Remove-Item $tar -Force }
@@ -156,7 +156,7 @@ $piCode = $LASTEXITCODE
 
 Write-Host ""
 if ($piCode -eq 0) {
-    Write-Host "Xong: trạm đang chạy. Gửi /help cho bot Telegram để thử." -ForegroundColor Green
+    Write-Host "Xong: trạm đang chạy. Xem số liệu và điều khiển trên web của trạm." -ForegroundColor Green
 } else {
     Write-Host "Trạm đã bật nhưng có mục quan trọng chưa đạt (mã $piCode). Xem bảng kiểm tra ở trên." -ForegroundColor Yellow
 }

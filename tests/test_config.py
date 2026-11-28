@@ -6,7 +6,7 @@ import pytest
 from aiot.config import load_config
 
 REPO_CONFIG = Path(__file__).resolve().parent.parent / "config.yaml"
-SECRET_VARS = ("TELEGRAM_TOKEN", "GEMINI_API_KEY", "ALLOWED_CHAT_IDS", "INGEST_TOKEN")
+SECRET_VARS = ("INGEST_TOKEN", "TELEGRAM_TOKEN")
 
 
 @pytest.fixture(autouse=True)
@@ -104,23 +104,27 @@ def test_forecast_max_age_owned_by_control_only(tmp_path):
 def test_secrets_come_from_env_not_yaml(tmp_path, monkeypatch):
     cfg = load_config(*write(tmp_path, env_text=(
         "# bình luận\n"
-        "TELEGRAM_TOKEN=tu_dotenv\n"
-        "GEMINI_API_KEY=\"key_trong_ngoac\"\n"
-        "INGEST_TOKEN=token_dotenv\n"
+        "INGEST_TOKEN=\"token_dotenv\"\n"
     )))
-    assert cfg.secrets.telegram_token == "tu_dotenv"
-    assert cfg.secrets.gemini_api_key == "key_trong_ngoac"
     assert cfg.secrets.ingest_token == "token_dotenv"
 
     # Biến môi trường thật thắng giá trị trong .env
-    monkeypatch.setenv("TELEGRAM_TOKEN", "tu_moi_truong")
+    monkeypatch.setenv("INGEST_TOKEN", "tu_moi_truong")
     cfg = load_config(tmp_path / "config.yaml", tmp_path / ".env")
-    assert cfg.secrets.telegram_token == "tu_moi_truong"
+    assert cfg.secrets.ingest_token == "tu_moi_truong"
 
     # Biến môi trường rỗng không xoá giá trị trong .env
     monkeypatch.setenv("INGEST_TOKEN", "")
     cfg = load_config(tmp_path / "config.yaml", tmp_path / ".env")
     assert cfg.secrets.ingest_token == "token_dotenv"
+
+
+def test_old_telegram_keys_in_env_are_ignored(tmp_path):
+    """.env cũ trên Pi còn TELEGRAM_TOKEN, GEMINI_API_KEY, ALLOWED_CHAT_IDS: không lỗi, bỏ qua."""
+    cfg = load_config(*write(tmp_path, env_text=(
+        "TELEGRAM_TOKEN=abc\nGEMINI_API_KEY=def\nALLOWED_CHAT_IDS=1,x\nINGEST_TOKEN=t\n")))
+    assert cfg.secrets.ingest_token == "t"
+    assert not hasattr(cfg.secrets, "telegram_token")
 
 
 def test_secrets_in_yaml_rejected(tmp_path):
@@ -131,46 +135,17 @@ def test_secrets_in_yaml_rejected(tmp_path):
 
 def test_repr_hides_secrets(tmp_path):
     cfg = load_config(*write(tmp_path, env_text=(
-        "TELEGRAM_TOKEN=abc123\nGEMINI_API_KEY=gem456\nINGEST_TOKEN=tok789\n"
+        "INGEST_TOKEN=tok789\n"
     )))
     text = repr(cfg) + str(cfg)
-    for secret in ("abc123", "gem456", "tok789"):
+    for secret in ("tok789",):
         assert secret not in text
 
 
-def test_allowed_chat_ids_parsed(tmp_path):
-    cfg = load_config(*write(tmp_path, env_text="ALLOWED_CHAT_IDS=1, 2\n"))
-    assert cfg.secrets.allowed_chat_ids == frozenset({1, 2})
-
-
-def test_allowed_chat_ids_accepts_group_ids(tmp_path):
-    cfg = load_config(*write(tmp_path, env_text="ALLOWED_CHAT_IDS=-100123,42,\n"))
-    assert cfg.secrets.allowed_chat_ids == frozenset({-100123, 42})
-
-
-def test_allowed_chat_ids_invalid_items_skipped_with_warning(tmp_path, caplog):
-    # ALLOWED_CHAT_IDS sai không được làm hỏng load_config (collector vẫn phải chạy),
-    # nhưng phần tử sai không bao giờ được chấp nhận.
-    env = "ALLOWED_CHAT_IDS=1,abc, 1_000 ,+5,2.5,-100123,0x10,٣\n"
-    with caplog.at_level("WARNING", logger="aiot.config"):
-        cfg = load_config(*write(tmp_path, env_text=env))
-    assert cfg.secrets.allowed_chat_ids == frozenset({1, -100123})
-    assert "ALLOWED_CHAT_IDS" in caplog.text
-    assert "abc" not in caplog.text            # không in giá trị (có thể là bí mật dán nhầm)
-
-
-def test_allowed_chat_ids_all_invalid_gives_empty_set(tmp_path):
-    cfg = load_config(*write(tmp_path, env_text="ALLOWED_CHAT_IDS=abc\n"))
-    assert cfg.secrets.allowed_chat_ids == frozenset()
-
-
-def test_missing_telegram_token_does_not_raise(tmp_path):
+def test_missing_token_does_not_raise(tmp_path):
     # Collector phải chạy được khi chưa có token và chưa có file .env
     cfg = load_config(*write(tmp_path))
-    assert cfg.secrets.telegram_token is None
-    assert cfg.secrets.gemini_api_key is None
     assert cfg.secrets.ingest_token is None
-    assert cfg.secrets.allowed_chat_ids == frozenset()
 
 
 def test_missing_config_file_raises(tmp_path):
@@ -181,10 +156,9 @@ def test_missing_config_file_raises(tmp_path):
 # ---------------- .env: BOM của Windows và chú thích cuối dòng ----------------
 def test_env_with_utf8_bom(tmp_path):
     cfg_path, env_path = write(tmp_path)
-    env_path.write_bytes("TELEGRAM_TOKEN=abc\nALLOWED_CHAT_IDS=1\n".encode("utf-8-sig"))
+    env_path.write_bytes("INGEST_TOKEN=abc\n".encode("utf-8-sig"))
     cfg = load_config(cfg_path, env_path)
-    assert cfg.secrets.telegram_token == "abc"
-    assert cfg.secrets.allowed_chat_ids == frozenset({1})
+    assert cfg.secrets.ingest_token == "abc"
 
 
 def test_env_inline_comment_stripped_from_unquoted_values(tmp_path):
@@ -206,22 +180,18 @@ def test_env_inline_comment_stripped_from_unquoted_values(tmp_path):
     assert values["F"] == ""
 
 
-def test_weather_section_defaults_and_override(tmp_path):
-    cfg = load_config(*write(tmp_path))
-    w = cfg.weather
-    assert w.sunny_lux == 30000 and w.sunny_temp_c == 33.0
-    assert w.rain_hum_pct == 85.0 and w.rain_lux == 5000
-    assert (w.day_start_h, w.day_end_h) == (8, 16)
-    assert w.sustain_windows == 3 and w.cooldown_s == 10800
-    assert w.photo_dir == "/home/admin/iot_data/photos"
-    assert w.photo_keep_days == 7 and w.camera_index == 0
-    cfg = load_config(*write(tmp_path, "weather:\n  sunny_lux: 25000\n  camera_index: 1\n"))
-    assert cfg.weather.sunny_lux == 25000 and cfg.weather.camera_index == 1
-    with pytest.raises(ValueError):
-        load_config(*write(tmp_path, "weather:\n  sunny_luxx: 1\n"))
+def test_removed_telegram_sections_are_tolerated(tmp_path, caplog):
+    """config.yaml cũ trên Pi còn telegram/gemini/report/weather: chỉ cảnh báo, không lỗi."""
+    old = ("telegram:\n  quiet_start: 22\ngemini:\n  model: x\nreport:\n  time: '06:30'\n"
+           "weather:\n  sunny_lux: 1\n")
+    with caplog.at_level("WARNING", logger="aiot.config"):
+        cfg = load_config(*write(tmp_path, old))
+    for name in ("telegram", "gemini", "report", "weather"):
+        assert not hasattr(cfg, name)
+        assert name in caplog.text
 
 
-def test_repo_config_yaml_weather_matches_defaults(tmp_path):
-    from aiot.config import WeatherCfg
-    cfg = load_config(REPO_CONFIG, tmp_path / "khong_co.env")
-    assert cfg.weather == WeatherCfg()
+def test_stale_command_s_in_control(tmp_path):
+    cfg = load_config(*write(tmp_path, "control:\n  stale_command_s: 30\n"))
+    assert cfg.control.stale_command_s == 30
+    assert load_config(REPO_CONFIG, tmp_path / "khong_co.env").control.stale_command_s == 120

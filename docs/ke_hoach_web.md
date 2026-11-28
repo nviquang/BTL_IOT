@@ -2,6 +2,9 @@
 
 Thay cho bản kế hoạch trước (web chạy trên Pi + Cloudflare Tunnel, không mật khẩu).
 
+**Cập nhật 29/11/2026:** bot Telegram đã gỡ; web là nơi duy nhất điều khiển thủ công. Các chỗ nhắc
+bot, `/mute`, `/buzzer`, `/web` bên dưới là kế hoạch lúc làm (23/11), giữ để tham khảo.
+
 **Trạng thái 23/11/2026:** bước 1–6 đã làm.
 - Web chạy tại https://aiot-tram.onrender.com (Render free, Neon `aiot-tram` ở Singapore).
 - Pi đã cập nhật bằng `up.ps1`; `aiot-uplink` chạy, healthcheck "web cloud" đạt.
@@ -55,7 +58,7 @@ Pi: aiot-uplink ─── POST /api/ingest (token) ──►  Render: FastAPI �
 
 1. Người dùng đã đăng nhập bấm "Bật quạt" → `POST /api/command` → cloud lưu lệnh, trạng thái `pending`.
 2. Lần `ingest` tiếp theo, cloud trả lệnh đó về cho Pi.
-3. `aiot-uplink` ghi lệnh vào khoá state, dùng đúng hàm mà bot Telegram đang dùng.
+3. `aiot-uplink` ghi lệnh vào khoá state qua `aiot/commands.py`.
 4. `controller` áp dụng lệnh trong ≤ 5 giây.
 5. Lần `ingest` sau, Pi gửi trạng thái quạt/còi mới kèm xác nhận `done` (hoặc `rejected` kèm lý do).
 6. Trang web hiện "đang chờ Pi…" cho tới khi có xác nhận.
@@ -69,8 +72,8 @@ Pi: aiot-uplink ─── POST /api/ingest (token) ──►  Render: FastAPI �
   - `set_mode(conn, cfg, now, mode, source)`
   - `set_fan(conn, cfg, now, on, source)`
   - `set_buzzer(conn, cfg, now, on, source)`
-- Mỗi lệnh ghi sự kiện `command`, với `source` là `"telegram chat=…"` hoặc `"web user=… ip=…"`.
-- Bot gọi lại các hàm này. Toàn bộ test bot hiện có phải vẫn đạt.
+- Mỗi lệnh ghi sự kiện `command`, với `source` là `"web user=… ip=…"` (lúc làm còn có `"telegram chat=…"`).
+- Bot gọi lại các hàm này. Toàn bộ test bot hiện có phải vẫn đạt (bot đã gỡ 29/11/2026).
 
 ### 2. Còi thủ công (hiện chỉ có `/mute`)
 
@@ -80,7 +83,7 @@ Pi: aiot-uplink ─── POST /api/ingest (token) ──►  Render: FastAPI �
   - **Ghi đè tắt:** im, giống `/mute`.
   - **Không ghi đè:** theo nhãn AI hoặc luật ngưỡng như hiện tại.
 - **Chế độ thủ công** nghĩa là quạt hoặc còi đang có ghi đè. **Về tự động** xoá cả hai ghi đè.
-- Bot thêm `/buzzer on|off`. `/mode auto` xoá cả ghi đè còi.
+- Về tự động (nút "Tự động" trên web) xoá cả ghi đè còi. Lúc làm bot có thêm `/buzzer on|off`, nay đã gỡ.
 
 ### 3. Dịch vụ cloud — thư mục `cloud/` (deploy riêng lên Render)
 
@@ -129,7 +132,7 @@ Pi: aiot-uplink ─── POST /api/ingest (token) ──►  Render: FastAPI �
 - Mất mạng: chỉ ghi log, lùi thời gian thử dần tối đa 60 s, có mạng lại thì gửi bù history. Không ảnh hưởng `collector` hay `controller`.
 - `config.yaml` thêm mục `cloud:` gồm `enabled`, `url`, `interval_s`, `history_step_s`. `.env` thêm `INGEST_TOKEN`; `.env.example` thêm dòng mẫu.
 - Unit `deploy/aiot-uplink.service`, cài và cập nhật bằng `scripts/pi_up.sh` giống các dịch vụ khác. `aiot.healthcheck` và `pi_up.sh --status` hiện lần gửi thành công gần nhất.
-- Bot thêm lệnh `/web` trả về URL trang.
+- Lúc làm bot có thêm lệnh `/web` trả về URL trang; nay đã gỡ cùng bot.
 
 ### 5. Deploy
 
@@ -144,14 +147,14 @@ Cần người trong nhóm làm (Claude không tạo tài khoản hay nhập m�
 ### 6. Test và tài liệu
 
 - **pytest:**
-  - `aiot/commands.py`: ghi đúng khoá; bot vẫn đạt toàn bộ test cũ.
+  - `aiot/commands.py`: ghi đúng khoá.
   - Ghi đè còi trong `alarm.py`: bật bị cắt sau `manual_max_s`, tắt thì im, không ghi đè thì theo AI.
   - `aiot/uplink.py` với server giả: gửi đúng payload, lệnh trùng id chỉ áp dụng một lần, lệnh cũ bị bỏ, mất mạng không làm crash.
   - Cloud qua `fastapi.testclient` với SQLite tạm thay Postgres: ingest sai token trả 401; lệnh chưa đăng nhập trả 401; sai tham số trả 422; vượt giới hạn trả 429; lệnh quá 60 s chuyển `expired`; vòng đầy đủ command → ingest → xác nhận.
 - **Chạy thử trên laptop:** chạy cloud bằng uvicorn, chạy uplink trỏ vào `localhost` với DB thử, dùng `scripts/inject_pm.py --scenario …` để xem nhãn đổi trên trang.
 - **Tài liệu:**
   - README: thêm mục "Web trên cloud".
-  - CLAUDE.md: bảng trạng thái, lệnh `/buzzer` và `/web`, dịch vụ `aiot-uplink`, biến `.env` mới.
+  - CLAUDE.md: bảng trạng thái, dịch vụ `aiot-uplink`, biến `.env` mới.
   - Báo cáo: ghi rủi ro và giới hạn của gói free.
 
 ## Thứ tự làm và ước lượng
@@ -171,4 +174,4 @@ Bước 1 và 2 làm song song được nếu chốt trước định dạng JSO
 - **Ngủ khi Pi offline:** người xem đầu tiên đợi khoảng 1 phút. Trang hiện rõ thời điểm Pi gửi dữ liệu lần cuối.
 - **Mật khẩu chung:** lộ mật khẩu thì ai cũng điều khiển được. Giảm rủi ro bằng: lệnh tự hết hạn, còi tối đa 60 s, giới hạn số lệnh, nhật ký người/IP, đổi `WEB_PASSWORD_HASH` trên Render là thu hồi ngay.
 - **Độ trễ lệnh:** ≤ 10 s, chấp nhận được với quạt và còi. Muốn nhanh hơn thì giảm `interval_s` hoặc dùng long polling, không cần đổi kiến trúc.
-- **Riêng tư:** chỉ gửi số liệu môi trường và trạng thái thiết bị lên cloud, không gửi ảnh camera hay chat id Telegram.
+- **Riêng tư:** chỉ gửi số liệu môi trường và trạng thái thiết bị lên cloud; uplink bỏ `chat=`, `ip=`, `user=` khỏi chi tiết sự kiện.

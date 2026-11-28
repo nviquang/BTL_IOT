@@ -8,7 +8,7 @@ Web trên cloud của trạm quan trắc không khí (deploy lên Render, dữ l
 - Điều khiển cần đăng nhập bằng mật khẩu chung (POST /api/login): POST /api/command
   {kind: mode|fan|buzzer, value}. Lệnh chờ Pi nhận; quá COMMAND_TTL_S giây chưa được nhận
   thì 'expired' và không bao giờ được áp dụng muộn.
-- Web không chạm thiết bị: Pi tự áp dụng lệnh qua đúng đường lệnh Telegram (controller).
+- Web không chạm thiết bị: Pi tự áp dụng lệnh qua controller (aiot.commands -> khoá state).
 
 Biến môi trường: DATABASE_URL (mặc định SQLite cục bộ để thử), INGEST_TOKEN,
 WEB_PASSWORD_HASH (python -m cloud.security), SESSION_SECRET, COMMAND_TTL_S (60).

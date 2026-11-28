@@ -12,12 +12,7 @@ pyserial                        # PMS7003 - bụi PM1.0/PM2.5/PM10 (UART /dev/se
 lgpio                           # relay quạt (GPIO23) và còi (GPIO5)
 smbus2                          # test_all.py quét bus I2C
 
-# Camera USB cho cảnh báo nắng/mưa (aiot/camera.py). Nếu venv đã có cv2 từ
-# opencv-python thì pi_up.sh bỏ dòng này: hai gói cùng ghi thư mục cv2 và làm hỏng import.
-opencv-python-headless
-
 # Dịch vụ aiot/
 PyYAML                          # đọc config.yaml
 numpy                           # aiot/forecast.py (không dùng pandas trên Pi)
-requests                        # Telegram Bot API, Open-Meteo
-google-genai                    # Gemini viết lời khuyên
+requests                        # aiot/uplink.py gửi dữ liệu lên web

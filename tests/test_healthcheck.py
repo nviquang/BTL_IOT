@@ -7,10 +7,8 @@ import pytest
 from aiot import healthcheck as hc
 from aiot.config import Config, Secrets
 from aiot.db import RawSample, connect, init_schema, insert_raw, set_state
-from aiot.telegram_api import TelegramError
 
 NOW = 1_800_000_000
-TOKEN = "123456789:AAH-secret_TokenValue-xyz"
 
 
 @pytest.fixture
@@ -33,8 +31,7 @@ def add_raw(db_path, ts, **values):
 # ---------------- .env ----------------
 def test_env_all_keys_present(tmp_path):
     env = tmp_path / ".env"
-    env.write_text("TELEGRAM_TOKEN=a\nGEMINI_API_KEY=b\nALLOWED_CHAT_IDS=1\nINGEST_TOKEN=c\n",
-                   encoding="utf-8")
+    env.write_text("INGEST_TOKEN=c\n", encoding="utf-8")
     check = hc.check_env(env)
     assert check.ok is True
     assert not check.critical
@@ -42,13 +39,10 @@ def test_env_all_keys_present(tmp_path):
 
 def test_env_reports_missing_and_empty_keys_without_values(tmp_path):
     env = tmp_path / ".env"
-    env.write_text("TELEGRAM_TOKEN=supersecretvalue\nGEMINI_API_KEY=\nALLOWED_CHAT_IDS=1\n",
-                   encoding="utf-8")
+    env.write_text("INGEST_TOKEN=\nOTHER=supersecretvalue\n", encoding="utf-8")
     check = hc.check_env(env)
     assert check.ok is False
-    assert "GEMINI_API_KEY" in check.detail
     assert "INGEST_TOKEN" in check.detail
-    assert "TELEGRAM_TOKEN" not in check.detail
     assert "supersecretvalue" not in check.detail
 
 
@@ -60,9 +54,8 @@ def test_env_file_missing(tmp_path):
 
 # ---------------- systemd ----------------
 def test_units_states_and_criticality():
-    states = {"aiot-collector": "active", "aiot-controller": "failed", "aiot-bot": "active", "aiot-uplink": "active",
-              "aiot-forecast.timer": "active", "aiot-morning.timer": "inactive",
-              "aiot-weather.timer": "active"}
+    states = {"aiot-collector": "active", "aiot-controller": "failed", "aiot-uplink": "active",
+              "aiot-forecast.timer": "inactive"}
     checks = hc.check_units(hc.UNITS, runner=lambda unit: states[unit])
     by_name = {c.name: c for c in checks}
     assert by_name["aiot-collector"].ok is True
@@ -70,7 +63,8 @@ def test_units_states_and_criticality():
     assert by_name["aiot-controller"].ok is False
     assert not by_name["aiot-controller"].critical
     assert "failed" in by_name["aiot-controller"].detail
-    assert by_name["aiot-morning.timer"].ok is False
+    assert by_name["aiot-forecast.timer"].ok is False
+    assert set(by_name) == {"aiot-collector", "aiot-controller", "aiot-uplink", "aiot-forecast.timer"}
 
 
 def test_units_collector_inactive_is_critical_failure():
@@ -159,62 +153,7 @@ def test_heartbeat_skipped():
     assert hc.check_heartbeat("/nonexistent.db", NOW, loop_s=20, skipped=True).ok is None
 
 
-# ---------------- Telegram ----------------
-class FakeClient:
-    def __init__(self, result=None, error=None):
-        self.result = result
-        self.error = error
-        self.timeout = None
-
-    def get_me(self, timeout):
-        self.timeout = timeout
-        if self.error:
-            raise self.error
-        return self.result
-
-
-def test_telegram_ok():
-    client = FakeClient(result={"username": "tram_bot"})
-    check = hc.check_telegram(TOKEN, client_factory=lambda token: client)
-    assert check.ok is True
-    assert "@tram_bot" in check.detail
-    assert client.timeout == 10
-
-
-def test_telegram_skipped_without_token():
-    check = hc.check_telegram(None, client_factory=lambda token: pytest.fail("không được gọi"))
-    assert check.ok is None
-
-
-def test_telegram_error_is_redacted():
-    client = FakeClient(error=RuntimeError(f"boom https://api.telegram.org/bot{TOKEN}/getMe"))
-    check = hc.check_telegram(TOKEN, client_factory=lambda token: client)
-    assert check.ok is False
-    assert TOKEN not in check.detail
-    client = FakeClient(error=TelegramError("getMe: HTTP 401 Unauthorized", status=401))
-    check = hc.check_telegram(TOKEN, client_factory=lambda token: client)
-    assert "401" in check.detail
-
-
-# ---------------- camera ----------------
-def test_camera_ok_and_temp_file_removed(tmp_path):
-    seen = {}
-
-    def capture(path, index):
-        seen["path"] = path
-        open(path, "wb").write(b"jpeg")
-        return True
-
-    check = hc.check_camera(capture, index=0, tmp_dir=tmp_path)
-    assert check.ok is True
-    assert not (tmp_path / seen["path"]).exists()
-
-
-def test_camera_failure():
-    check = hc.check_camera(lambda path, index: False, index=0)
-    assert check.ok is False and not check.critical
-
-
+# ---------------- đồng hồ ----------------
 def test_clock():
     assert hc.check_clock(lambda: True).ok is True
     check = hc.check_clock(lambda: False)
@@ -233,8 +172,8 @@ def test_exit_code_only_counts_critical():
 def test_format_table_symbols():
     text = hc.format_table([hc.Check("thu thập", True, "ok", critical=True),
                             hc.Check("collector", False, "inactive", critical=True),
-                            hc.Check("camera", False, "lỗi"),
-                            hc.Check("bot", None, "bỏ qua")])
+                            hc.Check("đồng hồ", False, "lỗi"),
+                            hc.Check("uplink", None, "bỏ qua")])
     lines = text.splitlines()
     assert lines[0].startswith("✅") and "thu thập" in lines[0]
     assert lines[1].startswith("❌")
@@ -242,18 +181,12 @@ def test_format_table_symbols():
     assert lines[3].startswith("➖")
 
 
-def test_run_checks_skips_bot_without_chat_ids(db_path, tmp_path):
-    env = tmp_path / ".env"
-    env.write_text("", encoding="utf-8")
+def test_run_checks_has_no_telegram_or_camera(db_path, tmp_path):
     add_raw(db_path, NOW - 5)
-    cfg = dataclasses.replace(Config(db_path=str(db_path)),
-                              secrets=Secrets(telegram_token=TOKEN))
-    checks = hc.run_checks(cfg, env_path=env, now=NOW, runner=lambda unit: "active",
-                           client_factory=lambda token: FakeClient(result={"username": "x"}),
-                           capture=lambda p, i: False,
-                           clock_trusted=lambda: True)
-    by_name = {c.name: c for c in checks}
-    assert by_name["aiot-bot"].ok is None
+    checks = hc.run_checks(Config(db_path=str(db_path)), env_path=tmp_path / ".env", now=NOW,
+                           runner=lambda unit: "active", clock_trusted=lambda: True)
+    names = {c.name for c in checks}
+    assert not any("Telegram" in n or "camera" in n or "bot" in n for n in names)
     assert hc.exit_code(checks) == 0
 
 
@@ -266,54 +199,11 @@ def test_run_checks_skip_controller(db_path, tmp_path):
         return "active"
 
     checks = hc.run_checks(cfg, env_path=tmp_path / ".env", now=NOW, runner=runner,
-                           client_factory=lambda token: pytest.fail("không có token"),
-                           capture=lambda p, i: True,
                            clock_trusted=lambda: True, skip_units={"aiot-controller"})
     assert "aiot-controller" not in asked
     heartbeat = [c for c in checks if c.name == "controller heartbeat"][0]
     assert heartbeat.ok is None
     assert hc.exit_code(checks) == 1   # chưa có dữ liệu
-
-
-# ---------------- gợi ý nhóm video ----------------
-class FakeGroup:
-    def __init__(self, gid, members):
-        self.gr_gid = gid
-        self.gr_mem = members
-
-
-def test_video_hint_none_when_session_has_group():
-    hint = hc.video_group_hint(user="admin", getgroups=lambda: [44, 1000],
-                               getgrnam=lambda name: FakeGroup(44, ["admin"]))
-    assert hint is None
-
-
-def test_video_hint_relogin_when_added_but_session_old():
-    hint = hc.video_group_hint(user="admin", getgroups=lambda: [1000],
-                               getgrnam=lambda name: FakeGroup(44, ["admin"]))
-    assert "đăng nhập lại SSH" in hint
-
-
-def test_video_hint_not_member():
-    hint = hc.video_group_hint(user="admin", getgroups=lambda: [1000],
-                               getgrnam=lambda name: FakeGroup(44, []))
-    assert "video" in hint and "đăng nhập lại" not in hint
-
-
-def test_video_hint_no_group_module():
-    def missing(name):
-        raise KeyError(name)
-    assert hc.video_group_hint(user="admin", getgroups=lambda: [], getgrnam=missing) is None
-
-
-def test_camera_failure_appends_hint():
-    check = hc.check_camera(lambda p, i: False, index=0,
-                            hint=lambda: "đăng nhập lại SSH")
-    assert check.ok is False
-    assert "đăng nhập lại SSH" in check.detail
-    ok = hc.check_camera(lambda p, i: open(p, "wb").write(b"x") > 0,
-                         index=0, hint=lambda: pytest.fail("không cần gợi ý khi chụp được"))
-    assert ok.ok is True
 
 
 def test_uplink_check(tmp_path):

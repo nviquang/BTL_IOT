@@ -9,7 +9,7 @@ Hai trạng thái:
 - NORMAL  (BÌNH THƯỜNG): quạt tắt
 - PROTECT (BẢO VỆ):      quạt bật
 
-Gemini và Internet không tham gia quyết định.
+Internet không tham gia quyết định.
 """
 import dataclasses
 import json
@@ -139,7 +139,7 @@ def override_active(st, now):
 
 
 def apply_override(st, fan, now, ttl_s):
-    """/fan on|off: fan True/False, hết hạn sau ttl_s. fan None: xoá ghi đè (/mode auto)."""
+    """Bật/tắt quạt thủ công: fan True/False, hết hạn sau ttl_s. fan None: xoá ghi đè (tự động)."""
     if fan is None:
         return dataclasses.replace(st, override_fan=None, override_until=None)
     return dataclasses.replace(st, override_fan=bool(fan), override_until=int(now) + int(ttl_s))

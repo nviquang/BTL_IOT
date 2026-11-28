@@ -1,8 +1,8 @@
 """
-Lệnh điều khiển dùng chung cho bot Telegram và web (qua aiot.uplink).
+Lệnh điều khiển từ web (qua aiot.uplink).
 
 Không chạm GPIO: mỗi lệnh chỉ ghi khoá state cho controller, cùng một transaction với sự
-kiện 'command' (detail = văn bản lệnh + nguồn, ví dụ "chat=123" hoặc "web user=x ip=y").
+kiện 'command' (detail = văn bản lệnh + nguồn, ví dụ "web user=x ip=y").
 
 - 'pending_override' (quạt): {"fan": true|false, "ttl_s": int, "id": ..., "at": epoch} đặt
   ghi đè; {"fan": null, "id": ..., "at": epoch} xoá ghi đè (về tự động).
@@ -44,7 +44,7 @@ def pending_buzzer_json(on, cmd_id, now, ttl_s=None):
 
 def apply_writes(conn, now, writes, detail, *, commit=True):
     """Ghi các khoá state và sự kiện 'command' trong MỘT transaction.
-    commit False: người gọi commit (bot commit cùng offset getUpdates)."""
+    commit False: người gọi commit (gộp vào transaction của người gọi)."""
     try:
         for key, value in writes:
             set_state(conn, key, value, commit=False)
@@ -83,7 +83,7 @@ def set_fan(conn, cfg, now, on, *, cmd_id, detail, commit=True):
 
 
 def set_buzzer(conn, cfg, now, on, *, cmd_id, detail, commit=True):
-    """Ghi đè còi: bật (kêu liên tục, tối đa buzzer.manual_max_s) hoặc tắt (im như /mute).
+    """Ghi đè còi: bật (kêu liên tục, tối đa buzzer.manual_max_s) hoặc tắt (giữ im).
     Trả về thời hạn ghi đè (giây)."""
     ttl = buzzer_ttl(cfg, on)
     apply_writes(conn, now, [(BUZZER_PENDING_KEY, pending_buzzer_json(bool(on), cmd_id, now, ttl))],
