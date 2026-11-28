@@ -18,3 +18,7 @@ training/data/sim_meta.json
 
 # DB thử của web cloud khi chạy cục bộ
 cloud_dev*.db
+
+# Cấu hình Claude Code riêng từng máy và thư mục làm việc của plugin
+.claude/settings.local.json
+.superpowers/

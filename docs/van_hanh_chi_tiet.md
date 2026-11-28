@@ -480,9 +480,9 @@ Kiểm tra: `venv/bin/python -c "import lgpio; print(lgpio.__version__)"` phải
 | `aiot/` | các dịch vụ trên Pi và các module dùng chung |
 | `cloud/` | web FastAPI trên Render |
 | `deploy/` | unit systemd |
-| `scripts/` | `inject_pm.py` (demo quạt), `acceptance_report.py` (nghiệm thu) |
+| `scripts/` | `pi_up.sh`, `up.ps1` (bật trạm), `inject_pm.py` (demo quạt), `label_event.py` (gắn nhãn), `buzzer_probe.py`, `cloud_demo.py`, `acceptance_report.py` (nghiệm thu) |
 | `training/` | xuất dữ liệu trạm, huấn luyện và đánh giá bộ nhận diện nguồn bụi |
 | `tests/` | test chạy trên laptop (`.venv\Scripts\python -m pytest`) |
 | `config.yaml`, `.env.example` | cấu hình; mẫu file bí mật |
 | `test_all.py` | kiểm tra phần cứng trên Pi |
-| `docs/` | plan triển khai, bảng nghiệm thu |
+| `docs/` | vận hành, nghiệm thu, kế hoạch web, nhận diện nguồn bụi; `docs/archive/` là tài liệu cũ |

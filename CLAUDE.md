@@ -16,16 +16,16 @@ Không thuộc hệ thống (đã loại khỏi thiết kế):
 | ---- | ---------- |
 | Mạch: DHT11, PMS7003, BH1750, relay + quạt | Đạt `test_all.py` ngày 04/11/2026 và 23/11/2026 |
 | Collector `aiot/collector.py` đọc DHT11, BH1750 và PMS7003, lưu SQLite và CSV, gộp 5 phút | Chạy qua `aiot-collector` trên Pi |
-| Điều khiển quạt tự động `aiot/controller.py` | Có code, chưa thử trên mạch (README 2.4c) |
+| Điều khiển quạt tự động `aiot/controller.py` | Có code, chưa thử trên mạch (`docs/van_hanh_chi_tiet.md` 5.3) |
 | Còi báo vượt ngưỡng (`aiot/alarm.py`, `aiot/buzzer.py`, `/mute`) | Có code và test, chưa nối và thử trên mạch |
-| Bot Telegram, cảnh báo, báo cáo sáng, lời khuyên Gemini | Có code, chưa thử với bot thật và Gemini thật (README 2.4d, 2.4f) |
+| Bot Telegram, cảnh báo, báo cáo sáng, lời khuyên Gemini | Có code, chưa thử với bot thật và Gemini thật (`docs/van_hanh_chi_tiet.md` 5.4, 5.5) |
 | Dự báo PM2.5 mỗi giờ | Pi dùng seasonal naive hoặc persistence để dự báo 6 giờ tới |
-| Cảnh báo nắng/mưa kèm ảnh camera (`aiot/weather.py`) | Có code, chưa thử thật (README 2.4h) |
+| Cảnh báo nắng/mưa kèm ảnh camera (`aiot/weather.py`) | Có code, chưa thử thật (`docs/van_hanh_chi_tiet.md` 5.6) |
 | Nhận diện nguồn bụi AI (`aiot/source_*.py`, `training/train_source.py`): 4 nhãn, mẫu 1 giây, dự đoán mỗi 5 s, quạt + còi theo nhãn | Có code và mô hình huấn luyện trên dữ liệu mô phỏng (hiệu chỉnh theo nhang 23/11); code đã chép lên Pi 23/11/2026 nhưng chưa khởi động lại dịch vụ; chưa có sự kiện nấu ăn thật (`docs/nhan_dien_nguon_bui.md`) |
 | Web trên cloud (`cloud/`, `aiot/uplink.py`, `aiot/commands.py`): xem số liệu, nhãn AI, dự báo; Tự động/Thủ công, quạt, còi (cần mật khẩu) | Đã deploy ngày 23/11/2026: https://aiot-tram.onrender.com (Render free + Neon Singapore); Pi chạy `aiot-uplink`, lệnh quạt bật/tắt và còi thủ công từ web tới controller trong ≤ 5 s. Đã xác nhận tại mạch quạt quay, còi kêu; chưa thử qua 4G (README "Web trên cloud", `docs/ke_hoach_web.md`) |
 | Nghiệm thu 7 ngày | Có `scripts/acceptance_report.py`; chưa đo, kết quả ghi ở `docs/nghiem_thu.md` |
 
-Việc còn lại theo thứ tự nằm ở mục "Việc cần làm trên Pi" trong `README.md`.
+Cách bật và thử từng dịch vụ trên Pi nằm ở mục "Chạy nhanh" của `README.md` và mục 5 của `docs/van_hanh_chi_tiet.md`. Tài liệu cũ đã lỗi thời nằm ở `docs/archive/`.
 
 ## Phần cứng
 
