@@ -263,3 +263,21 @@ def test_trained_model_flat_room_is_normal(conn, level):
              bcfg=BuzzerCfg(), model=model, scfg=SourceCfg())
     assert json.loads(get_state(conn, SOURCE_KEY))["label"] == "normal"
     assert relay.calls[-1] is False
+
+
+def test_window_ends_at_latest_stored_sample(conn):
+    """collector commit fast_readings mỗi 5 s: lúc controller chạy, 4 giây cuối có thể chưa có.
+    Cửa sổ phải kết thúc ở mẫu mới nhất trong DB, nên khối mới nhất không rỗng."""
+    seen = {}
+
+    class Spy(StubModel):
+        def featurize(self, buf):
+            seen["last"] = buf["pm25"][-1]
+            seen["miss"] = int(np.isnan(buf["pm25"][-5:]).sum())
+            return np.zeros(3)
+
+    now = 100000
+    feed(conn, now - 4, pm25=40.0, n=600)       # mẫu mới nhất lúc now - 4
+    step(conn, Relay(), CFG, now, monotonic=lambda: 1e6, buzzer=Buzzer(), bcfg=BuzzerCfg(),
+         model=Spy("normal"), scfg=SourceCfg())
+    assert seen == {"last": 40.0, "miss": 0}

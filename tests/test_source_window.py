@@ -69,12 +69,24 @@ def test_dust_with_humidity_rise_gives_interaction():
     assert f["ch_00"] == 0.0
 
 
-def test_window_features_gaps_are_zero_and_counted():
+def test_window_features_gaps_are_counted():
     buf = flat_buffer(pm25=20.0)
     buf["pm25"][-100:-40] = np.nan
     f = compute_window_features(buf)
     assert np.isfinite(f).all()
     assert dict(zip(WINDOW_FEATURES, f))["miss_frac"] == pytest.approx(12 / 24, abs=0.05)
+
+
+def test_missing_block_during_smoke_is_not_back_to_baseline():
+    """Khói đọng (PM ×1,4 so với nền) và khối 5 giây mới nhất chưa có mẫu: khối đó giữ mức của
+    khối trước, không bị coi là đã về nền (lỗi 28/11 23:34: nhãn nhảy theo nhịp ghi DB)."""
+    buf = flat_buffer(pm25=85.0)
+    buf["pm25"][-300:] = 120.0
+    full = feats(buf)
+    buf["pm25"][-5:] = np.nan
+    gap = feats(buf)
+    assert gap["d25_23"] == pytest.approx(full["d25_23"], abs=1e-9) and gap["d25_23"] > 0.3
+    assert gap["d25_max"] == pytest.approx(full["d25_max"], abs=1e-9)
 
 
 def test_window_features_short_history():

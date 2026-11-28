@@ -299,7 +299,10 @@ def _classify(conn, model, scfg: SourceCfg, now: int, since_ts: int):
         proba = None
         raw_label = None
         if rows and now - rows[-1][0] <= scfg.stale_s:
-            f = model.featurize(buffer_from_rows(rows, now))
+            # cửa sổ kết thúc ở MẪU MỚI NHẤT đã có trong DB, không phải giây hiện tại: collector
+            # chỉ commit fast_readings mỗi FAST_FLUSH_S = 5 s, nên vài giây cuối thường chưa có;
+            # cắt theo `now` làm khối 5 giây mới nhất rỗng và nhãn nhảy theo nhịp ghi
+            f = model.featurize(buffer_from_rows(rows, rows[-1][0]))
             if f is not None:
                 p = model.predict_proba(f)
                 proba = p

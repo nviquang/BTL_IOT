@@ -56,6 +56,18 @@ def _blocks(x, n_blocks, block=STEP_S):
         return np.nanmean(seg.reshape(-1, block), axis=1)
 
 
+def _ffill(x):
+    """NaN lấy giá trị hữu hạn liền trước; NaN ở đầu mảng thành 0."""
+    x = np.asarray(x, dtype=float).copy()
+    last = 0.0
+    for i, v in enumerate(x):
+        if np.isfinite(v):
+            last = v
+        else:
+            x[i] = last
+    return x
+
+
 def compute_window_features(buf: dict) -> np.ndarray | None:
     """Vector đặc trưng theo thứ tự WINDOW_FEATURES, hoặc None khi 60 s gần nhất có ít hơn
     MIN_PM_60 mẫu PM2.5."""
@@ -68,13 +80,13 @@ def compute_window_features(buf: dict) -> np.ndarray | None:
     b25 = max(_q(p, 10), 0.0)
     bh, bt = _q(h, 10), _q(t, 10)
 
+    # khối không có mẫu lấy giá trị của khối liền trước (không coi là "về nền": một lỗ hổng
+    # không được kéo mô hình về bình thường giữa lúc đang có khói); khối thiếu ở đầu cửa sổ = 0
     lp = np.log(np.maximum(_blocks(p, N_BLOCKS), 0.0) + PM_OFFSET)
     miss = ~np.isfinite(lp)
-    d25 = np.where(miss, 0.0, lp - np.log(b25 + PM_OFFSET))
-    dh = _blocks(h, N_BLOCKS) - bh if np.isfinite(bh) else np.zeros(N_BLOCKS)
-    dt = _blocks(t, N_BLOCKS) - bt if np.isfinite(bt) else np.zeros(N_BLOCKS)
-    dh = np.where(np.isfinite(dh), dh, 0.0)
-    dt = np.where(np.isfinite(dt), dt, 0.0)
+    d25 = _ffill(lp - np.log(b25 + PM_OFFSET))
+    dh = _ffill(_blocks(h, N_BLOCKS) - bh) if np.isfinite(bh) else np.zeros(N_BLOCKS)
+    dt = _ffill(_blocks(t, N_BLOCKS) - bt) if np.isfinite(bt) else np.zeros(N_BLOCKS)
 
     # tích từng khối "bụi vượt nền × ẩm/nhiệt tăng": chỉ tính phần bụi vượt nền trên 10 %
     # (log 0,1). Ẩm hoặc nhiệt tăng MỘT MÌNH cho tích bằng 0, nên mô hình tuyến tính không thể
