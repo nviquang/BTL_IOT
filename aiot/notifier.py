@@ -30,7 +30,7 @@ ALERT_KINDS = frozenset({
     # Nắng/mưa (aiot.weather): tin cũ hơn 1 giờ không còn đúng nên cũng bị gộp (bỏ ảnh)
     "weather_sunny", "weather_rain",
     # Bộ nhận diện nguồn bụi đổi nhãn (controller): mỗi nhãn một loại để giới hạn riêng
-    "source_normal", "source_cooking", "source_pollution", "source_smoking",
+    "source_normal", "source_cooking", "source_pollution",
 })
 URGENT_KINDS = frozenset({"danger"})
 # Không bao giờ gộp: 'morning_report', 'reply' (và mọi loại không thuộc ALERT_KINDS)
@@ -237,13 +237,13 @@ _FAN_ON_REASONS = {
     "danger": "bụi mịn ở mức khẩn cấp",
     "proactive": "dự báo 3 giờ tới bụi mịn tăng cao",
     "ai_cooking": "AI nhận diện đang nấu ăn",
-    "ai_pollution": "AI nhận diện ô nhiễm từ ngoài vào",
+    "ai_pollution": "AI nhận diện ô nhiễm bụi mịn",
 }
 _SOURCE_TEXT = {
     "normal": ("không còn nguồn bụi", "quạt tắt, còi im"),
     "cooking": ("nấu ăn", "bật quạt lọc, không kêu còi"),
-    "pollution": ("ô nhiễm từ ngoài vào", "bật quạt lọc và kêu còi; nên đóng cửa sổ"),
-    "smoking": ("khói thuốc lá / nhang", "kêu còi, không bật quạt; hãy dập thuốc/nhang hoặc ra ngoài"),
+    "pollution": ("ô nhiễm bụi mịn (khói, bụi tăng đột ngột so với nền phòng)",
+                  "bật quạt lọc và kêu còi; tìm nguồn khói/bụi, dập nhang hoặc thuốc lá"),
 }
 
 
@@ -270,7 +270,8 @@ def event_message(ev, st, inp, now):
         elif on:
             text += "Quạt lọc được bật tự động."
         else:
-            text += "AI nhận diện khói thuốc/nhang nên không bật quạt, còi báo tại chỗ."
+            text += ("AI chưa thấy thay đổi bất thường so với nền phòng nên không tự bật quạt; "
+                     "gửi /fan on để bật thủ công.")
         return text, True
 
     if ev.kind == "fan_on":

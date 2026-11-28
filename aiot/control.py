@@ -232,7 +232,7 @@ def decide(st, inp, cfg):
 
 
 def _decide_ai(st, source, now, cfg, events):
-    """Quạt theo nhãn AI: nấu ăn / ô nhiễm -> BẢO VỆ; bình thường / khói thuốc -> BÌNH THƯỜNG.
+    """Quạt theo nhãn AI: nấu ăn / ô nhiễm bụi mịn -> BẢO VỆ; bình thường -> BÌNH THƯỜNG.
     Vẫn giữ min_state_s để không nhảy trạng thái; ghi đè thủ công vẫn thắng (fan_on)."""
     want = source in AI_FAN_SOURCES
     if st.mode == "NORMAL" and want:

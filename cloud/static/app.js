@@ -4,8 +4,9 @@
 const SOURCE = {
   normal:    { name: "Bình thường",            action: "Quạt tắt, còi im",       color: "#2e9e5b" },
   cooking:   { name: "Nấu ăn",                 action: "Chỉ bật quạt",            color: "#d98a1c" },
-  pollution: { name: "Ô nhiễm từ ngoài vào",   action: "Bật quạt và kêu còi",     color: "#8e44ad" },
-  smoking:   { name: "Khói thuốc lá / nhang",  action: "Chỉ kêu còi",             color: "#d64545" },
+  pollution: { name: "Ô nhiễm bụi mịn",        action: "Bật quạt và kêu còi",     color: "#d64545" },
+  // nhãn của mô hình cũ (trước 28/11/2026), chỉ để hiện lịch sử
+  smoking:   { name: "Khói thuốc lá / nhang (cũ)", action: "Chỉ kêu còi",          color: "#8e44ad" },
 };
 const AQI_COLORS = ["#2e9e5b", "#c9a400", "#e67e22", "#d64545", "#8e44ad", "#7b1f1f"];
 const STATUS_TEXT = { pending: "đang chờ Pi…", sent: "Pi đã nhận, đang áp dụng…",
@@ -241,7 +242,7 @@ function renderHistory(rows) {
   histChart.update();
   const legend = $("legend");
   legend.innerHTML = "";
-  for (const key of ["cooking", "pollution", "smoking"]) {
+  for (const key of ["cooking", "pollution"]) {
     const sp = document.createElement("span");
     sp.innerHTML = `<i></i>`;
     sp.querySelector("i").style.background = SOURCE[key].color + "66";

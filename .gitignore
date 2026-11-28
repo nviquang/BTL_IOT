@@ -22,3 +22,6 @@ cloud_dev*.db
 # Cấu hình Claude Code riêng từng máy và thư mục làm việc của plugin
 .claude/settings.local.json
 .superpowers/
+
+# Bộ đệm đặc trưng của mô hình demo (training/train_logreg.py)
+training/data/_logreg_features_*.npz

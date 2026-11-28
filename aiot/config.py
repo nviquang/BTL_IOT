@@ -95,11 +95,11 @@ class BuzzerCfg:
 class SourceCfg:
     """Bộ nhận diện nguồn bụi (aiot/source_model.py), chạy trong controller mỗi control.loop_s.
 
-    enabled và mô hình nạp được: quạt và còi theo nhãn AI (nấu ăn: quạt; ô nhiễm: quạt +
-    còi; khói thuốc/nhang: còi). Không có mô hình, thiếu dữ liệu 1 giây hay chưa đủ tin
+    enabled và mô hình nạp được: quạt và còi theo nhãn AI (nấu ăn: quạt; ô nhiễm bụi mịn:
+    quạt + còi). Không có mô hình, thiếu dữ liệu 1 giây hay chưa đủ tin
     cậy: quay về luật ngưỡng PM2.5 (control, buzzer.alarm_pm25)."""
     enabled: bool = True
-    model_path: str = "/home/admin/BTL_IOT/models/source_rf.json"
+    model_path: str = "/home/admin/BTL_IOT/models/source_logreg.json"
     vote_n: int = 3                 # trung bình xác suất của 3 lần dự đoán gần nhất (15 giây)
     min_confidence: float = 0.6     # chỉ đổi nhãn khi xác suất trung bình >= ngưỡng này
     max_gap_s: int = 30             # dự đoán cách nhau lâu hơn thì làm mượt lại từ đầu

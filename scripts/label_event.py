@@ -1,12 +1,12 @@
 """
 Gán nhãn một sự kiện thật cho bộ nhận diện nguồn bụi (bảng source_labels).
 
-Nhãn: normal | cooking | pollution | smoking. Thời gian nhận 'now', 'HH:MM[:SS]' (hôm nay,
+Nhãn: normal | cooking | pollution (ô nhiễm bụi mịn, gồm cả khói thuốc/nhang). Thời gian nhận 'now', 'HH:MM[:SS]' (hôm nay,
 giờ Pi) hoặc 'YYYY-MM-DD HH:MM[:SS]'. Đoạn có nhãn được giữ lại khi xoá mẫu 1 giây cũ.
 
 Ví dụ (trên Pi, trong ~/BTL_IOT):
   venv/bin/python scripts/label_event.py --label cooking --start 18:05 --end 18:25 --note "rán trứng"
-  venv/bin/python scripts/label_event.py --label smoking --start now --duration 300 --note nhang
+  venv/bin/python scripts/label_event.py --label pollution --start now --duration 300 --note nhang
   venv/bin/python scripts/label_event.py --list
 """
 import argparse

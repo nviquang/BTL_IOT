@@ -1,5 +1,7 @@
-"""Bộ nhận diện nguồn bụi: đặc trưng, suy luận JSON, làm mượt, luật quạt/còi theo nhãn AI."""
+"""Bộ nhận diện nguồn bụi: làm mượt, bảng hành động, luật quạt/còi theo nhãn AI, controller
+chạy mô hình logistic regression (aiot/source_model.py)."""
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -7,97 +9,14 @@ import pytest
 from aiot.alarm import alarm_reason
 from aiot.config import BuzzerCfg, ControlCfg, SourceCfg
 from aiot.control import ControlState, Event, Inputs, decide, fan_on
-from aiot.controller import SOURCE_KEY, step
+from aiot.controller import SOURCE_KEY, load_source_model, step
 from aiot.db import RawSample, connect, get_state, init_schema, insert_fast_many, insert_raw
 from aiot.notifier import event_message
-from aiot.source_features import FEATURES, WINDOW_S, buffer_from_rows, compute_features
-from aiot.source_model import (FORMAT, LABELS, SourceModel, SourceState, actions, load_model,
-                               smooth)
+from aiot.source_model import LABELS, LogRegModel, SourceState, actions, save_model, smooth
+from aiot.source_window import WINDOW_FEATURES
 
 CFG = ControlCfg()
-
-
-def flat_buffer(pm25=20.0, hum=70.0):
-    return {"pm1": np.full(WINDOW_S, pm25 * 0.65), "pm25": np.full(WINDOW_S, pm25),
-            "pm10": np.full(WINDOW_S, pm25 * 1.2), "temp": np.full(WINDOW_S, 26.0),
-            "hum": np.full(WINDOW_S, hum), "lux": np.full(WINDOW_S, 220.0)}
-
-
-# ---------------- đặc trưng ----------------
-def test_features_none_without_pm():
-    buf = flat_buffer()
-    buf["pm25"][-60:] = np.nan
-    assert compute_features(buf) is None
-
-
-def test_features_flat_background():
-    f = dict(zip(FEATURES, compute_features(flat_buffer(20.0))))
-    assert abs(f["exc_rel5"]) < 1e-9 and f["has_exc"] == 0.0
-    assert f["log_base"] == pytest.approx(np.log1p(20.0))
-    assert f["r1_60"] == pytest.approx(13.0 / 21.0)
-
-
-def test_features_spike_and_excess_ratio():
-    buf = flat_buffer(170.0)
-    buf["pm25"][-20:] += 600
-    buf["pm1"][-20:] += 600 * 0.3
-    buf["pm10"][-20:] += 600 * 1.9
-    f = dict(zip(FEATURES, compute_features(buf)))
-    assert f["exc_rel5"] > 3 and f["has_exc"] == 1.0
-    assert f["er1"] == pytest.approx(0.3, abs=0.02)
-    assert f["er10"] == pytest.approx(1.9, abs=0.02)
-
-
-def test_features_humidity_rise():
-    buf = flat_buffer(30.0)
-    buf["hum"][-200:] += 10
-    f = dict(zip(FEATURES, compute_features(buf)))
-    assert f["dh300"] == pytest.approx(10.0) and f["dh_base"] == pytest.approx(10.0)
-
-
-def test_buffer_from_rows_places_by_second():
-    rows = [(1000, {"pm25": 5.0}), (995, {"pm25": 7.0, "hum": 60.0})]
-    buf = buffer_from_rows(rows, 1000, window_s=10)
-    assert buf["pm25"][-1] == 5.0 and buf["pm25"][-6] == 7.0 and np.isnan(buf["pm25"][-2])
-    assert buf["hum"][-6] == 60.0
-
-
-# ---------------- mô hình JSON ----------------
-def stump_spec(feature="exc_rel5", thr=1.0, left=(1, 0, 0, 0), right=(0, 0, 0, 1)):
-    """Một cây gốc + 2 lá: feature <= thr -> left, ngược lại -> right."""
-    return {"format": FORMAT, "name": "stub", "classes": list(LABELS), "features": list(FEATURES),
-            "trees": [{"left": [1, -1, -1], "right": [2, -1, -1],
-                       "feature": [FEATURES.index(feature), 0, 0], "threshold": [thr, -2, -2],
-                       "value": [[0.25] * 4, list(left), list(right)]}]}
-
-
-def test_model_predicts_by_tree(tmp_path):
-    path = tmp_path / "m.json"
-    path.write_text(json.dumps(stump_spec()))
-    m = load_model(path)
-    x = np.zeros(len(FEATURES))
-    assert m.predict(x)[0] == "normal"
-    x[FEATURES.index("exc_rel5")] = 5
-    assert m.predict(x)[0] == "smoking"
-
-
-def test_model_rejects_wrong_features():
-    spec = stump_spec()
-    spec["features"] = spec["features"][:-1]
-    with pytest.raises(ValueError):
-        SourceModel(spec)
-
-
-def test_json_matches_sklearn(tmp_path):
-    sk = pytest.importorskip("sklearn.ensemble")
-    from training.train_source import export_forest
-    rng = np.random.default_rng(0)
-    X = rng.normal(size=(400, len(FEATURES)))
-    y = (X[:, 0] > 0).astype(int) + 2 * (X[:, 1] > 0.5).astype(int)
-    rf = sk.RandomForestClassifier(n_estimators=7, max_depth=5, random_state=0).fit(X, y)
-    m = export_forest(rf, tmp_path / "rf.json", {})
-    for x in X[:50]:
-        assert np.allclose(m.predict_proba(x), rf.predict_proba(x[None])[0], atol=1e-5)
+MODEL_FILE = Path(__file__).resolve().parent.parent / "models" / "source_logreg.json"
 
 
 # ---------------- làm mượt ----------------
@@ -116,8 +35,8 @@ def test_smooth_switches_after_votes():
 
 
 def test_smooth_resets_on_missing_or_gap():
-    st = smooth(SourceState(), P["smoking"], 0)
-    assert st.label == "smoking"
+    st = smooth(SourceState(), P["pollution"], 0)
+    assert st.label == "pollution"
     assert smooth(st, None, 5).label is None
     st2 = smooth(st, P["normal"], 100)          # ngắt quãng > 30 s: làm lại từ đầu
     assert st2.label == "normal" and len(st2.history) == 1
@@ -133,7 +52,6 @@ def test_action_table():
     assert actions("normal") == (False, False)
     assert actions("cooking") == (True, False)
     assert actions("pollution") == (True, True)
-    assert actions("smoking") == (False, True)
     assert actions(None) == (None, None)
 
 
@@ -147,18 +65,24 @@ def test_cooking_turns_fan_on_immediately():
     assert st.mode == "PROTECT" and Event("fan_on", "ai_cooking") in ev
 
 
-def test_smoking_with_danger_level_keeps_fan_off():
-    st, ev = decide(ControlState(), ai_inp("smoking", danger=900.0), CFG)
+def test_pollution_turns_fan_on():
+    st, ev = decide(ControlState(), ai_inp("pollution"), CFG)
+    assert st.mode == "PROTECT" and Event("fan_on", "ai_pollution") in ev
+
+
+def test_normal_label_with_danger_level_keeps_fan_off():
+    """Nền cao nhưng ổn định: AI nói bình thường, quạt không tự bật (đánh đổi của bản demo)."""
+    st, ev = decide(ControlState(), ai_inp("normal", danger=900.0), CFG)
     assert st.mode == "NORMAL" and not fan_on(st, 1000)
     assert [e.kind for e in ev] == ["danger"]
 
 
-def test_protect_exits_on_smoking_after_min_state():
+def test_protect_exits_on_normal_after_min_state():
     st = ControlState(mode="PROTECT", entered_at=1000)
-    st, ev = decide(st, ai_inp("smoking", now=1000 + CFG.min_state_s - 1), CFG)
+    st, ev = decide(st, ai_inp("normal", now=1000 + CFG.min_state_s - 1), CFG)
     assert st.mode == "PROTECT" and ev == []
-    st, ev = decide(st, ai_inp("smoking", now=1000 + CFG.min_state_s), CFG)
-    assert st.mode == "NORMAL" and Event("fan_off", "ai_smoking") in ev
+    st, ev = decide(st, ai_inp("normal", now=1000 + CFG.min_state_s), CFG)
+    assert st.mode == "NORMAL" and Event("fan_off", "ai_normal") in ev
 
 
 def test_override_still_wins_in_ai_mode():
@@ -175,15 +99,15 @@ def test_stale_data_holds_state_in_ai_mode():
 
 def test_alarm_by_source():
     b = BuzzerCfg()
-    assert alarm_reason(10.0, b, source="smoking") == "smoking"
+    assert alarm_reason(10.0, b, source="smoking") is None   # nhãn cũ không còn
     assert alarm_reason(10.0, b, source="pollution") == "pollution"
     assert alarm_reason(900.0, b, source="cooking") is None
     assert alarm_reason(900.0, b) == "pm25"          # không có nhãn: luật cũ
 
 
 def test_source_change_message():
-    msg, urgent = event_message(Event("source_change", "smoking p=0.91"), ControlState(), None, 1000)
-    assert "khói thuốc" in msg and "0,91" in msg and not urgent
+    msg, urgent = event_message(Event("source_change", "pollution p=0.91"), ControlState(), None, 1000)
+    assert "bụi mịn" in msg and "0,91" in msg and not urgent
 
 
 # ---------------- controller ----------------
@@ -192,10 +116,18 @@ class StubModel:
     name = "stub"
 
     def __init__(self, label):
-        self.p = np.array([0.9 if c == label else 0.1 / 3 for c in LABELS])
+        self.p = np.array([0.9 if c == label else 0.05 for c in LABELS])
+        self.featurize_calls = 0
+
+    def featurize(self, buf):
+        self.featurize_calls += 1
+        return np.zeros(3)
 
     def predict_proba(self, x):
         return self.p
+
+    def anomaly_score(self, p):
+        return float(1 - p[0])
 
 
 class Relay:
@@ -234,7 +166,7 @@ def feed(conn, now, pm25=150.0, n=300):
 
 
 @pytest.mark.parametrize("label, fan, buzz", [("cooking", True, []), ("pollution", True, ["burst"]),
-                                              ("smoking", False, ["burst"]), ("normal", False, [])])
+                                              ("normal", False, [])])
 def test_step_drives_fan_and_buzzer_by_label(conn, label, fan, buzz):
     now = 100000
     feed(conn, now, pm25=40.0)
@@ -275,14 +207,59 @@ def test_step_model_error_falls_back(conn):
     assert relay.calls[-1] is True
 
 
-# ---------------- mô phỏng ----------------
-def test_simulator_has_all_labels_and_is_reproducible():
-    from training.simulate_sources import simulate
-    a = simulate(30, seed=3)
-    b = simulate(30, seed=3)
-    labels = np.concatenate([arr["label"] for arr, _ in a])
-    assert set(np.unique(labels)) == {0, 1, 2, 3}
-    assert np.array_equal(a[0][0]["pm25"], b[0][0]["pm25"], equal_nan=True)
-    arr = a[0][0]
-    ok = np.isfinite(arr["pm25"])
-    assert np.all(arr["pm1"][ok] <= arr["pm25"][ok]) and np.all(arr["pm10"][ok] >= arr["pm25"][ok])
+def test_step_uses_model_featurize_and_logs_anomaly(conn):
+    now = 100000
+    feed(conn, now, pm25=40.0)
+    m = StubModel("pollution")
+    step(conn, Relay(), CFG, now, monotonic=lambda: 1e6, buzzer=Buzzer(), bcfg=BuzzerCfg(),
+         model=m, scfg=SourceCfg())
+    assert m.featurize_calls == 1
+    (proba,) = conn.execute("SELECT proba FROM source_predictions").fetchone()
+    assert json.loads(proba)["anomaly"] == pytest.approx(0.95)
+
+
+def small_logreg(tmp_path):
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
+
+    from aiot.source_model import spec_from_sklearn
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(300, len(WINDOW_FEATURES)))
+    y = rng.integers(0, 3, 300)
+    sc = StandardScaler().fit(X)
+    lr = LogisticRegression(max_iter=500).fit(sc.transform(X), y)
+    path = tmp_path / "lr.json"
+    save_model(LogRegModel(spec_from_sklearn(sc, lr, [LABELS[c] for c in lr.classes_])), path)
+    return path
+
+
+def test_load_source_model_and_step_with_logreg(conn, tmp_path):
+    model = load_source_model(SourceCfg(model_path=str(small_logreg(tmp_path))))
+    assert isinstance(model, LogRegModel)
+    now = 100000
+    feed(conn, now, pm25=40.0, n=600)
+    step(conn, Relay(), CFG, now, monotonic=lambda: 1e6, buzzer=Buzzer(), bcfg=BuzzerCfg(),
+         model=model, scfg=SourceCfg())
+    assert conn.execute("SELECT model FROM source_predictions").fetchone() == ("source_logreg",)
+
+
+def test_load_source_model_missing_or_old_file_returns_none(tmp_path):
+    assert load_source_model(SourceCfg(model_path=str(tmp_path / "none.json"))) is None
+    old = tmp_path / "rf.json"
+    old.write_text(json.dumps({"format": "aiot-rf-v1", "trees": []}), encoding="utf-8")
+    assert load_source_model(SourceCfg(model_path=str(old))) is None
+
+
+@pytest.mark.skipif(not MODEL_FILE.exists(), reason="chưa huấn luyện models/source_logreg.json")
+@pytest.mark.parametrize("level", [20.0, 170.0])
+def test_trained_model_flat_room_is_normal(conn, level):
+    """Mô hình đã huấn luyện: phòng để yên 30 phút, nền thấp hay cao, đều ra bình thường."""
+    model = load_source_model(SourceCfg(model_path=str(MODEL_FILE)))
+    now = 100000
+    feed(conn, now, pm25=level, n=1800)
+    relay = Relay()
+    for k in range(3):
+        step(conn, relay, CFG, now + 5 * k, monotonic=lambda: 1e6, buzzer=Buzzer(),
+             bcfg=BuzzerCfg(), model=model, scfg=SourceCfg())
+    assert json.loads(get_state(conn, SOURCE_KEY))["label"] == "normal"
+    assert relay.calls[-1] is False

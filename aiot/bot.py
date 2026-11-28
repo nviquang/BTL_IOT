@@ -179,9 +179,9 @@ def _control_state(conn):
 
 SOURCE_KEY = "source_state"              # controller ghi (aiot/source_model.SourceState)
 SOURCE_NAMES = {"normal": "bình thường", "cooking": "nấu ăn",
-                "pollution": "ô nhiễm từ ngoài vào", "smoking": "khói thuốc lá / nhang"}
+                "pollution": "ô nhiễm bụi mịn"}
 SOURCE_ACTIONS = {"normal": "quạt tắt, còi im", "cooking": "chỉ bật quạt",
-                  "pollution": "bật quạt và kêu còi", "smoking": "chỉ kêu còi"}
+                  "pollution": "bật quạt và kêu còi"}
 
 
 def _source_line(conn, cfg, now):

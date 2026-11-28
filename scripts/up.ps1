@@ -32,9 +32,10 @@ $DefaultHosts = @("10.157.117.41", "pi.local")
 $SshOpts = @("-o", "StrictHostKeyChecking=accept-new")
 $RemoteTar = "/tmp/btl_iot_deploy.tar"
 $DeployPaths = @("aiot", "deploy", "scripts", "config.yaml", "requirements-pi.txt",
-    "test_all.py", "README.md", "docs", "training/__init__.py", "training/simulate_sources.py")
+    "test_all.py", "README.md", "docs", "training/__init__.py", "training/demo_data.py",
+    "training/data/demo_real.json")
 # Mô hình đã huấn luyện (models/ không commit): chép riêng nếu có trên laptop
-$ModelFiles = @("source_rf.json", "source_summary.json")
+$ModelFiles = @("source_logreg.json", "source_logreg_summary.json")
 function Write-Step([string]$Text) { Write-Host ""; Write-Host "==> $Text" -ForegroundColor Cyan }
 function Write-Ok([string]$Text) { Write-Host "    [ok] $Text" -ForegroundColor Green }
 function Write-Info([string]$Text) { Write-Host "    $Text" }
@@ -106,7 +107,7 @@ function Deploy-ToPi([string]$PiTarget) {
         if ($LASTEXITCODE -ne 0) { Stop-WithError "scp mô hình lỗi" }
         Write-Ok "đã chép $($models.Count) file mô hình lên ~/BTL_IOT/models"
     } else {
-        Write-Warn "không có models/source_rf.json: controller dùng luật ngưỡng PM2.5 (chạy training/train_source.py)"
+        Write-Warn "không có models/source_logreg.json: controller dùng luật ngưỡng PM2.5 (chạy training/train_logreg.py)"
     }
 
     $remote = "cd ~/BTL_IOT && tar -xmf $RemoteTar && rm -f $RemoteTar && chmod 600 .env && chmod +x scripts/pi_up.sh"

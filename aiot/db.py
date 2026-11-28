@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS fast_readings (     -- mẫu 1 giây cho bộ nhận 
 CREATE TABLE IF NOT EXISTS source_labels (     -- nhãn sự kiện thật (scripts/label_event.py)
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   start_ts INTEGER NOT NULL, end_ts INTEGER NOT NULL,
-  label TEXT NOT NULL,                         -- normal | cooking | pollution | smoking
+  label TEXT NOT NULL,                         -- normal | cooking | pollution (bản cũ có smoking)
   note TEXT
 );
 CREATE TABLE IF NOT EXISTS source_predictions (  -- dự đoán nguồn bụi mỗi 5 giây
@@ -67,12 +67,15 @@ CREATE TABLE IF NOT EXISTS tg_messages (       -- message_id Telegram (nhận v�
 """
 
 
-SOURCE_LABELS = ("normal", "cooking", "pollution", "smoking")
+SOURCE_LABELS = ("normal", "cooking", "pollution")         # trùng aiot.source_model.LABELS
 FAST_COLUMNS = ("pm1", "pm25", "pm10", "n03", "n05", "n10", "n25", "n50", "n100",
                 "temp", "hum", "lux")
 
 # Khoảng đo hợp lệ của PMS7003 (µg/m³, gồm hai đầu); aggregate.RANGES dùng chung giá trị này
 PM_RANGE = (0.0, 1000.0)
+# fast_rows (bộ nhận diện nguồn bụi): số đọc trên PM_RANGE tới mức này là cảm biến bão hoà (khói
+# nhang thật đã lên 1513), được ghim về PM_RANGE[1]; cao hơn nữa coi là khung hỏng
+PM_SATURATE = 5000.0
 
 
 @dataclass
@@ -250,7 +253,8 @@ def insert_fast_many(conn: sqlite3.Connection, rows) -> None:
 
 def fast_rows(conn: sqlite3.Connection, since_ts: int, until_ts: int | None = None):
     """[(ts, {cột: giá trị})] từ since_ts (tới until_ts nếu có), tăng dần theo ts.
-    PM ngoài PM_RANGE coi như không có (None)."""
+    PM trên PM_RANGE tới PM_SATURATE ghim về PM_RANGE[1] (bão hoà: với nhận diện bất thường,
+    "vượt thang đo" là rất cao chứ không phải thiếu mẫu); âm hoặc trên PM_SATURATE là None."""
     cols = ", ".join(FAST_COLUMNS)
     sql = f"SELECT ts, {cols} FROM fast_readings WHERE ts >= ?"
     args = [int(since_ts)]
@@ -262,7 +266,11 @@ def fast_rows(conn: sqlite3.Connection, since_ts: int, until_ts: int | None = No
         vals = dict(zip(FAST_COLUMNS, r[1:]))
         for c in ("pm1", "pm25", "pm10"):
             v = vals[c]
-            if v is not None and not (PM_RANGE[0] <= v <= PM_RANGE[1]):
+            if v is None:
+                continue
+            if PM_RANGE[1] < v <= PM_SATURATE:
+                vals[c] = PM_RANGE[1]
+            elif not (PM_RANGE[0] <= v <= PM_RANGE[1]):
                 vals[c] = None
         out.append((int(r[0]), vals))
     return out

@@ -21,7 +21,7 @@ Không thuộc hệ thống (đã loại khỏi thiết kế):
 | Bot Telegram, cảnh báo, báo cáo sáng, lời khuyên Gemini | Có code, chưa thử với bot thật và Gemini thật (`docs/van_hanh_chi_tiet.md` 5.4, 5.5) |
 | Dự báo PM2.5 mỗi giờ | Pi dùng seasonal naive hoặc persistence để dự báo 6 giờ tới |
 | Cảnh báo nắng/mưa kèm ảnh camera (`aiot/weather.py`) | Có code, chưa thử thật (`docs/van_hanh_chi_tiet.md` 5.6) |
-| Nhận diện nguồn bụi AI (`aiot/source_*.py`, `training/train_source.py`): 4 nhãn, mẫu 1 giây, dự đoán mỗi 5 s, quạt + còi theo nhãn | Có code và mô hình huấn luyện trên dữ liệu mô phỏng (hiệu chỉnh theo nhang 23/11); code đã chép lên Pi 23/11/2026 nhưng chưa khởi động lại dịch vụ; chưa có sự kiện nấu ăn thật (`docs/nhan_dien_nguon_bui.md`) |
+| Nhận diện nguồn bụi AI bản demo (`aiot/source_window.py`, `aiot/source_model.py`, `training/demo_data.py`, `training/train_logreg.py`): logistic regression 3 nhãn, cửa sổ 120 s so với nền phòng, dự đoán mỗi 5 s, quạt + còi theo nhãn | Huấn luyện 28/11/2026 trên dữ liệu sinh từ số liệu thật (nhang 23/11, gai bụi 08:20 28/11), đạt cả 8 tiêu chí demo; chưa có lần nấu ăn thật (`docs/nhan_dien_nguon_bui.md`) |
 | Web trên cloud (`cloud/`, `aiot/uplink.py`, `aiot/commands.py`): xem số liệu, nhãn AI, dự báo; Tự động/Thủ công, quạt, còi (cần mật khẩu) | Đã deploy ngày 23/11/2026: https://aiot-tram.onrender.com (Render free + Neon Singapore); Pi chạy `aiot-uplink`, lệnh quạt bật/tắt và còi thủ công từ web tới controller trong ≤ 5 s. Đã xác nhận tại mạch quạt quay, còi kêu; chưa thử qua 4G (README "Web trên cloud", `docs/ke_hoach_web.md`) |
 | Nghiệm thu 7 ngày | Có `scripts/acceptance_report.py`; chưa đo, kết quả ghi ở `docs/nghiem_thu.md` |
 
@@ -71,7 +71,7 @@ Nguyên tắc **an toàn AI:** Gemini chỉ viết lời khuyên, không điều
 
 ### Nhận diện nguồn bụi (AI điều khiển quạt và còi)
 
-Nhãn và hành động cố định: bình thường → quạt tắt, còi im; nấu ăn → chỉ quạt; ô nhiễm từ ngoài vào (nền PM2.5 ≥ 55,5) → quạt + còi; khói thuốc/nhang → chỉ còi (kể cả khi PM2.5 rất cao, theo yêu cầu nhóm). Ghi đè thủ công, mất dữ liệu > 2 phút, `min_state_s` vẫn áp dụng. Không có mô hình / mẫu 1 giây cũ > 15 s / chưa đủ tin cậy (TB xác suất 3 lần < 0,6) thì dùng luật ngưỡng bên dưới. Sự kiện đốt nhang 21:07 ngày 23/11/2026 (đỉnh 805 và 1061 µg/m³) là dữ liệu thật duy nhất có nhãn `smoking`; nền ~160 tối 23/11 được gán `pollution` (giả định).
+Bản demo (28/11/2026): logistic regression trên cửa sổ 120 s, chỉ nhìn **độ lệch so với nền phòng** (phân vị 10 của 30 phút), không nhìn mức tuyệt đối. Ba nhãn và hành động cố định: bình thường → quạt tắt, còi im; nấu ăn (bụi tăng kèm ẩm/nhiệt tăng) → chỉ quạt; ô nhiễm bụi mịn (bụi tăng, ẩm/nhiệt không đổi; gộp "ô nhiễm từ ngoài vào" và "khói thuốc/nhang" cũ) → quạt + còi. Ghi đè thủ công, mất dữ liệu > 2 phút, `min_state_s` vẫn áp dụng. Không có mô hình / mẫu 1 giây cũ > 15 s / chưa đủ tin cậy (TB xác suất 3 lần < 0,6) thì dùng luật ngưỡng bên dưới. Đánh đổi: phòng ô nhiễm mà ổn định được coi là bình thường, quạt không tự bật. Dữ liệu huấn luyện sinh từ số liệu thật (`training/demo_data.py`); nấu ăn là mô phỏng. `aiot.db.fast_rows` ghim PM 1000–5000 về 1000 (bão hoà) thay vì bỏ.
 
 ### Logic điều khiển quạt (luật ngưỡng, dùng khi AI không có nhãn)
 

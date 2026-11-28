@@ -79,14 +79,15 @@ buzzer:
   mute_s: 1800              # /mute không kèm số phút: tắt tiếng 30 phút
   manual_max_s: 60          # bật còi thủ công (/buzzer on, web) tối đa 60 giây rồi tự tắt
 
-# Bộ nhận diện nguồn bụi bằng AI (aiot/source_model.py, models/source_rf.json do
-# training/train_source.py tạo). Dự đoán mỗi control.loop_s giây từ mẫu 1 giây 30 phút qua.
+# Bộ nhận diện nguồn bụi bằng AI: logistic regression (aiot/source_model.py), models/source_logreg.json
+# do training/train_logreg.py tạo. Dự đoán mỗi control.loop_s giây từ cửa sổ 120 s mẫu 1 giây,
+# so với nền phòng (phân vị 10 của 30 phút qua).
 # Bảng hành động cố định: bình thường -> quạt tắt, còi im; nấu ăn -> chỉ quạt;
-# ô nhiễm từ ngoài vào -> quạt + còi; khói thuốc/nhang -> chỉ còi.
+# ô nhiễm bụi mịn -> quạt + còi.
 # Không có mô hình / thiếu dữ liệu / chưa đủ tin cậy: dùng luật ngưỡng PM2.5 ở trên.
 source:
   enabled: true
-  model_path: /home/admin/BTL_IOT/models/source_rf.json
+  model_path: /home/admin/BTL_IOT/models/source_logreg.json
   vote_n: 3
   min_confidence: 0.6
   max_gap_s: 30

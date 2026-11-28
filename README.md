@@ -146,27 +146,27 @@ Test trên laptop: `.venv\Scripts\python -m pytest`. **Tắt Pi và rút cáp ng
 
 ## Nhận diện nguồn bụi (AI)
 
-Mỗi 5 giây controller dự đoán nguồn bụi từ mẫu 1 giây của 30 phút qua (RandomForest,
-`models/source_rf.json`) và điều khiển theo bảng cố định:
+Mỗi 5 giây controller nhìn 120 giây mẫu 1 giây gần nhất, so với nền phòng (phân vị 10 của 30
+phút qua), và phân loại bằng logistic regression (`models/source_logreg.json`). Bản này làm
+cho demo: dữ liệu huấn luyện sinh từ số liệu thật của trạm. Quạt và còi theo bảng cố định:
 
-| Nhãn                  | Quạt | Còi |
-| --------------------- | ---- | --- |
-| bình thường           | tắt  | im  |
-| nấu ăn                | bật  | im  |
-| ô nhiễm từ ngoài vào  | bật  | kêu |
-| khói thuốc lá / nhang | tắt  | kêu |
+| Nhãn                                         | Quạt | Còi |
+| -------------------------------------------- | ---- | --- |
+| bình thường (không lệch khỏi nền)            | tắt  | im  |
+| nấu ăn (bụi tăng kèm ẩm/nhiệt tăng)          | bật  | im  |
+| ô nhiễm bụi mịn (bụi tăng, ẩm/nhiệt không đổi) | bật  | kêu |
 
 Ghi đè `/fan`, `/mute` vẫn thắng. Không có mô hình, mẫu 1 giây cũ hơn 15 s hoặc chưa đủ tin
 cậy thì quay về luật ngưỡng PM2.5. Chi tiết, kết quả và cách thu thêm dữ liệu thật:
 `docs/nhan_dien_nguon_bui.md`.
 
 ```powershell
-.venv\Scripts\python -m training.export_fast --host admin@172.29.23.41   # kéo dữ liệu Pi
-.venv\Scripts\python -m training.train_source                            # huấn luyện + đánh giá
+.venv\Scripts\python -m training.export_fast --host admin@pi.local   # kéo dữ liệu Pi
+.venv\Scripts\python -m training.train_logreg --no-cache             # sinh dữ liệu, huấn luyện, chấm điểm demo
 ```
 
 Gán nhãn sự kiện thật trên Pi: `venv/bin/python scripts/label_event.py --label cooking --start 18:05 --end 18:25 --note "rán trứng"`.
-Demo trên DB thử: `venv/bin/python scripts/inject_pm.py --db ~/iot_data/demo.db --scenario smoking`
+Demo trên DB thử: `venv/bin/python scripts/inject_pm.py --db ~/iot_data/demo.db --scenario cooking` (hoặc `normal`, `pollution`, `back_to_back`)
 (chạy kèm `venv/bin/python -m aiot.controller --config <file cấu hình có db_path trỏ tới demo.db>`).
 
 ## Web trên cloud

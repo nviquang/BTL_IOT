@@ -37,13 +37,13 @@ def seed(conn, now):
         if 2.0 < h < 2.4:
             pm += 70; label = "cooking"
         if 4.5 < h < 4.7:
-            pm += 250; label = "smoking"
+            pm += 250; label = "pollution"
         insert_raw(conn, RawSample(ts, pm * 0.7, pm, pm * 1.3, 27 + math.sin(h), 72.0, 300.0, True))
         if (ts - now) % 30 == 0:
-            p = {"normal": 0.85, "cooking": 0.05, "pollution": 0.05, "smoking": 0.05}
+            p = {"normal": 0.9, "cooking": 0.05, "pollution": 0.05}
             if label != "normal":
                 p = {k: 0.05 for k in p}; p[label] = 0.85
-            insert_prediction(conn, ts, label, label, json.dumps(p), "rf-demo", commit=False)
+            insert_prediction(conn, ts, label, label, json.dumps(p), "logreg-demo", commit=False)
         labels.append(label)
     for i, v in enumerate([24, 27, 31, 36, 40, 38], start=1):
         conn.execute("INSERT INTO forecasts (made_at, horizon_h, pm25_pred, model) VALUES (?,?,?,?)",
@@ -85,7 +85,7 @@ def fake_station(db_path, cfg, stop):
                                                     "last_ts": now, "history": []}))
         from aiot.db import insert_prediction
         insert_prediction(conn, now, "normal", "normal", json.dumps(
-            {"normal": 0.82, "cooking": 0.1, "pollution": 0.05, "smoking": 0.03}), "rf-demo")
+            {"normal": 0.9, "cooking": 0.06, "pollution": 0.04}), "logreg-demo")
         try:
             step(conn, relay, cfg.control, now, monotonic=lambda: 10_000, buzzer=buzzer,
                  bcfg=cfg.buzzer, tcfg=cfg.telegram)

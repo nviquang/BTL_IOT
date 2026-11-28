@@ -10,14 +10,16 @@ Hồ sơ:
   danger 200 µg/m³ liên tục  (mức khẩn cấp >= 150)
   step   20 -> 80 -> 20, mỗi pha --phase mẫu
 
-Kịch bản nguồn bụi (--scenario normal|cooking|pollution|smoking): sinh một phiên bằng
-training/simulate_sources.py, ghi ngay lịch sử nền 15 phút trước đó vào fast_readings
-(để bộ nhận diện có đủ bộ đệm), rồi phát lại MỖI GIÂY một mẫu fast_readings (mỗi 10 giây
-một mẫu raw_readings) theo giờ thật, để controller chạy bộ nhận diện nguồn bụi trên DB thử.
+Kịch bản nguồn bụi (--scenario normal|cooking|pollution|back_to_back): sinh một phiên bằng
+training/demo_data.py (cùng bộ sinh dữ liệu đã dùng để huấn luyện), ghi ngay lịch sử nền 30
+phút trước đó vào fast_readings (để bộ nhận diện có đủ nền), rồi phát lại MỖI GIÂY một mẫu
+fast_readings (mỗi 10 giây một mẫu raw_readings) theo giờ thật, để controller chạy bộ nhận
+diện nguồn bụi trên DB thử. pollution = bụi mịn kiểu nhang/gai bụi thật; back_to_back = bụi
+mịn rồi nấu ăn ngay sau đó.
 
 Ví dụ:
   python scripts/inject_pm.py --db ~/iot_data/demo.db --profile step --phase 12
-  python scripts/inject_pm.py --db ~/iot_data/demo.db --scenario smoking --seed 1
+  python scripts/inject_pm.py --db ~/iot_data/demo.db --scenario cooking --seed 1
 Từ chối ghi vào DB thật /home/admin/iot_data/aiot.db trừ khi có --i-know.
 """
 import argparse
@@ -30,8 +32,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from aiot.db import RawSample, connect, init_schema, insert_fast_many, insert_raw  # noqa: E402
 
-SCENARIOS = ("normal", "cooking", "pollution", "smoking")
-HISTORY_S = 900
+SCENARIOS = ("normal", "cooking", "pollution", "back_to_back")
+SCENARIO_KIND = {"normal": "idle", "cooking": "cooking", "pollution": "dust",
+                 "back_to_back": "back_to_back"}
+HISTORY_S = 1800
 
 PRODUCTION_DB = "/home/admin/iot_data/aiot.db"
 CONSTANT = {"high": 80.0, "low": 20.0, "danger": 200.0}
@@ -50,22 +54,23 @@ def scenario_session(name: str, seed: int):
     """(dict mảng 1 giây, chỉ số giây bắt đầu phát lại) của một kịch bản."""
     import numpy as np
 
-    from training.simulate_sources import simulate_session
-    rng = np.random.default_rng(seed)
-    bg = "high" if name == "pollution" else "clean"
-    events = [name] if name in ("cooking", "smoking") else []
-    arr, meta = simulate_session(rng, duration_s=3600, bg_mode=bg, events=events)
-    start = meta["events"][0]["start"] - 30 if meta["events"] else HISTORY_S
-    return arr, max(start, 60)
+    from training.demo_data import load_real, session
+    arr = session(np.random.default_rng(seed), load_real(), SCENARIO_KIND[name])
+    ev = np.where(arr["label"] != 0)[0]
+    start = int(ev[0]) - 60 if ev.size else HISTORY_S
+    return arr, max(start, HISTORY_S)
 
 
 def _val(arr, key, i):
+    if key not in arr:                           # kênh đếm hạt: bộ sinh dữ liệu không có
+        return None
     v = float(arr[key][i])
     return None if v != v else v                 # NaN -> None
 
 
 def run_scenario(conn, name, seed, duration_s, wall, sleep) -> None:
     from aiot.db import FAST_COLUMNS
+    from aiot.source_model import LABELS
     arr, start = scenario_session(name, seed)
     now = int(wall())
     hist_from = max(0, start - HISTORY_S)
@@ -86,7 +91,7 @@ def run_scenario(conn, name, seed, duration_s, wall, sleep) -> None:
         if (i - start) % 10 == 0:
             insert_raw(conn, RawSample(ts, _val(arr, "pm1", i), _val(arr, "pm25", i), _val(arr, "pm10", i),
                                        _val(arr, "temp", i), _val(arr, "hum", i), _val(arr, "lux", i), True))
-            print(f"{ts} pm25={_val(arr, 'pm25', i)} nhãn={('normal', 'cooking', 'pollution', 'smoking')[arr['label'][i]]}",
+            print(f"{ts} pm25={_val(arr, 'pm25', i)} nhãn={LABELS[arr['label'][i]]}",
                   flush=True)
         sleep(1.0)
 

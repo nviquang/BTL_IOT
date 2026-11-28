@@ -92,7 +92,7 @@ def test_purge_fast_keeps_labelled_segment(conn):
     from aiot.db import insert_fast_many
     rows = [(ts, {"pm25": 10.0}, True) for ts in range(0, 20000, 100)]
     insert_fast_many(conn, rows)
-    insert_label(conn, 10000, 10500, "smoking", "nhang")
+    insert_label(conn, 10000, 10500, "pollution", "nhang")
     purge_fast(conn, 19000, margin_s=0)
     kept = [ts for ts, _ in fast_rows(conn, 0)]
     assert all(10000 <= ts <= 10500 or ts >= 19000 for ts in kept)
@@ -104,3 +104,14 @@ def test_insert_label_validates(conn):
         insert_label(conn, 10, 20, "dust")
     with pytest.raises(ValueError):
         insert_label(conn, 20, 10, "cooking")
+
+
+def test_fast_rows_saturates_high_pm_and_drops_garbage(conn):
+    """Khói nhang thật lên 1513 µg/m³: ghim về 1000 (bão hoà), không coi là thiếu mẫu.
+    Khung hỏng (65535) và số âm vẫn là None."""
+    from aiot.db import insert_fast_many
+    insert_fast_many(conn, [(1, {"pm1": 440.0, "pm25": 1513.0, "pm10": 3141.0}, True),
+                            (2, {"pm1": 65535.0, "pm25": -1.0, "pm10": 1000.0}, True)])
+    (_, a), (_, b) = fast_rows(conn, 0)
+    assert (a["pm1"], a["pm25"], a["pm10"]) == (440.0, 1000.0, 1000.0)
+    assert (b["pm1"], b["pm25"], b["pm10"]) == (None, None, 1000.0)

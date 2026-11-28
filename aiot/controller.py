@@ -39,9 +39,10 @@ và bật/tắt quạt qua relay GPIO23.
   kiểm tra tuổi lệnh như pending_override rồi ghi 'buzzer_override' {"on", "until", "at"}
   trong cùng transaction của bước (bật tối đa buzzer.manual_max_s; null = xoá ghi đè).
 - Nhận diện nguồn bụi (aiot/source_model.py, mục source trong config.yaml): mỗi bước đọc
-  fast_readings 30 phút, tính đặc trưng, dự đoán, làm mượt (khoá 'source_state') và ghi
-  source_predictions cùng transaction của bước. Có nhãn: quạt và còi theo nhãn (nấu ăn:
-  quạt; ô nhiễm: quạt + còi; khói thuốc/nhang: còi; bình thường: tắt cả hai), đổi nhãn
+  fast_readings 30 phút (nền) và tính đặc trưng cửa sổ 120 s (aiot/source_window.py), dự đoán
+  bằng logistic regression, làm mượt (khoá 'source_state') và ghi source_predictions (kèm
+  điểm bất thường 'anomaly' = 1 − P(normal)) cùng transaction của bước. Có nhãn: quạt và còi
+  theo nhãn (nấu ăn: quạt; ô nhiễm bụi mịn: quạt + còi; bình thường: tắt cả hai), đổi nhãn
   thì ghi sự kiện 'source_change' và cảnh báo. Không có mô hình, mẫu 1 giây cũ hơn
   source.stale_s hoặc chưa đủ tin cậy: luật ngưỡng PM2.5 như trước. Lỗi ở phần này chỉ
   ghi log và quay về luật ngưỡng.
@@ -291,14 +292,14 @@ def _classify(conn, model, scfg: SourceCfg, now: int, since_ts: int):
     ngưỡng PM2.5."""
     if model is None or not scfg.enabled:
         return None, [], None
-    from aiot.source_features import WINDOW_S, buffer_from_rows, compute_features
     from aiot.source_model import SourceState, smooth
+    from aiot.source_window import BASE_S, buffer_from_rows
     try:
-        rows = fast_rows(conn, max(now - WINDOW_S + 1, since_ts), now)
+        rows = fast_rows(conn, max(now - BASE_S + 1, since_ts), now)
         proba = None
         raw_label = None
         if rows and now - rows[-1][0] <= scfg.stale_s:
-            f = compute_features(buffer_from_rows(rows, now))
+            f = model.featurize(buffer_from_rows(rows, now))
             if f is not None:
                 p = model.predict_proba(f)
                 proba = p
@@ -310,8 +311,11 @@ def _classify(conn, model, scfg: SourceCfg, now: int, since_ts: int):
         if new.label is not None and new.label != old.label:
             conf = float(sum(h[_label_index(new.label)] for h in new.history) / len(new.history))
             events.append(Event("source_change", f"{new.label} p={conf:.2f}"))
-        proba_json = (json.dumps({c: round(float(v), 3) for c, v in zip(model.classes, proba)})
-                      if proba is not None else None)
+        proba_json = None
+        if proba is not None:
+            pj = {c: round(float(v), 3) for c, v in zip(model.classes, proba)}
+            pj["anomaly"] = round(model.anomaly_score(proba), 3)    # 1 − P(normal)
+            proba_json = json.dumps(pj)
 
         def write():
             set_state(conn, SOURCE_KEY, new.to_json(), commit=False)
@@ -339,12 +343,8 @@ def load_source_model(scfg: SourceCfg):
     try:
         from aiot.source_model import load_model
         model = load_model(scfg.model_path)
-        if not hasattr(model, "trees"):
-            # mô hình kNN theo sự kiện (aiot/source_event.py) cần profile demo, chưa nối vào đây
-            log.error("Mô hình %s là kNN theo sự kiện, controller chưa hỗ trợ; dùng luật ngưỡng",
-                      scfg.model_path)
-            return None
-        log.info("Đã nạp mô hình nguồn bụi %s (%d cây)", scfg.model_path, len(model.trees))
+        log.info("Đã nạp mô hình nguồn bụi %s (%s, %d đặc trưng)", scfg.model_path, model.name,
+                 len(model.features))
         return model
     except Exception as e:
         log.error("Không nạp được mô hình nguồn bụi %s, dùng luật ngưỡng PM2.5: %s",

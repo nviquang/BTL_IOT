@@ -4,7 +4,7 @@ Luật còi báo vượt ngưỡng tại chỗ (chạy trong dịch vụ control
 Toàn bộ là hàm thuần: không đọc đồng hồ, không I/O. Controller gọi alarm_reason()
 và plan() mỗi vòng rồi ra lệnh cho aiot.buzzer.Buzzer theo hành động trả về.
 
-- Có nhãn AI (aiot/source_model.py): kêu khi nhãn là ô nhiễm hoặc khói thuốc/nhang, không
+- Có nhãn AI (aiot/source_model.py): kêu khi nhãn là ô nhiễm bụi mịn, không
   kêu khi nấu ăn hay bình thường. Không có nhãn AI: kêu khi trung vị PM2.5 1 phút
   >= buzzer.alarm_pm25 (luật cũ).
 - Kêu một hồi (burst_s giây) ngay khi vừa vượt ngưỡng, lặp lại mỗi repeat_s giây nếu
@@ -21,8 +21,9 @@ import dataclasses
 import json
 from dataclasses import dataclass
 
-REASONS = ("pm25", "pollution", "smoking", "manual")
-AI_BUZZER_SOURCES = frozenset({"pollution", "smoking"})
+REASONS = ("pm25", "pollution", "manual")
+# trùng aiot.source_model.BUZZER_LABELS; không import để module này thuần
+AI_BUZZER_SOURCES = frozenset({"pollution"})
 BURST = "burst"
 SILENCE = "silence"
 
