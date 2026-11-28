@@ -106,16 +106,6 @@ function renderStatus(st) {
       row.children[2].textContent = `${Math.round(p * 100)}%`;
       proba.appendChild(row);
     }
-    if (typeof src.proba.anomaly === "number") {
-      const row = document.createElement("div");
-      row.className = "bar";
-      row.innerHTML = `<span></span><div class="track"><div class="fill"></div></div><span></span>`;
-      row.children[0].textContent = "Điểm bất thường";
-      row.querySelector(".fill").style.width = `${Math.round(src.proba.anomaly * 100)}%`;
-      row.querySelector(".fill").style.background = "var(--muted)";
-      row.children[2].textContent = `${Math.round(src.proba.anomaly * 100)}%`;
-      proba.appendChild(row);
-    }
   }
   setText("sourceNote", src.last_ts
     ? `Dự đoán lúc ${fmtTime(src.last_ts, true)}${src.since && info ? ` · nhãn này từ ${fmtTime(src.since)}` : ""} · mẫu lúc ${fmtTime(s.ts, true)}`
